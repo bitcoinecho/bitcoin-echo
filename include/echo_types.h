@@ -75,6 +75,7 @@ typedef enum {
     ECHO_ERR_NULL_PARAM      = -1,   /* Required parameter was NULL */
     ECHO_ERR_BUFFER_TOO_SMALL = -2,  /* Output buffer insufficient */
     ECHO_ERR_OUT_OF_MEMORY   = -3,   /* Memory allocation failed */
+    ECHO_ERR_OUT_OF_RANGE    = -4,   /* Index out of valid range */
 
     /* Parsing errors */
     ECHO_ERR_PARSE_FAILED    = -10,  /* General parse failure */

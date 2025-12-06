@@ -14,7 +14,8 @@ SRCS    = src/main.c \
           src/crypto/secp256k1.c \
           src/consensus/serialize.c \
           src/consensus/tx.c \
-          src/consensus/block.c
+          src/consensus/block.c \
+          src/consensus/merkle.c
 OBJS    = $(SRCS:.c=.o)
 
 # Test files
@@ -28,6 +29,7 @@ TEST_SIG_VERIFY      = test/unit/test_sig_verify
 TEST_SERIALIZE       = test/unit/test_serialize
 TEST_TX              = test/unit/test_tx
 TEST_BLOCK           = test/unit/test_block
+TEST_MERKLE          = test/unit/test_merkle
 
 .PHONY: all clean test
 
@@ -70,7 +72,10 @@ $(TEST_TX): test/unit/test_tx.c src/consensus/tx.c src/consensus/serialize.c src
 $(TEST_BLOCK): test/unit/test_block.c src/consensus/block.c src/consensus/tx.c src/consensus/serialize.c src/crypto/sha256.c
 	$(CC) $(CFLAGS) -o $@ $^
 
-test: $(TEST_SHA256) $(TEST_RIPEMD160) $(TEST_SECP256K1_FE) $(TEST_SECP256K1_GROUP) $(TEST_ECDSA) $(TEST_SCHNORR) $(TEST_SIG_VERIFY) $(TEST_SERIALIZE) $(TEST_TX) $(TEST_BLOCK)
+$(TEST_MERKLE): test/unit/test_merkle.c src/consensus/merkle.c src/consensus/tx.c src/consensus/serialize.c src/crypto/sha256.c
+	$(CC) $(CFLAGS) -o $@ $^
+
+test: $(TEST_SHA256) $(TEST_RIPEMD160) $(TEST_SECP256K1_FE) $(TEST_SECP256K1_GROUP) $(TEST_ECDSA) $(TEST_SCHNORR) $(TEST_SIG_VERIFY) $(TEST_SERIALIZE) $(TEST_TX) $(TEST_BLOCK) $(TEST_MERKLE)
 	@echo "Running SHA-256 tests..."
 	@./$(TEST_SHA256)
 	@echo ""
@@ -100,7 +105,10 @@ test: $(TEST_SHA256) $(TEST_RIPEMD160) $(TEST_SECP256K1_FE) $(TEST_SECP256K1_GRO
 	@echo ""
 	@echo "Running Block tests..."
 	@./$(TEST_BLOCK)
+	@echo ""
+	@echo "Running Merkle tree tests..."
+	@./$(TEST_MERKLE)
 
 clean:
-	rm -f $(TARGET) $(OBJS) $(TEST_SHA256) $(TEST_RIPEMD160) $(TEST_SECP256K1_FE) $(TEST_SECP256K1_GROUP) $(TEST_ECDSA) $(TEST_SCHNORR) $(TEST_SIG_VERIFY) $(TEST_SERIALIZE) $(TEST_TX) $(TEST_BLOCK)
+	rm -f $(TARGET) $(OBJS) $(TEST_SHA256) $(TEST_RIPEMD160) $(TEST_SECP256K1_FE) $(TEST_SECP256K1_GROUP) $(TEST_ECDSA) $(TEST_SCHNORR) $(TEST_SIG_VERIFY) $(TEST_SERIALIZE) $(TEST_TX) $(TEST_BLOCK) $(TEST_MERKLE)
 	find src -name '*.o' -delete
