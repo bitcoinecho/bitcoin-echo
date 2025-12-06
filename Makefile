@@ -15,9 +15,10 @@ SRCS    = src/main.c \
 OBJS    = $(SRCS:.c=.o)
 
 # Test files
-TEST_SHA256       = test/unit/test_sha256
-TEST_RIPEMD160    = test/unit/test_ripemd160
-TEST_SECP256K1_FE = test/unit/test_secp256k1_fe
+TEST_SHA256          = test/unit/test_sha256
+TEST_RIPEMD160       = test/unit/test_ripemd160
+TEST_SECP256K1_FE    = test/unit/test_secp256k1_fe
+TEST_SECP256K1_GROUP = test/unit/test_secp256k1_group
 
 .PHONY: all clean test
 
@@ -39,7 +40,10 @@ $(TEST_RIPEMD160): test/unit/test_ripemd160.c src/crypto/ripemd160.c src/crypto/
 $(TEST_SECP256K1_FE): test/unit/test_secp256k1_fe.c src/crypto/secp256k1.c
 	$(CC) $(CFLAGS) -o $@ $^
 
-test: $(TEST_SHA256) $(TEST_RIPEMD160) $(TEST_SECP256K1_FE)
+$(TEST_SECP256K1_GROUP): test/unit/test_secp256k1_group.c src/crypto/secp256k1.c
+	$(CC) $(CFLAGS) -o $@ $^
+
+test: $(TEST_SHA256) $(TEST_RIPEMD160) $(TEST_SECP256K1_FE) $(TEST_SECP256K1_GROUP)
 	@echo "Running SHA-256 tests..."
 	@./$(TEST_SHA256)
 	@echo ""
@@ -48,7 +52,10 @@ test: $(TEST_SHA256) $(TEST_RIPEMD160) $(TEST_SECP256K1_FE)
 	@echo ""
 	@echo "Running secp256k1 field tests..."
 	@./$(TEST_SECP256K1_FE)
+	@echo ""
+	@echo "Running secp256k1 group tests..."
+	@./$(TEST_SECP256K1_GROUP)
 
 clean:
-	rm -f $(TARGET) $(OBJS) $(TEST_SHA256) $(TEST_RIPEMD160) $(TEST_SECP256K1_FE)
+	rm -f $(TARGET) $(OBJS) $(TEST_SHA256) $(TEST_RIPEMD160) $(TEST_SECP256K1_FE) $(TEST_SECP256K1_GROUP)
 	find src -name '*.o' -delete

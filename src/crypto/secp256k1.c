@@ -647,57 +647,400 @@ void secp256k1_point_get_xy(secp256k1_fe_t *x, secp256k1_fe_t *y,
     }
 }
 
-/* Point operations will be implemented in Session 2.4 */
+/*
+ * ============================================================================
+ * Point Operations (Session 2.4)
+ * ============================================================================
+ *
+ * All point operations use Jacobian coordinates for efficiency.
+ * A Jacobian point (X, Y, Z) represents the affine point (X/Z², Y/Z³).
+ * The point at infinity is represented by Z = 0.
+ *
+ * For secp256k1: y² = x³ + 7 (a = 0, b = 7)
+ */
+
+/*
+ * Point doubling: r = 2*p
+ *
+ * Using formulas for a = 0 (secp256k1):
+ *   S = 4 * X * Y²
+ *   M = 3 * X²
+ *   X' = M² - 2*S
+ *   Y' = M * (S - X') - 8 * Y⁴
+ *   Z' = 2 * Y * Z
+ *
+ * Cost: 4M + 4S (approximately)
+ */
 void secp256k1_point_double(secp256k1_point_t *r, const secp256k1_point_t *p)
 {
-    (void)r; (void)p;
-    /* TODO: Session 2.4 */
+    secp256k1_fe_t s, m, x3, y3, z3;
+    secp256k1_fe_t y2, y4, x2, t1, t2;
+
+    /* Handle point at infinity */
+    if (secp256k1_point_is_infinity(p)) {
+        secp256k1_point_set_infinity(r);
+        return;
+    }
+
+    /* Handle Y = 0 (point of order 2, result is infinity) */
+    if (secp256k1_fe_is_zero(&p->y)) {
+        secp256k1_point_set_infinity(r);
+        return;
+    }
+
+    /* Y² */
+    secp256k1_fe_sqr(&y2, &p->y);
+
+    /* S = 4 * X * Y² */
+    secp256k1_fe_mul(&s, &p->x, &y2);     /* X * Y² */
+    secp256k1_fe_add(&s, &s, &s);          /* 2 * X * Y² */
+    secp256k1_fe_add(&s, &s, &s);          /* 4 * X * Y² */
+
+    /* X² */
+    secp256k1_fe_sqr(&x2, &p->x);
+
+    /* M = 3 * X² (since a = 0 for secp256k1) */
+    secp256k1_fe_add(&m, &x2, &x2);        /* 2 * X² */
+    secp256k1_fe_add(&m, &m, &x2);         /* 3 * X² */
+
+    /* X' = M² - 2*S */
+    secp256k1_fe_sqr(&x3, &m);             /* M² */
+    secp256k1_fe_add(&t1, &s, &s);         /* 2*S */
+    secp256k1_fe_sub(&x3, &x3, &t1);       /* M² - 2*S */
+
+    /* Y⁴ */
+    secp256k1_fe_sqr(&y4, &y2);
+
+    /* Y' = M * (S - X') - 8 * Y⁴ */
+    secp256k1_fe_sub(&t1, &s, &x3);        /* S - X' */
+    secp256k1_fe_mul(&y3, &m, &t1);        /* M * (S - X') */
+    secp256k1_fe_add(&t2, &y4, &y4);       /* 2 * Y⁴ */
+    secp256k1_fe_add(&t2, &t2, &t2);       /* 4 * Y⁴ */
+    secp256k1_fe_add(&t2, &t2, &t2);       /* 8 * Y⁴ */
+    secp256k1_fe_sub(&y3, &y3, &t2);       /* M * (S - X') - 8 * Y⁴ */
+
+    /* Z' = 2 * Y * Z */
+    secp256k1_fe_mul(&z3, &p->y, &p->z);  /* Y * Z */
+    secp256k1_fe_add(&z3, &z3, &z3);       /* 2 * Y * Z */
+
+    /* Store result */
+    secp256k1_fe_copy(&r->x, &x3);
+    secp256k1_fe_copy(&r->y, &y3);
+    secp256k1_fe_copy(&r->z, &z3);
 }
 
+/*
+ * Point addition: r = p + q
+ *
+ * Using standard Jacobian addition formulas:
+ *   U1 = X1 * Z2²
+ *   U2 = X2 * Z1²
+ *   S1 = Y1 * Z2³
+ *   S2 = Y2 * Z1³
+ *   H = U2 - U1
+ *   R = S2 - S1
+ *   X' = R² - H³ - 2 * U1 * H²
+ *   Y' = R * (U1 * H² - X') - S1 * H³
+ *   Z' = H * Z1 * Z2
+ *
+ * Special cases:
+ *   - If p is infinity, return q
+ *   - If q is infinity, return p
+ *   - If H == 0 and R == 0: return double(p)
+ *   - If H == 0 and R != 0: return infinity (p = -q)
+ */
 void secp256k1_point_add(secp256k1_point_t *r,
                          const secp256k1_point_t *p,
                          const secp256k1_point_t *q)
 {
-    (void)r; (void)p; (void)q;
-    /* TODO: Session 2.4 */
+    secp256k1_fe_t u1, u2, s1, s2, h, rr;
+    secp256k1_fe_t z1_2, z1_3, z2_2, z2_3;
+    secp256k1_fe_t h2, h3, u1h2;
+    secp256k1_fe_t x3, y3, z3, t1;
+
+    /* Handle infinity cases */
+    if (secp256k1_point_is_infinity(p)) {
+        secp256k1_fe_copy(&r->x, &q->x);
+        secp256k1_fe_copy(&r->y, &q->y);
+        secp256k1_fe_copy(&r->z, &q->z);
+        return;
+    }
+    if (secp256k1_point_is_infinity(q)) {
+        secp256k1_fe_copy(&r->x, &p->x);
+        secp256k1_fe_copy(&r->y, &p->y);
+        secp256k1_fe_copy(&r->z, &p->z);
+        return;
+    }
+
+    /* Z1², Z1³ */
+    secp256k1_fe_sqr(&z1_2, &p->z);
+    secp256k1_fe_mul(&z1_3, &z1_2, &p->z);
+
+    /* Z2², Z2³ */
+    secp256k1_fe_sqr(&z2_2, &q->z);
+    secp256k1_fe_mul(&z2_3, &z2_2, &q->z);
+
+    /* U1 = X1 * Z2², U2 = X2 * Z1² */
+    secp256k1_fe_mul(&u1, &p->x, &z2_2);
+    secp256k1_fe_mul(&u2, &q->x, &z1_2);
+
+    /* S1 = Y1 * Z2³, S2 = Y2 * Z1³ */
+    secp256k1_fe_mul(&s1, &p->y, &z2_3);
+    secp256k1_fe_mul(&s2, &q->y, &z1_3);
+
+    /* H = U2 - U1 */
+    secp256k1_fe_sub(&h, &u2, &u1);
+
+    /* R = S2 - S1 */
+    secp256k1_fe_sub(&rr, &s2, &s1);
+
+    /* Check for special cases */
+    if (secp256k1_fe_is_zero(&h)) {
+        if (secp256k1_fe_is_zero(&rr)) {
+            /* p == q, do doubling */
+            secp256k1_point_double(r, p);
+            return;
+        } else {
+            /* p == -q, result is infinity */
+            secp256k1_point_set_infinity(r);
+            return;
+        }
+    }
+
+    /* H², H³ */
+    secp256k1_fe_sqr(&h2, &h);
+    secp256k1_fe_mul(&h3, &h2, &h);
+
+    /* U1 * H² */
+    secp256k1_fe_mul(&u1h2, &u1, &h2);
+
+    /* X' = R² - H³ - 2 * U1 * H² */
+    secp256k1_fe_sqr(&x3, &rr);            /* R² */
+    secp256k1_fe_sub(&x3, &x3, &h3);       /* R² - H³ */
+    secp256k1_fe_add(&t1, &u1h2, &u1h2);   /* 2 * U1 * H² */
+    secp256k1_fe_sub(&x3, &x3, &t1);       /* R² - H³ - 2 * U1 * H² */
+
+    /* Y' = R * (U1 * H² - X') - S1 * H³ */
+    secp256k1_fe_sub(&t1, &u1h2, &x3);     /* U1 * H² - X' */
+    secp256k1_fe_mul(&y3, &rr, &t1);       /* R * (U1 * H² - X') */
+    secp256k1_fe_mul(&t1, &s1, &h3);       /* S1 * H³ */
+    secp256k1_fe_sub(&y3, &y3, &t1);       /* R * (U1 * H² - X') - S1 * H³ */
+
+    /* Z' = H * Z1 * Z2 */
+    secp256k1_fe_mul(&z3, &p->z, &q->z);   /* Z1 * Z2 */
+    secp256k1_fe_mul(&z3, &z3, &h);        /* H * Z1 * Z2 */
+
+    /* Store result */
+    secp256k1_fe_copy(&r->x, &x3);
+    secp256k1_fe_copy(&r->y, &y3);
+    secp256k1_fe_copy(&r->z, &z3);
 }
 
+/*
+ * Point negation: r = -p
+ *
+ * In Jacobian coordinates: -(X, Y, Z) = (X, -Y, Z)
+ */
+void secp256k1_point_neg(secp256k1_point_t *r, const secp256k1_point_t *p)
+{
+    secp256k1_fe_copy(&r->x, &p->x);
+    secp256k1_fe_neg(&r->y, &p->y);
+    secp256k1_fe_copy(&r->z, &p->z);
+}
+
+/*
+ * Scalar multiplication: r = k * p
+ *
+ * Uses double-and-add algorithm, processing bits from high to low.
+ * This is a simple implementation; constant-time versions exist but
+ * are more complex.
+ */
 void secp256k1_point_mul(secp256k1_point_t *r,
                          const secp256k1_point_t *p,
                          const secp256k1_scalar_t *k)
 {
-    (void)r; (void)p; (void)k;
-    /* TODO: Session 2.4 */
+    secp256k1_point_t result, base, tmp;
+    int i, j;
+    int started = 0;
+
+    /* Handle k = 0 */
+    if (secp256k1_scalar_is_zero(k)) {
+        secp256k1_point_set_infinity(r);
+        return;
+    }
+
+    /* Handle point at infinity */
+    if (secp256k1_point_is_infinity(p)) {
+        secp256k1_point_set_infinity(r);
+        return;
+    }
+
+    /* Copy base point */
+    secp256k1_fe_copy(&base.x, &p->x);
+    secp256k1_fe_copy(&base.y, &p->y);
+    secp256k1_fe_copy(&base.z, &p->z);
+
+    secp256k1_point_set_infinity(&result);
+
+    /* Process bits from high to low */
+    for (i = 7; i >= 0; i--) {
+        uint32_t word = k->limbs[i];
+        for (j = 31; j >= 0; j--) {
+            if (started) {
+                secp256k1_point_double(&tmp, &result);
+                secp256k1_fe_copy(&result.x, &tmp.x);
+                secp256k1_fe_copy(&result.y, &tmp.y);
+                secp256k1_fe_copy(&result.z, &tmp.z);
+            }
+
+            if ((word >> j) & 1) {
+                if (started) {
+                    secp256k1_point_add(&tmp, &result, &base);
+                    secp256k1_fe_copy(&result.x, &tmp.x);
+                    secp256k1_fe_copy(&result.y, &tmp.y);
+                    secp256k1_fe_copy(&result.z, &tmp.z);
+                } else {
+                    secp256k1_fe_copy(&result.x, &base.x);
+                    secp256k1_fe_copy(&result.y, &base.y);
+                    secp256k1_fe_copy(&result.z, &base.z);
+                    started = 1;
+                }
+            }
+        }
+    }
+
+    secp256k1_fe_copy(&r->x, &result.x);
+    secp256k1_fe_copy(&r->y, &result.y);
+    secp256k1_fe_copy(&r->z, &result.z);
 }
 
+/*
+ * Scalar multiplication with generator: r = k * G
+ */
 void secp256k1_point_mul_gen(secp256k1_point_t *r, const secp256k1_scalar_t *k)
 {
-    (void)r; (void)k;
-    /* TODO: Session 2.4 */
+    secp256k1_point_t gen;
+    secp256k1_fe_t gx, gy;
+    int i;
+
+    /* Load generator point G */
+    for (i = 0; i < 8; i++) {
+        gx.limbs[i] = SECP256K1_GX[i];
+        gy.limbs[i] = SECP256K1_GY[i];
+    }
+
+    secp256k1_point_set_xy(&gen, &gx, &gy);
+    secp256k1_point_mul(r, &gen, k);
 }
 
+/*
+ * Check if point is on the curve: y² = x³ + 7 (mod p)
+ * Returns 1 if valid, 0 otherwise.
+ */
 int secp256k1_point_is_valid(const secp256k1_point_t *p)
 {
-    (void)p;
-    /* TODO: Session 2.4 */
-    return 0;
+    secp256k1_fe_t x, y, lhs, rhs, x3, seven;
+
+    /* Infinity is valid */
+    if (secp256k1_point_is_infinity(p)) {
+        return 1;
+    }
+
+    /* Get affine coordinates */
+    secp256k1_point_get_xy(&x, &y, p);
+
+    /* Compute y² */
+    secp256k1_fe_sqr(&lhs, &y);
+
+    /* Compute x³ + 7 */
+    secp256k1_fe_sqr(&x3, &x);
+    secp256k1_fe_mul(&x3, &x3, &x);
+    secp256k1_fe_set_int(&seven, 7);
+    secp256k1_fe_add(&rhs, &x3, &seven);
+
+    return secp256k1_fe_equal(&lhs, &rhs);
 }
 
-void secp256k1_point_neg(secp256k1_point_t *r, const secp256k1_point_t *p)
-{
-    (void)r; (void)p;
-    /* TODO: Session 2.4 */
-}
-
+/*
+ * Parse public key from bytes.
+ * Supports:
+ *   - Compressed (33 bytes, prefix 02/03)
+ *   - Uncompressed (65 bytes, prefix 04)
+ *
+ * Returns 1 on success, 0 on failure.
+ */
 int secp256k1_pubkey_parse(secp256k1_point_t *p, const uint8_t *data, size_t len)
 {
-    (void)p; (void)data; (void)len;
-    /* TODO: Session 2.4 */
-    return 0;
+    secp256k1_fe_t x, y;
+
+    if (len == 33 && (data[0] == 0x02 || data[0] == 0x03)) {
+        /* Compressed format */
+        if (!secp256k1_fe_set_bytes(&x, data + 1)) {
+            return 0;
+        }
+
+        /* Compute y² = x³ + 7 */
+        secp256k1_fe_t x3, y2, seven;
+        secp256k1_fe_sqr(&x3, &x);
+        secp256k1_fe_mul(&x3, &x3, &x);
+        secp256k1_fe_set_int(&seven, 7);
+        secp256k1_fe_add(&y2, &x3, &seven);
+
+        /* Compute y = sqrt(y²) */
+        if (!secp256k1_fe_sqrt(&y, &y2)) {
+            return 0;  /* No valid y coordinate */
+        }
+
+        /* Select correct y based on prefix */
+        int y_is_odd = secp256k1_fe_is_odd(&y);
+        int want_odd = (data[0] == 0x03);
+
+        if (y_is_odd != want_odd) {
+            secp256k1_fe_neg(&y, &y);
+        }
+
+        secp256k1_point_set_xy(p, &x, &y);
+        return 1;
+
+    } else if (len == 65 && data[0] == 0x04) {
+        /* Uncompressed format */
+        if (!secp256k1_fe_set_bytes(&x, data + 1)) {
+            return 0;
+        }
+        if (!secp256k1_fe_set_bytes(&y, data + 33)) {
+            return 0;
+        }
+
+        secp256k1_point_set_xy(p, &x, &y);
+
+        /* Verify point is on curve */
+        if (!secp256k1_point_is_valid(p)) {
+            return 0;
+        }
+
+        return 1;
+    }
+
+    return 0;  /* Invalid format */
 }
 
+/*
+ * Serialize public key to bytes.
+ * If compressed: outputs 33 bytes (prefix 02/03 + x)
+ * If uncompressed: outputs 65 bytes (prefix 04 + x + y)
+ */
 void secp256k1_pubkey_serialize(uint8_t *out, const secp256k1_point_t *p, int compressed)
 {
-    (void)out; (void)p; (void)compressed;
-    /* TODO: Session 2.4 */
+    secp256k1_fe_t x, y;
+
+    secp256k1_point_get_xy(&x, &y, p);
+
+    if (compressed) {
+        out[0] = secp256k1_fe_is_odd(&y) ? 0x03 : 0x02;
+        secp256k1_fe_get_bytes(out + 1, &x);
+    } else {
+        out[0] = 0x04;
+        secp256k1_fe_get_bytes(out + 1, &x);
+        secp256k1_fe_get_bytes(out + 33, &y);
+    }
 }
