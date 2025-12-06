@@ -9,6 +9,7 @@
 #include "echo_types.h"
 #include "echo_config.h"
 #include "echo_assert.h"
+#include "platform.h"
 
 /*
  * Compile-time verification of critical type sizes.
