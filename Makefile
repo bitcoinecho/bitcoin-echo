@@ -32,6 +32,7 @@ TEST_TX              = test/unit/test_tx
 TEST_BLOCK           = test/unit/test_block
 TEST_MERKLE          = test/unit/test_merkle
 TEST_SCRIPT          = test/unit/test_script
+TEST_STACK           = test/unit/test_stack
 
 .PHONY: all clean test
 
@@ -80,7 +81,10 @@ $(TEST_MERKLE): test/unit/test_merkle.c src/consensus/merkle.c src/consensus/tx.
 $(TEST_SCRIPT): test/unit/test_script.c src/consensus/script.c
 	$(CC) $(CFLAGS) -o $@ $^
 
-test: $(TEST_SHA256) $(TEST_RIPEMD160) $(TEST_SECP256K1_FE) $(TEST_SECP256K1_GROUP) $(TEST_ECDSA) $(TEST_SCHNORR) $(TEST_SIG_VERIFY) $(TEST_SERIALIZE) $(TEST_TX) $(TEST_BLOCK) $(TEST_MERKLE) $(TEST_SCRIPT)
+$(TEST_STACK): test/unit/test_stack.c src/consensus/script.c
+	$(CC) $(CFLAGS) -o $@ $^
+
+test: $(TEST_SHA256) $(TEST_RIPEMD160) $(TEST_SECP256K1_FE) $(TEST_SECP256K1_GROUP) $(TEST_ECDSA) $(TEST_SCHNORR) $(TEST_SIG_VERIFY) $(TEST_SERIALIZE) $(TEST_TX) $(TEST_BLOCK) $(TEST_MERKLE) $(TEST_SCRIPT) $(TEST_STACK)
 	@echo "Running SHA-256 tests..."
 	@./$(TEST_SHA256)
 	@echo ""
@@ -116,7 +120,10 @@ test: $(TEST_SHA256) $(TEST_RIPEMD160) $(TEST_SECP256K1_FE) $(TEST_SECP256K1_GRO
 	@echo ""
 	@echo "Running Script tests..."
 	@./$(TEST_SCRIPT)
+	@echo ""
+	@echo "Running Stack tests..."
+	@./$(TEST_STACK)
 
 clean:
-	rm -f $(TARGET) $(OBJS) $(TEST_SHA256) $(TEST_RIPEMD160) $(TEST_SECP256K1_FE) $(TEST_SECP256K1_GROUP) $(TEST_ECDSA) $(TEST_SCHNORR) $(TEST_SIG_VERIFY) $(TEST_SERIALIZE) $(TEST_TX) $(TEST_BLOCK) $(TEST_MERKLE) $(TEST_SCRIPT)
+	rm -f $(TARGET) $(OBJS) $(TEST_SHA256) $(TEST_RIPEMD160) $(TEST_SECP256K1_FE) $(TEST_SECP256K1_GROUP) $(TEST_ECDSA) $(TEST_SCHNORR) $(TEST_SIG_VERIFY) $(TEST_SERIALIZE) $(TEST_TX) $(TEST_BLOCK) $(TEST_MERKLE) $(TEST_SCRIPT) $(TEST_STACK)
 	find src -name '*.o' -delete

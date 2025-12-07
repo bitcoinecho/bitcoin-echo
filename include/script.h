@@ -303,6 +303,662 @@ typedef struct {
     size_t  program_len;   /* Length of program */
 } witness_program_t;
 
+/*
+ * ============================================================================
+ * SCRIPT STACK MACHINE
+ * ============================================================================
+ *
+ * Bitcoin Script uses a stack-based virtual machine. Elements on the stack
+ * are byte arrays that can be interpreted as numbers when needed.
+ *
+ * Script number encoding:
+ *   - Little-endian byte order
+ *   - Minimal encoding required (no unnecessary leading zeros)
+ *   - Sign bit is the high bit of the last byte
+ *   - Empty array represents zero
+ *   - Maximum 4 bytes for arithmetic operations (but can store more)
+ */
+
+/*
+ * Maximum size for script numbers in arithmetic operations.
+ * BIP-62 rule 4: Script numbers must be at most 4 bytes.
+ */
+#define SCRIPT_NUM_MAX_SIZE  4
+
+/*
+ * Script number type.
+ * 64-bit to avoid overflow during arithmetic, but values are
+ * limited to 32-bit signed range for consensus.
+ */
+typedef int64_t script_num_t;
+
+/*
+ * Stack element.
+ * Each element is a byte array with its own length.
+ * Elements own their data and must be freed.
+ */
+typedef struct {
+    uint8_t *data;    /* Element bytes (owned, NULL for empty) */
+    size_t   len;     /* Length in bytes */
+} stack_element_t;
+
+/*
+ * Script execution stack.
+ * Fixed-capacity stack with SCRIPT_MAX_STACK_SIZE elements.
+ */
+typedef struct {
+    stack_element_t *elements;  /* Array of elements (owned) */
+    size_t           count;     /* Current number of elements */
+    size_t           capacity;  /* Allocated capacity */
+} script_stack_t;
+
+/*
+ * Script execution flags.
+ * Control various validation rules based on soft fork activation.
+ */
+typedef enum {
+    SCRIPT_VERIFY_NONE              = 0,
+    SCRIPT_VERIFY_P2SH              = (1 << 0),   /* BIP-16 */
+    SCRIPT_VERIFY_STRICTENC         = (1 << 1),   /* Require strict signature encoding */
+    SCRIPT_VERIFY_DERSIG            = (1 << 2),   /* BIP-66: Strict DER signatures */
+    SCRIPT_VERIFY_LOW_S             = (1 << 3),   /* BIP-62 rule 5: Low S values */
+    SCRIPT_VERIFY_NULLDUMMY         = (1 << 4),   /* BIP-62 rule 7: Dummy must be empty */
+    SCRIPT_VERIFY_SIGPUSHONLY       = (1 << 5),   /* BIP-62 rule 2: scriptSig push-only */
+    SCRIPT_VERIFY_MINIMALDATA       = (1 << 6),   /* BIP-62 rule 3/4: Minimal pushes/numbers */
+    SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_NOPS = (1 << 7),
+    SCRIPT_VERIFY_CLEANSTACK        = (1 << 8),   /* BIP-62 rule 6: Stack must be clean */
+    SCRIPT_VERIFY_CHECKLOCKTIMEVERIFY = (1 << 9),  /* BIP-65 */
+    SCRIPT_VERIFY_CHECKSEQUENCEVERIFY = (1 << 10), /* BIP-112 */
+    SCRIPT_VERIFY_WITNESS           = (1 << 11),  /* BIP-141 */
+    SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_WITNESS_PROGRAM = (1 << 12),
+    SCRIPT_VERIFY_MINIMALIF         = (1 << 13),  /* BIP-141: Minimal IF/NOTIF args */
+    SCRIPT_VERIFY_NULLFAIL          = (1 << 14),  /* BIP-146: Empty sig on failure */
+    SCRIPT_VERIFY_WITNESS_PUBKEYTYPE = (1 << 15), /* BIP-141: Compressed keys only */
+    SCRIPT_VERIFY_CONST_SCRIPTCODE  = (1 << 16),  /* Making OP_CODESEPARATOR obsolete */
+    SCRIPT_VERIFY_TAPROOT           = (1 << 17),  /* BIP-341 */
+} script_verify_flags_t;
+
+/*
+ * Standard verification flags for current consensus.
+ */
+#define SCRIPT_VERIFY_STANDARD ( \
+    SCRIPT_VERIFY_P2SH | \
+    SCRIPT_VERIFY_DERSIG | \
+    SCRIPT_VERIFY_STRICTENC | \
+    SCRIPT_VERIFY_MINIMALDATA | \
+    SCRIPT_VERIFY_NULLDUMMY | \
+    SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_NOPS | \
+    SCRIPT_VERIFY_CLEANSTACK | \
+    SCRIPT_VERIFY_MINIMALIF | \
+    SCRIPT_VERIFY_NULLFAIL | \
+    SCRIPT_VERIFY_CHECKLOCKTIMEVERIFY | \
+    SCRIPT_VERIFY_CHECKSEQUENCEVERIFY | \
+    SCRIPT_VERIFY_LOW_S | \
+    SCRIPT_VERIFY_WITNESS | \
+    SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_WITNESS_PROGRAM | \
+    SCRIPT_VERIFY_WITNESS_PUBKEYTYPE | \
+    SCRIPT_VERIFY_TAPROOT \
+)
+
+/*
+ * Script execution error codes.
+ */
+typedef enum {
+    SCRIPT_ERR_OK = 0,
+    SCRIPT_ERR_UNKNOWN_ERROR,
+    SCRIPT_ERR_EVAL_FALSE,
+    SCRIPT_ERR_OP_RETURN,
+
+    /* Numeric errors */
+    SCRIPT_ERR_SCRIPT_SIZE,
+    SCRIPT_ERR_PUSH_SIZE,
+    SCRIPT_ERR_OP_COUNT,
+    SCRIPT_ERR_STACK_SIZE,
+    SCRIPT_ERR_SIG_COUNT,
+    SCRIPT_ERR_PUBKEY_COUNT,
+
+    /* Stack errors */
+    SCRIPT_ERR_INVALID_STACK_OPERATION,
+    SCRIPT_ERR_INVALID_ALTSTACK_OPERATION,
+    SCRIPT_ERR_UNBALANCED_CONDITIONAL,
+
+    /* Opcode errors */
+    SCRIPT_ERR_DISABLED_OPCODE,
+    SCRIPT_ERR_RESERVED_OPCODE,
+    SCRIPT_ERR_BAD_OPCODE,
+    SCRIPT_ERR_INVALID_OPCODE,
+
+    /* Verify errors */
+    SCRIPT_ERR_VERIFY,
+    SCRIPT_ERR_EQUALVERIFY,
+    SCRIPT_ERR_CHECKMULTISIGVERIFY,
+    SCRIPT_ERR_CHECKSIGVERIFY,
+    SCRIPT_ERR_NUMEQUALVERIFY,
+
+    /* Number errors */
+    SCRIPT_ERR_INVALID_NUMBER_RANGE,
+    SCRIPT_ERR_IMPOSSIBLE_ENCODING,
+    SCRIPT_ERR_NEGATIVE_LOCKTIME,
+    SCRIPT_ERR_UNSATISFIED_LOCKTIME,
+
+    /* Signature errors */
+    SCRIPT_ERR_SIG_HASHTYPE,
+    SCRIPT_ERR_SIG_DER,
+    SCRIPT_ERR_SIG_HIGH_S,
+    SCRIPT_ERR_SIG_NULLDUMMY,
+    SCRIPT_ERR_SIG_NULLFAIL,
+    SCRIPT_ERR_PUBKEYTYPE,
+    SCRIPT_ERR_SIG_BADLENGTH,
+    SCRIPT_ERR_SCHNORR_SIG,
+
+    /* SegWit errors */
+    SCRIPT_ERR_WITNESS_PROGRAM_WRONG_LENGTH,
+    SCRIPT_ERR_WITNESS_PROGRAM_WITNESS_EMPTY,
+    SCRIPT_ERR_WITNESS_PROGRAM_MISMATCH,
+    SCRIPT_ERR_WITNESS_MALLEATED,
+    SCRIPT_ERR_WITNESS_MALLEATED_P2SH,
+    SCRIPT_ERR_WITNESS_UNEXPECTED,
+    SCRIPT_ERR_WITNESS_PUBKEYTYPE,
+
+    /* Taproot errors */
+    SCRIPT_ERR_TAPROOT_WRONG_CONTROL_SIZE,
+    SCRIPT_ERR_TAPSCRIPT_VALIDATION_WEIGHT,
+    SCRIPT_ERR_TAPSCRIPT_CHECKMULTISIG,
+    SCRIPT_ERR_TAPSCRIPT_MINIMALIF,
+
+    /* Memory errors */
+    SCRIPT_ERR_OUT_OF_MEMORY,
+
+    SCRIPT_ERR_ERROR_COUNT  /* Number of error codes */
+} script_error_t;
+
+/*
+ * Script interpreter context.
+ * Maintains state during script execution.
+ */
+typedef struct {
+    script_stack_t  stack;      /* Main execution stack */
+    script_stack_t  altstack;   /* Alternate stack (OP_TOALTSTACK/OP_FROMALTSTACK) */
+    uint32_t        flags;      /* Verification flags (script_verify_flags_t) */
+    script_error_t  error;      /* Last error code */
+    size_t          op_count;   /* Number of non-push opcodes executed */
+
+    /*
+     * Conditional execution state.
+     * Bitcoin Script has IF/ELSE/ENDIF flow control.
+     * We track nested conditions with a simple counter approach:
+     *   - exec_depth: depth of IF blocks we're executing
+     *   - skip_depth: depth of IF blocks we're skipping
+     */
+    int exec_depth;   /* Depth of executed branches */
+    int skip_depth;   /* Depth of skipped branches (0 = executing) */
+} script_context_t;
+
+
+/*
+ * ============================================================================
+ * STACK FUNCTIONS
+ * ============================================================================
+ */
+
+/*
+ * Initialize a script stack.
+ *
+ * Parameters:
+ *   stack - Stack to initialize
+ *
+ * Returns:
+ *   ECHO_OK on success, error code on failure
+ */
+echo_result_t stack_init(script_stack_t *stack);
+
+/*
+ * Free all memory owned by a stack.
+ *
+ * Parameters:
+ *   stack - Stack to free (structure itself not freed)
+ */
+void stack_free(script_stack_t *stack);
+
+/*
+ * Clear all elements from a stack without freeing the stack itself.
+ *
+ * Parameters:
+ *   stack - Stack to clear
+ */
+void stack_clear(script_stack_t *stack);
+
+/*
+ * Get the number of elements on the stack.
+ *
+ * Parameters:
+ *   stack - Stack to query
+ *
+ * Returns:
+ *   Number of elements
+ */
+size_t stack_size(const script_stack_t *stack);
+
+/*
+ * Check if stack is empty.
+ *
+ * Parameters:
+ *   stack - Stack to check
+ *
+ * Returns:
+ *   ECHO_TRUE if empty, ECHO_FALSE otherwise
+ */
+echo_bool_t stack_empty(const script_stack_t *stack);
+
+/*
+ * Push a byte array onto the stack.
+ * The stack takes ownership of a copy of the data.
+ *
+ * Parameters:
+ *   stack - Stack to push onto
+ *   data  - Data to push (may be NULL if len is 0)
+ *   len   - Length of data
+ *
+ * Returns:
+ *   ECHO_OK on success
+ *   ECHO_ERR_OUT_OF_MEMORY on allocation failure
+ *   ECHO_ERR_SCRIPT_STACK if stack would exceed limit
+ */
+echo_result_t stack_push(script_stack_t *stack, const uint8_t *data, size_t len);
+
+/*
+ * Push a script number onto the stack.
+ *
+ * Parameters:
+ *   stack - Stack to push onto
+ *   num   - Number to push
+ *
+ * Returns:
+ *   ECHO_OK on success, error code on failure
+ */
+echo_result_t stack_push_num(script_stack_t *stack, script_num_t num);
+
+/*
+ * Push a boolean onto the stack.
+ * True is represented as {0x01}, false as {} (empty).
+ *
+ * Parameters:
+ *   stack - Stack to push onto
+ *   val   - Boolean value
+ *
+ * Returns:
+ *   ECHO_OK on success, error code on failure
+ */
+echo_result_t stack_push_bool(script_stack_t *stack, echo_bool_t val);
+
+/*
+ * Pop the top element from the stack.
+ * The caller takes ownership of the element's data.
+ *
+ * Parameters:
+ *   stack - Stack to pop from
+ *   elem  - Output: popped element (caller must free data)
+ *
+ * Returns:
+ *   ECHO_OK on success
+ *   ECHO_ERR_SCRIPT_STACK if stack is empty
+ */
+echo_result_t stack_pop(script_stack_t *stack, stack_element_t *elem);
+
+/*
+ * Pop the top element and interpret it as a number.
+ *
+ * Parameters:
+ *   stack        - Stack to pop from
+ *   num          - Output: the number value
+ *   require_minimal - If true, require minimal encoding (BIP-62 rule 4)
+ *   max_size     - Maximum allowed byte size (usually SCRIPT_NUM_MAX_SIZE)
+ *
+ * Returns:
+ *   ECHO_OK on success
+ *   ECHO_ERR_SCRIPT_STACK if stack is empty
+ *   ECHO_ERR_INVALID_FORMAT if not valid number encoding
+ */
+echo_result_t stack_pop_num(script_stack_t *stack, script_num_t *num,
+                            echo_bool_t require_minimal, size_t max_size);
+
+/*
+ * Pop the top element and interpret it as a boolean.
+ *
+ * Parameters:
+ *   stack - Stack to pop from
+ *   val   - Output: boolean value (true if non-zero)
+ *
+ * Returns:
+ *   ECHO_OK on success
+ *   ECHO_ERR_SCRIPT_STACK if stack is empty
+ */
+echo_result_t stack_pop_bool(script_stack_t *stack, echo_bool_t *val);
+
+/*
+ * Peek at the top element without removing it.
+ *
+ * Parameters:
+ *   stack - Stack to peek
+ *   elem  - Output: pointer to element (do not free, do not modify)
+ *
+ * Returns:
+ *   ECHO_OK on success
+ *   ECHO_ERR_SCRIPT_STACK if stack is empty
+ */
+echo_result_t stack_peek(const script_stack_t *stack, const stack_element_t **elem);
+
+/*
+ * Peek at an element by index from top (0 = top, 1 = second from top, etc.)
+ *
+ * Parameters:
+ *   stack - Stack to peek
+ *   index - Index from top
+ *   elem  - Output: pointer to element (do not free)
+ *
+ * Returns:
+ *   ECHO_OK on success
+ *   ECHO_ERR_OUT_OF_RANGE if index >= stack size
+ */
+echo_result_t stack_peek_at(const script_stack_t *stack, size_t index,
+                            const stack_element_t **elem);
+
+/*
+ * Duplicate the top element.
+ * Implements OP_DUP.
+ *
+ * Parameters:
+ *   stack - Stack to operate on
+ *
+ * Returns:
+ *   ECHO_OK on success, error code on failure
+ */
+echo_result_t stack_dup(script_stack_t *stack);
+
+/*
+ * Remove the top element without returning it.
+ * Implements OP_DROP.
+ *
+ * Parameters:
+ *   stack - Stack to operate on
+ *
+ * Returns:
+ *   ECHO_OK on success
+ *   ECHO_ERR_SCRIPT_STACK if stack is empty
+ */
+echo_result_t stack_drop(script_stack_t *stack);
+
+/*
+ * Swap the top two elements.
+ * Implements OP_SWAP.
+ *
+ * Parameters:
+ *   stack - Stack to operate on
+ *
+ * Returns:
+ *   ECHO_OK on success
+ *   ECHO_ERR_SCRIPT_STACK if stack has fewer than 2 elements
+ */
+echo_result_t stack_swap(script_stack_t *stack);
+
+/*
+ * Rotate the top three elements: (x1 x2 x3 -- x2 x3 x1)
+ * Implements OP_ROT.
+ *
+ * Parameters:
+ *   stack - Stack to operate on
+ *
+ * Returns:
+ *   ECHO_OK on success
+ *   ECHO_ERR_SCRIPT_STACK if stack has fewer than 3 elements
+ */
+echo_result_t stack_rot(script_stack_t *stack);
+
+/*
+ * Copy the second-to-top element to the top.
+ * Implements OP_OVER.
+ *
+ * Parameters:
+ *   stack - Stack to operate on
+ *
+ * Returns:
+ *   ECHO_OK on success
+ *   ECHO_ERR_SCRIPT_STACK if stack has fewer than 2 elements
+ */
+echo_result_t stack_over(script_stack_t *stack);
+
+/*
+ * Remove the second-to-top element.
+ * Implements OP_NIP.
+ *
+ * Parameters:
+ *   stack - Stack to operate on
+ *
+ * Returns:
+ *   ECHO_OK on success
+ *   ECHO_ERR_SCRIPT_STACK if stack has fewer than 2 elements
+ */
+echo_result_t stack_nip(script_stack_t *stack);
+
+/*
+ * Copy the top element and insert it below the second element.
+ * Implements OP_TUCK: (x1 x2 -- x2 x1 x2)
+ *
+ * Parameters:
+ *   stack - Stack to operate on
+ *
+ * Returns:
+ *   ECHO_OK on success
+ *   ECHO_ERR_SCRIPT_STACK if stack has fewer than 2 elements
+ */
+echo_result_t stack_tuck(script_stack_t *stack);
+
+/*
+ * Duplicate top two elements.
+ * Implements OP_2DUP: (x1 x2 -- x1 x2 x1 x2)
+ *
+ * Parameters:
+ *   stack - Stack to operate on
+ *
+ * Returns:
+ *   ECHO_OK on success, error code on failure
+ */
+echo_result_t stack_2dup(script_stack_t *stack);
+
+/*
+ * Duplicate top three elements.
+ * Implements OP_3DUP: (x1 x2 x3 -- x1 x2 x3 x1 x2 x3)
+ *
+ * Parameters:
+ *   stack - Stack to operate on
+ *
+ * Returns:
+ *   ECHO_OK on success, error code on failure
+ */
+echo_result_t stack_3dup(script_stack_t *stack);
+
+/*
+ * Drop top two elements.
+ * Implements OP_2DROP: (x1 x2 -- )
+ *
+ * Parameters:
+ *   stack - Stack to operate on
+ *
+ * Returns:
+ *   ECHO_OK on success, error code on failure
+ */
+echo_result_t stack_2drop(script_stack_t *stack);
+
+/*
+ * Copy elements 3 and 4 to top.
+ * Implements OP_2OVER: (x1 x2 x3 x4 -- x1 x2 x3 x4 x1 x2)
+ *
+ * Parameters:
+ *   stack - Stack to operate on
+ *
+ * Returns:
+ *   ECHO_OK on success, error code on failure
+ */
+echo_result_t stack_2over(script_stack_t *stack);
+
+/*
+ * Swap top two pairs.
+ * Implements OP_2SWAP: (x1 x2 x3 x4 -- x3 x4 x1 x2)
+ *
+ * Parameters:
+ *   stack - Stack to operate on
+ *
+ * Returns:
+ *   ECHO_OK on success, error code on failure
+ */
+echo_result_t stack_2swap(script_stack_t *stack);
+
+/*
+ * Rotate top three pairs.
+ * Implements OP_2ROT: (x1 x2 x3 x4 x5 x6 -- x3 x4 x5 x6 x1 x2)
+ *
+ * Parameters:
+ *   stack - Stack to operate on
+ *
+ * Returns:
+ *   ECHO_OK on success, error code on failure
+ */
+echo_result_t stack_2rot(script_stack_t *stack);
+
+/*
+ * Copy nth element to top.
+ * Implements OP_PICK.
+ *
+ * Parameters:
+ *   stack - Stack to operate on
+ *   n     - Index from top (0 = top element)
+ *
+ * Returns:
+ *   ECHO_OK on success
+ *   ECHO_ERR_OUT_OF_RANGE if n >= stack size
+ */
+echo_result_t stack_pick(script_stack_t *stack, size_t n);
+
+/*
+ * Move nth element to top.
+ * Implements OP_ROLL.
+ *
+ * Parameters:
+ *   stack - Stack to operate on
+ *   n     - Index from top (0 = no-op)
+ *
+ * Returns:
+ *   ECHO_OK on success
+ *   ECHO_ERR_OUT_OF_RANGE if n >= stack size
+ */
+echo_result_t stack_roll(script_stack_t *stack, size_t n);
+
+
+/*
+ * ============================================================================
+ * NUMBER CONVERSION FUNCTIONS
+ * ============================================================================
+ */
+
+/*
+ * Convert a byte array to a script number.
+ *
+ * Bitcoin script numbers use:
+ *   - Little-endian byte order
+ *   - Sign-magnitude representation (high bit of last byte is sign)
+ *   - Minimal encoding (no unnecessary leading zeros)
+ *
+ * Parameters:
+ *   data            - Byte array to convert
+ *   len             - Length of byte array
+ *   num             - Output: the number value
+ *   require_minimal - If true, reject non-minimal encodings
+ *   max_size        - Maximum allowed byte size
+ *
+ * Returns:
+ *   ECHO_OK on success
+ *   ECHO_ERR_INVALID_FORMAT if encoding invalid
+ *   ECHO_ERR_OUT_OF_RANGE if exceeds max_size
+ */
+echo_result_t script_num_decode(const uint8_t *data, size_t len,
+                                script_num_t *num,
+                                echo_bool_t require_minimal, size_t max_size);
+
+/*
+ * Convert a script number to minimal byte array.
+ *
+ * Parameters:
+ *   num  - Number to convert
+ *   buf  - Output buffer (must be at least 9 bytes for safety)
+ *   len  - Output: number of bytes written
+ *
+ * Returns:
+ *   ECHO_OK on success
+ */
+echo_result_t script_num_encode(script_num_t num, uint8_t *buf, size_t *len);
+
+/*
+ * Check if a byte array represents "true" (non-zero) in script.
+ *
+ * Script boolean semantics:
+ *   - Empty array is false
+ *   - Array of all zeros is false
+ *   - Special case: negative zero (0x80) is false
+ *   - Everything else is true
+ *
+ * Parameters:
+ *   data - Byte array to check
+ *   len  - Length of byte array
+ *
+ * Returns:
+ *   ECHO_TRUE if data represents true, ECHO_FALSE otherwise
+ */
+echo_bool_t script_bool(const uint8_t *data, size_t len);
+
+
+/*
+ * ============================================================================
+ * CONTEXT FUNCTIONS
+ * ============================================================================
+ */
+
+/*
+ * Initialize a script execution context.
+ *
+ * Parameters:
+ *   ctx   - Context to initialize
+ *   flags - Verification flags
+ *
+ * Returns:
+ *   ECHO_OK on success, error code on failure
+ */
+echo_result_t script_context_init(script_context_t *ctx, uint32_t flags);
+
+/*
+ * Free all resources owned by a context.
+ *
+ * Parameters:
+ *   ctx - Context to free (structure itself not freed)
+ */
+void script_context_free(script_context_t *ctx);
+
+/*
+ * Get error message for a script error code.
+ *
+ * Parameters:
+ *   err - Error code
+ *
+ * Returns:
+ *   Static string describing the error
+ */
+const char *script_error_string(script_error_t err);
+
+
+/*
+ * ============================================================================
+ * EXISTING FUNCTIONS (from Session 4.1)
+ * ============================================================================
+ */
 
 /*
  * Initialize a mutable script to empty state.
