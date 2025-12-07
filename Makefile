@@ -18,7 +18,8 @@ SRCS    = src/main.c \
           src/consensus/block.c \
           src/consensus/merkle.c \
           src/consensus/script.c \
-          src/consensus/sig_verify.c
+          src/consensus/sig_verify.c \
+          src/consensus/tx_validate.c
 OBJS    = $(SRCS:.c=.o)
 
 # Test files
@@ -39,6 +40,7 @@ TEST_OPCODES         = test/unit/test_opcodes
 TEST_P2SH            = test/unit/test_p2sh
 TEST_TIMELOCK        = test/unit/test_timelock
 TEST_SCRIPT_VECTORS  = test/unit/test_script_vectors
+TEST_TX_VALIDATE     = test/unit/test_tx_validate
 
 .PHONY: all clean test
 
@@ -102,7 +104,10 @@ $(TEST_TIMELOCK): test/unit/test_timelock.c src/consensus/script.c src/consensus
 $(TEST_SCRIPT_VECTORS): test/unit/test_script_vectors.c src/consensus/script.c src/consensus/sig_verify.c src/consensus/tx.c src/consensus/serialize.c src/consensus/merkle.c src/consensus/block.c src/crypto/sha256.c src/crypto/sha1.c src/crypto/ripemd160.c src/crypto/secp256k1.c
 	$(CC) $(CFLAGS) -o $@ $^
 
-test: $(TEST_SHA256) $(TEST_RIPEMD160) $(TEST_SECP256K1_FE) $(TEST_SECP256K1_GROUP) $(TEST_ECDSA) $(TEST_SCHNORR) $(TEST_SIG_VERIFY) $(TEST_SERIALIZE) $(TEST_TX) $(TEST_BLOCK) $(TEST_MERKLE) $(TEST_SCRIPT) $(TEST_STACK) $(TEST_OPCODES) $(TEST_P2SH) $(TEST_TIMELOCK)
+$(TEST_TX_VALIDATE): test/unit/test_tx_validate.c src/consensus/tx_validate.c src/consensus/script.c src/consensus/sig_verify.c src/consensus/tx.c src/consensus/serialize.c src/crypto/sha256.c src/crypto/sha1.c src/crypto/ripemd160.c src/crypto/secp256k1.c
+	$(CC) $(CFLAGS) -o $@ $^
+
+test: $(TEST_SHA256) $(TEST_RIPEMD160) $(TEST_SECP256K1_FE) $(TEST_SECP256K1_GROUP) $(TEST_ECDSA) $(TEST_SCHNORR) $(TEST_SIG_VERIFY) $(TEST_SERIALIZE) $(TEST_TX) $(TEST_BLOCK) $(TEST_MERKLE) $(TEST_SCRIPT) $(TEST_STACK) $(TEST_OPCODES) $(TEST_P2SH) $(TEST_TIMELOCK) $(TEST_TX_VALIDATE)
 	@echo "Running SHA-256 tests..."
 	@./$(TEST_SHA256)
 	@echo ""
@@ -150,7 +155,10 @@ test: $(TEST_SHA256) $(TEST_RIPEMD160) $(TEST_SECP256K1_FE) $(TEST_SECP256K1_GRO
 	@echo ""
 	@echo "Running Timelock tests..."
 	@./$(TEST_TIMELOCK)
+	@echo ""
+	@echo "Running Transaction Validation tests..."
+	@./$(TEST_TX_VALIDATE)
 
 clean:
-	rm -f $(TARGET) $(OBJS) $(TEST_SHA256) $(TEST_RIPEMD160) $(TEST_SECP256K1_FE) $(TEST_SECP256K1_GROUP) $(TEST_ECDSA) $(TEST_SCHNORR) $(TEST_SIG_VERIFY) $(TEST_SERIALIZE) $(TEST_TX) $(TEST_BLOCK) $(TEST_MERKLE) $(TEST_SCRIPT) $(TEST_STACK) $(TEST_OPCODES) $(TEST_P2SH) $(TEST_TIMELOCK) $(TEST_SCRIPT_VECTORS)
+	rm -f $(TARGET) $(OBJS) $(TEST_SHA256) $(TEST_RIPEMD160) $(TEST_SECP256K1_FE) $(TEST_SECP256K1_GROUP) $(TEST_ECDSA) $(TEST_SCHNORR) $(TEST_SIG_VERIFY) $(TEST_SERIALIZE) $(TEST_TX) $(TEST_BLOCK) $(TEST_MERKLE) $(TEST_SCRIPT) $(TEST_STACK) $(TEST_OPCODES) $(TEST_P2SH) $(TEST_TIMELOCK) $(TEST_SCRIPT_VECTORS) $(TEST_TX_VALIDATE)
 	find src -name '*.o' -delete
