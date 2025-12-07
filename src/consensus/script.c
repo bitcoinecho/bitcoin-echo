@@ -1604,6 +1604,192 @@ echo_result_t script_exec_op(script_context_t *ctx, const script_op_t *op)
         return ECHO_OK;
     }
 
+    /*
+     * OP_CHECKLOCKTIMEVERIFY (BIP-65)
+     *
+     * Verify that the transaction's nLockTime is greater than or equal to
+     * the stack top value. This allows creating outputs that can only be
+     * spent after a certain block height or time.
+     *
+     * Behavior:
+     *   1. Stack must not be empty
+     *   2. Stack top must be a valid 5-byte number (allows values up to 2^39-1)
+     *   3. Stack top must be non-negative
+     *   4. Locktime types must match (both block height or both time)
+     *   5. Stack top must be <= transaction locktime
+     *   6. Input sequence must not be final (0xFFFFFFFF)
+     *
+     * Note: Like OP_NOP, this opcode does NOT pop from the stack.
+     */
+    if (opcode == OP_CHECKLOCKTIMEVERIFY) {
+        if (!(ctx->flags & SCRIPT_VERIFY_CHECKLOCKTIMEVERIFY)) {
+            /* If flag not set, treat as NOP2 */
+            if (ctx->flags & SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_NOPS) {
+                return script_set_error(ctx, SCRIPT_ERR_RESERVED_OPCODE);
+            }
+            return ECHO_OK;
+        }
+
+        /* Stack must not be empty */
+        if (stack_empty(&ctx->stack)) {
+            return script_set_error(ctx, SCRIPT_ERR_INVALID_STACK_OPERATION);
+        }
+
+        /* Peek at top value (do not remove) - allow 5 bytes for locktime values */
+        const stack_element_t *top;
+        stack_peek(&ctx->stack, &top);
+
+        /* Decode as number (max 5 bytes for locktime) */
+        script_num_t locktime_val;
+        echo_result_t res = script_num_decode(top->data, top->len, &locktime_val,
+            (ctx->flags & SCRIPT_VERIFY_MINIMALDATA) ? ECHO_TRUE : ECHO_FALSE, 5);
+        if (res != ECHO_OK) {
+            return script_set_error(ctx, SCRIPT_ERR_INVALID_NUMBER_RANGE);
+        }
+
+        /* Must be non-negative */
+        if (locktime_val < 0) {
+            return script_set_error(ctx, SCRIPT_ERR_NEGATIVE_LOCKTIME);
+        }
+
+        /* Need transaction context */
+        if (ctx->tx == NULL) {
+            return script_set_error(ctx, SCRIPT_ERR_UNKNOWN_ERROR);
+        }
+
+        uint32_t tx_locktime = ctx->tx->locktime;
+
+        /*
+         * Check locktime type match:
+         * - Values < LOCKTIME_THRESHOLD (500000000) are block heights
+         * - Values >= LOCKTIME_THRESHOLD are Unix timestamps
+         * Both must be of the same type
+         */
+        echo_bool_t stack_is_time = (locktime_val >= LOCKTIME_THRESHOLD);
+        echo_bool_t tx_is_time = (tx_locktime >= LOCKTIME_THRESHOLD);
+        if (stack_is_time != tx_is_time) {
+            return script_set_error(ctx, SCRIPT_ERR_UNSATISFIED_LOCKTIME);
+        }
+
+        /* Stack value must be <= transaction locktime */
+        if ((uint64_t)locktime_val > tx_locktime) {
+            return script_set_error(ctx, SCRIPT_ERR_UNSATISFIED_LOCKTIME);
+        }
+
+        /* Input sequence must not be final (otherwise locktime is ignored) */
+        if (ctx->input_index >= ctx->tx->input_count) {
+            return script_set_error(ctx, SCRIPT_ERR_UNKNOWN_ERROR);
+        }
+        if (ctx->tx->inputs[ctx->input_index].sequence == TX_SEQUENCE_FINAL) {
+            return script_set_error(ctx, SCRIPT_ERR_UNSATISFIED_LOCKTIME);
+        }
+
+        return ECHO_OK;
+    }
+
+    /*
+     * OP_CHECKSEQUENCEVERIFY (BIP-112)
+     *
+     * Verify that the input's relative locktime (encoded in sequence number)
+     * is satisfied. This allows creating outputs that can only be spent
+     * after a certain amount of time/blocks since the output was confirmed.
+     *
+     * Behavior:
+     *   1. Stack must not be empty
+     *   2. Stack top must be a valid 5-byte number
+     *   3. Stack top must be non-negative
+     *   4. If stack top bit 31 is set, pass (disabled, acts as NOP)
+     *   5. Transaction version must be >= 2
+     *   6. Input sequence bit 31 must not be set (relative locktime enabled)
+     *   7. Locktime types must match (both blocks or both time)
+     *   8. Stack value (masked) must be <= sequence (masked)
+     *
+     * Note: Like OP_NOP, this opcode does NOT pop from the stack.
+     */
+    if (opcode == OP_CHECKSEQUENCEVERIFY) {
+        if (!(ctx->flags & SCRIPT_VERIFY_CHECKSEQUENCEVERIFY)) {
+            /* If flag not set, treat as NOP3 */
+            if (ctx->flags & SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_NOPS) {
+                return script_set_error(ctx, SCRIPT_ERR_RESERVED_OPCODE);
+            }
+            return ECHO_OK;
+        }
+
+        /* Stack must not be empty */
+        if (stack_empty(&ctx->stack)) {
+            return script_set_error(ctx, SCRIPT_ERR_INVALID_STACK_OPERATION);
+        }
+
+        /* Peek at top value (do not remove) - allow 5 bytes */
+        const stack_element_t *top;
+        stack_peek(&ctx->stack, &top);
+
+        /* Decode as number (max 5 bytes) */
+        script_num_t sequence_val;
+        echo_result_t res = script_num_decode(top->data, top->len, &sequence_val,
+            (ctx->flags & SCRIPT_VERIFY_MINIMALDATA) ? ECHO_TRUE : ECHO_FALSE, 5);
+        if (res != ECHO_OK) {
+            return script_set_error(ctx, SCRIPT_ERR_INVALID_NUMBER_RANGE);
+        }
+
+        /* Must be non-negative */
+        if (sequence_val < 0) {
+            return script_set_error(ctx, SCRIPT_ERR_NEGATIVE_LOCKTIME);
+        }
+
+        /*
+         * If bit 31 is set in the stack value, relative locktime is disabled
+         * for this check — treat as successful NOP.
+         */
+        if ((uint32_t)sequence_val & SEQUENCE_LOCKTIME_DISABLE_FLAG) {
+            return ECHO_OK;
+        }
+
+        /* Need transaction context */
+        if (ctx->tx == NULL) {
+            return script_set_error(ctx, SCRIPT_ERR_UNKNOWN_ERROR);
+        }
+
+        /* Transaction version must be >= 2 for relative locktime */
+        if (ctx->tx->version < 2) {
+            return script_set_error(ctx, SCRIPT_ERR_UNSATISFIED_LOCKTIME);
+        }
+
+        /* Get input sequence */
+        if (ctx->input_index >= ctx->tx->input_count) {
+            return script_set_error(ctx, SCRIPT_ERR_UNKNOWN_ERROR);
+        }
+        uint32_t input_sequence = ctx->tx->inputs[ctx->input_index].sequence;
+
+        /*
+         * If input sequence bit 31 is set, relative locktime is disabled
+         * for this input — the script check fails.
+         */
+        if (input_sequence & SEQUENCE_LOCKTIME_DISABLE_FLAG) {
+            return script_set_error(ctx, SCRIPT_ERR_UNSATISFIED_LOCKTIME);
+        }
+
+        /*
+         * Check locktime type match:
+         * - Bit 22 clear: block-based (value = number of blocks)
+         * - Bit 22 set: time-based (value = 512-second granularity)
+         */
+        echo_bool_t stack_is_time = ((uint32_t)sequence_val & SEQUENCE_LOCKTIME_TYPE_FLAG) != 0;
+        echo_bool_t input_is_time = (input_sequence & SEQUENCE_LOCKTIME_TYPE_FLAG) != 0;
+        if (stack_is_time != input_is_time) {
+            return script_set_error(ctx, SCRIPT_ERR_UNSATISFIED_LOCKTIME);
+        }
+
+        /* Compare masked values */
+        uint32_t stack_masked = (uint32_t)sequence_val & SEQUENCE_LOCKTIME_MASK;
+        uint32_t input_masked = input_sequence & SEQUENCE_LOCKTIME_MASK;
+        if (stack_masked > input_masked) {
+            return script_set_error(ctx, SCRIPT_ERR_UNSATISFIED_LOCKTIME);
+        }
+
+        return ECHO_OK;
+    }
+
     /* OP_VERIFY: Pop and fail if false */
     if (opcode == OP_VERIFY) {
         if (stack_empty(&ctx->stack)) {

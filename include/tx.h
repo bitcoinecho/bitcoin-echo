@@ -46,6 +46,22 @@
 #define TX_SEQUENCE_DISABLE_RBF     0xFFFFFFFE
 
 /*
+ * BIP-68 relative locktime sequence constants.
+ * Sequence numbers are interpreted as relative locktimes when:
+ *   - Transaction version >= 2
+ *   - Bit 31 (SEQUENCE_LOCKTIME_DISABLE_FLAG) is NOT set
+ */
+#define SEQUENCE_LOCKTIME_DISABLE_FLAG  (1U << 31)  /* Bit 31: disable relative locktime */
+#define SEQUENCE_LOCKTIME_TYPE_FLAG     (1U << 22)  /* Bit 22: 0=blocks, 1=time (512s units) */
+#define SEQUENCE_LOCKTIME_MASK          0x0000FFFF  /* Bits 0-15: locktime value */
+
+/*
+ * Locktime threshold.
+ * Values below this are block heights, values >= are Unix timestamps.
+ */
+#define LOCKTIME_THRESHOLD  500000000
+
+/*
  * Coinbase constants.
  */
 #define TX_COINBASE_VOUT  0xFFFFFFFF  /* Previous output index for coinbase */
