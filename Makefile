@@ -43,6 +43,7 @@ TEST_TIMELOCK        = test/unit/test_timelock
 TEST_SCRIPT_VECTORS  = test/unit/test_script_vectors
 TEST_TX_VALIDATE     = test/unit/test_tx_validate
 TEST_BLOCK_VALIDATE  = test/unit/test_block_validate
+TEST_COINBASE        = test/unit/test_coinbase
 
 .PHONY: all clean test
 
@@ -109,10 +110,13 @@ $(TEST_SCRIPT_VECTORS): test/unit/test_script_vectors.c src/consensus/script.c s
 $(TEST_TX_VALIDATE): test/unit/test_tx_validate.c src/consensus/tx_validate.c src/consensus/script.c src/consensus/sig_verify.c src/consensus/tx.c src/consensus/serialize.c src/crypto/sha256.c src/crypto/sha1.c src/crypto/ripemd160.c src/crypto/secp256k1.c
 	$(CC) $(CFLAGS) -o $@ $^
 
-$(TEST_BLOCK_VALIDATE): test/unit/test_block_validate.c src/consensus/block_validate.c src/consensus/block.c src/consensus/tx.c src/consensus/serialize.c src/crypto/sha256.c
+$(TEST_BLOCK_VALIDATE): test/unit/test_block_validate.c src/consensus/block_validate.c src/consensus/block.c src/consensus/tx.c src/consensus/serialize.c src/crypto/sha256.c src/consensus/merkle.c
 	$(CC) $(CFLAGS) -o $@ $^
 
-test: $(TEST_SHA256) $(TEST_RIPEMD160) $(TEST_SECP256K1_FE) $(TEST_SECP256K1_GROUP) $(TEST_ECDSA) $(TEST_SCHNORR) $(TEST_SIG_VERIFY) $(TEST_SERIALIZE) $(TEST_TX) $(TEST_BLOCK) $(TEST_MERKLE) $(TEST_SCRIPT) $(TEST_STACK) $(TEST_OPCODES) $(TEST_P2SH) $(TEST_TIMELOCK) $(TEST_TX_VALIDATE) $(TEST_BLOCK_VALIDATE)
+$(TEST_COINBASE): test/unit/test_coinbase.c src/consensus/block_validate.c src/consensus/block.c src/consensus/tx.c src/consensus/serialize.c src/consensus/merkle.c src/crypto/sha256.c
+	$(CC) $(CFLAGS) -o $@ $^
+
+test: $(TEST_SHA256) $(TEST_RIPEMD160) $(TEST_SECP256K1_FE) $(TEST_SECP256K1_GROUP) $(TEST_ECDSA) $(TEST_SCHNORR) $(TEST_SIG_VERIFY) $(TEST_SERIALIZE) $(TEST_TX) $(TEST_BLOCK) $(TEST_MERKLE) $(TEST_SCRIPT) $(TEST_STACK) $(TEST_OPCODES) $(TEST_P2SH) $(TEST_TIMELOCK) $(TEST_TX_VALIDATE) $(TEST_BLOCK_VALIDATE) $(TEST_COINBASE)
 	@echo "Running SHA-256 tests..."
 	@./$(TEST_SHA256)
 	@echo ""
@@ -166,7 +170,10 @@ test: $(TEST_SHA256) $(TEST_RIPEMD160) $(TEST_SECP256K1_FE) $(TEST_SECP256K1_GRO
 	@echo ""
 	@echo "Running Block Header Validation tests..."
 	@./$(TEST_BLOCK_VALIDATE)
+	@echo ""
+	@echo "Running Coinbase Validation tests..."
+	@./$(TEST_COINBASE)
 
 clean:
-	rm -f $(TARGET) $(OBJS) $(TEST_SHA256) $(TEST_RIPEMD160) $(TEST_SECP256K1_FE) $(TEST_SECP256K1_GROUP) $(TEST_ECDSA) $(TEST_SCHNORR) $(TEST_SIG_VERIFY) $(TEST_SERIALIZE) $(TEST_TX) $(TEST_BLOCK) $(TEST_MERKLE) $(TEST_SCRIPT) $(TEST_STACK) $(TEST_OPCODES) $(TEST_P2SH) $(TEST_TIMELOCK) $(TEST_SCRIPT_VECTORS) $(TEST_TX_VALIDATE) $(TEST_BLOCK_VALIDATE)
+	rm -f $(TARGET) $(OBJS) $(TEST_SHA256) $(TEST_RIPEMD160) $(TEST_SECP256K1_FE) $(TEST_SECP256K1_GROUP) $(TEST_ECDSA) $(TEST_SCHNORR) $(TEST_SIG_VERIFY) $(TEST_SERIALIZE) $(TEST_TX) $(TEST_BLOCK) $(TEST_MERKLE) $(TEST_SCRIPT) $(TEST_STACK) $(TEST_OPCODES) $(TEST_P2SH) $(TEST_TIMELOCK) $(TEST_SCRIPT_VECTORS) $(TEST_TX_VALIDATE) $(TEST_BLOCK_VALIDATE) $(TEST_COINBASE)
 	find src -name '*.o' -delete

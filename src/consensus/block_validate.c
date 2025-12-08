@@ -8,6 +8,7 @@
 
 #include "block_validate.h"
 #include "sha256.h"
+#include "merkle.h"
 #include <string.h>
 
 /*
@@ -473,6 +474,14 @@ const char *block_validation_error_str(block_validation_error_t error)
             return "signature operations exceeded";
         case BLOCK_ERR_TX_INVALID:
             return "transaction validation failed";
+        case BLOCK_ERR_COINBASE_INVALID:
+            return "coinbase transaction malformed";
+        case BLOCK_ERR_COINBASE_HEIGHT:
+            return "coinbase height encoding invalid";
+        case BLOCK_ERR_COINBASE_SUBSIDY:
+            return "coinbase output exceeds allowed subsidy";
+        case BLOCK_ERR_WITNESS_COMMITMENT:
+            return "witness commitment invalid";
         default:
             return "unknown error";
     }
@@ -759,6 +768,480 @@ echo_bool_t block_validate_difficulty(const block_header_t *header,
     /* Compare with block's bits */
     if (header->bits != expected_bits) {
         if (error) *error = BLOCK_ERR_DIFFICULTY_MISMATCH;
+        return ECHO_FALSE;
+    }
+
+    return ECHO_TRUE;
+}
+
+/*
+ * ============================================================================
+ * Coinbase Validation Implementation (Session 5.3)
+ * ============================================================================
+ */
+
+/*
+ * Witness commitment magic prefix: aa21a9ed
+ * This is SHA256("witness\0")[0:4]
+ */
+const uint8_t WITNESS_COMMITMENT_PREFIX[4] = { 0xaa, 0x21, 0xa9, 0xed };
+
+/*
+ * Halving interval and initial subsidy.
+ */
+#define HALVING_INTERVAL    210000
+#define INITIAL_SUBSIDY     5000000000LL  /* 50 BTC in satoshis */
+
+/*
+ * Coinbase scriptsig size limits.
+ */
+#define COINBASE_SCRIPTSIG_MIN  2
+#define COINBASE_SCRIPTSIG_MAX  100
+
+/*
+ * Calculate the block subsidy for a given height.
+ */
+satoshi_t coinbase_subsidy(uint32_t height)
+{
+    uint32_t halvings;
+    satoshi_t subsidy;
+
+    halvings = height / HALVING_INTERVAL;
+
+    /*
+     * After 64 halvings, subsidy becomes 0.
+     * This happens around year 2140.
+     * Right-shifting by 64 or more is undefined behavior in C,
+     * so we handle this explicitly.
+     */
+    if (halvings >= 64) {
+        return 0;
+    }
+
+    subsidy = INITIAL_SUBSIDY >> halvings;
+
+    return subsidy;
+}
+
+/*
+ * Parse the block height from a BIP-34 coinbase scriptsig.
+ *
+ * BIP-34 encoding:
+ *   - First byte is the push opcode (number of bytes to push)
+ *   - For heights 0-16: OP_0 through OP_16 (special case)
+ *   - For heights 17+: push N bytes, little-endian
+ *
+ * The height is encoded as a minimally-encoded script number:
+ *   - Height 0: OP_0 (0x00) - actually this shouldn't happen with BIP-34
+ *   - Height 1-16: OP_1 through OP_16 (0x51-0x60)
+ *   - Height 17-127: 0x01 <byte> (1 byte push)
+ *   - Height 128-32767: 0x02 <2 bytes> (2 byte push)
+ *   - Height 32768-8388607: 0x03 <3 bytes> (3 byte push)
+ *   - Height 8388608+: 0x04 <4 bytes> (4 byte push)
+ */
+echo_result_t coinbase_parse_height(const uint8_t *script, size_t script_len,
+                                     uint32_t *height)
+{
+    uint8_t opcode;
+    size_t num_bytes;
+    uint32_t result;
+    size_t i;
+
+    if (script == NULL || height == NULL) {
+        return ECHO_ERR_NULL_PARAM;
+    }
+
+    if (script_len < 1) {
+        return ECHO_ERR_INVALID_FORMAT;
+    }
+
+    opcode = script[0];
+
+    /*
+     * Handle special opcodes OP_0 through OP_16.
+     * OP_0 = 0x00, OP_1 = 0x51, OP_2 = 0x52, ..., OP_16 = 0x60
+     */
+    if (opcode == 0x00) {
+        /* OP_0 represents height 0 (edge case, shouldn't occur after BIP-34) */
+        *height = 0;
+        return ECHO_OK;
+    }
+
+    if (opcode >= 0x51 && opcode <= 0x60) {
+        /* OP_1 through OP_16 */
+        *height = opcode - 0x50;
+        return ECHO_OK;
+    }
+
+    /*
+     * For other cases, the opcode is the number of bytes to read.
+     * BIP-34 heights use 1-4 bytes (heights up to ~4 billion).
+     */
+    if (opcode < 0x01 || opcode > 0x04) {
+        /* Invalid push opcode for height */
+        return ECHO_ERR_INVALID_FORMAT;
+    }
+
+    num_bytes = opcode;
+
+    if (script_len < 1 + num_bytes) {
+        return ECHO_ERR_INVALID_FORMAT;
+    }
+
+    /* Read little-endian number */
+    result = 0;
+    for (i = 0; i < num_bytes; i++) {
+        result |= (uint32_t)script[1 + i] << (8 * i);
+    }
+
+    /*
+     * Check for minimal encoding.
+     * The number should not have leading zero bytes (except for negative sign).
+     * Heights are always positive, so the high bit of the last byte should be 0.
+     */
+    if (num_bytes > 1) {
+        /* Last byte should not be zero (except if needed for sign) */
+        uint8_t last_byte = script[num_bytes];
+        uint8_t prev_byte = script[num_bytes - 1];
+
+        /* If last byte is 0x00, previous byte must have high bit set */
+        if (last_byte == 0x00 && (prev_byte & 0x80) == 0) {
+            return ECHO_ERR_INVALID_FORMAT;
+        }
+    }
+
+    /* Heights must fit in uint32_t and be non-negative */
+    if (num_bytes == 4 && (script[4] & 0x80)) {
+        /* Would be negative in script number encoding */
+        return ECHO_ERR_INVALID_FORMAT;
+    }
+
+    *height = result;
+    return ECHO_OK;
+}
+
+/*
+ * Validate the BIP-34 height encoding in a coinbase.
+ */
+echo_bool_t coinbase_validate_height(const tx_t *coinbase, uint32_t expected_height,
+                                      block_validation_error_t *error)
+{
+    uint32_t parsed_height;
+    echo_result_t result;
+
+    if (coinbase == NULL) {
+        if (error) *error = BLOCK_ERR_COINBASE_INVALID;
+        return ECHO_FALSE;
+    }
+
+    /* BIP-34 only enforced after activation height */
+    if (expected_height < BIP34_HEIGHT) {
+        return ECHO_TRUE;
+    }
+
+    /* Must have at least one input */
+    if (coinbase->input_count == 0) {
+        if (error) *error = BLOCK_ERR_COINBASE_INVALID;
+        return ECHO_FALSE;
+    }
+
+    /* Parse height from scriptsig */
+    result = coinbase_parse_height(
+        coinbase->inputs[0].script_sig,
+        coinbase->inputs[0].script_sig_len,
+        &parsed_height
+    );
+
+    if (result != ECHO_OK) {
+        if (error) *error = BLOCK_ERR_COINBASE_HEIGHT;
+        return ECHO_FALSE;
+    }
+
+    /* Check height matches */
+    if (parsed_height != expected_height) {
+        if (error) *error = BLOCK_ERR_COINBASE_HEIGHT;
+        return ECHO_FALSE;
+    }
+
+    return ECHO_TRUE;
+}
+
+/*
+ * Find the witness commitment output in a coinbase transaction.
+ *
+ * The witness commitment is found in an output script of the form:
+ *   OP_RETURN <commitment>
+ * where <commitment> is 36 bytes: 4-byte prefix (aa21a9ed) + 32-byte hash.
+ *
+ * Per BIP-141, if multiple outputs match, the last one is used.
+ */
+echo_result_t coinbase_find_witness_commitment(const tx_t *coinbase,
+                                                hash256_t *commitment)
+{
+    size_t i;
+    int found = 0;
+    size_t found_idx = 0;
+
+    if (coinbase == NULL || commitment == NULL) {
+        return ECHO_ERR_NULL_PARAM;
+    }
+
+    /*
+     * Search outputs from last to first.
+     * The commitment format is:
+     *   OP_RETURN (0x6a) + OP_PUSHBYTES_36 (0x24) + aa21a9ed + <32-byte hash>
+     * Total: 38 bytes
+     *
+     * Or with different push encoding:
+     *   OP_RETURN (0x6a) + OP_PUSHDATA1 (0x4c) + 0x24 + aa21a9ed + <32-byte hash>
+     * Total: 39 bytes
+     */
+    for (i = 0; i < coinbase->output_count; i++) {
+        const tx_output_t *output = &coinbase->outputs[i];
+        const uint8_t *script = output->script_pubkey;
+        size_t len = output->script_pubkey_len;
+        size_t prefix_offset;
+
+        if (script == NULL || len < 38) {
+            continue;
+        }
+
+        /* Must start with OP_RETURN (0x6a) */
+        if (script[0] != 0x6a) {
+            continue;
+        }
+
+        /* Check for push opcode */
+        if (script[1] == 0x24 && len >= 38) {
+            /* Direct push of 36 bytes */
+            prefix_offset = 2;
+        } else if (script[1] == 0x4c && len >= 39 && script[2] == 0x24) {
+            /* OP_PUSHDATA1 with 36 bytes */
+            prefix_offset = 3;
+        } else {
+            continue;
+        }
+
+        /* Check for witness commitment prefix */
+        if (memcmp(script + prefix_offset, WITNESS_COMMITMENT_PREFIX,
+                   WITNESS_COMMITMENT_PREFIX_LEN) == 0) {
+            found = 1;
+            found_idx = i;
+            /* Don't break - use last matching output per BIP-141 */
+        }
+    }
+
+    if (!found) {
+        return ECHO_ERR_NOT_FOUND;
+    }
+
+    /* Extract the 32-byte commitment hash */
+    {
+        const tx_output_t *output = &coinbase->outputs[found_idx];
+        const uint8_t *script = output->script_pubkey;
+        size_t hash_offset;
+
+        if (script[1] == 0x24) {
+            hash_offset = 2 + WITNESS_COMMITMENT_PREFIX_LEN;
+        } else {
+            hash_offset = 3 + WITNESS_COMMITMENT_PREFIX_LEN;
+        }
+
+        memcpy(commitment->bytes, script + hash_offset, 32);
+    }
+
+    return ECHO_OK;
+}
+
+/*
+ * Check if a block has any witness transactions.
+ */
+static echo_bool_t block_has_witness(const block_t *block)
+{
+    size_t i;
+
+    if (block == NULL || block->txs == NULL) {
+        return ECHO_FALSE;
+    }
+
+    /* Skip coinbase (index 0), check other transactions */
+    for (i = 1; i < block->tx_count; i++) {
+        if (block->txs[i].has_witness) {
+            return ECHO_TRUE;
+        }
+    }
+
+    return ECHO_FALSE;
+}
+
+/*
+ * Validate the witness commitment in a block.
+ */
+echo_bool_t block_validate_witness_commitment(const block_t *block,
+                                               block_validation_error_t *error)
+{
+    hash256_t expected_commitment;
+    hash256_t actual_commitment;
+    hash256_t witness_root;
+    hash256_t witness_nonce;
+    echo_result_t result;
+    const tx_t *coinbase;
+
+    if (block == NULL) {
+        if (error) *error = BLOCK_ERR_WITNESS_COMMITMENT;
+        return ECHO_FALSE;
+    }
+
+    if (block->tx_count == 0 || block->txs == NULL) {
+        if (error) *error = BLOCK_ERR_NO_TRANSACTIONS;
+        return ECHO_FALSE;
+    }
+
+    coinbase = &block->txs[0];
+
+    /* If no witness transactions, commitment is optional */
+    if (!block_has_witness(block)) {
+        /*
+         * Even without witness txs, if there's a commitment, it should be valid.
+         * But we don't require it.
+         */
+        return ECHO_TRUE;
+    }
+
+    /*
+     * Block has witness data, so we must validate the commitment.
+     */
+
+    /* Find the witness commitment in coinbase */
+    result = coinbase_find_witness_commitment(coinbase, &expected_commitment);
+    if (result != ECHO_OK) {
+        if (error) *error = BLOCK_ERR_WITNESS_COMMITMENT;
+        return ECHO_FALSE;
+    }
+
+    /*
+     * Get the witness nonce from coinbase.
+     * The coinbase must have witness data with exactly one 32-byte item.
+     */
+    if (coinbase->input_count == 0) {
+        if (error) *error = BLOCK_ERR_COINBASE_INVALID;
+        return ECHO_FALSE;
+    }
+
+    {
+        const witness_stack_t *ws = &coinbase->inputs[0].witness;
+
+        if (ws->count != 1 || ws->items[0].len != 32) {
+            if (error) *error = BLOCK_ERR_WITNESS_COMMITMENT;
+            return ECHO_FALSE;
+        }
+
+        memcpy(witness_nonce.bytes, ws->items[0].data, 32);
+    }
+
+    /* Compute witness merkle root */
+    result = merkle_root_wtxids(block->txs, block->tx_count, &witness_root);
+    if (result != ECHO_OK) {
+        if (error) *error = BLOCK_ERR_WITNESS_COMMITMENT;
+        return ECHO_FALSE;
+    }
+
+    /* Compute expected commitment: SHA256d(witness_root || witness_nonce) */
+    result = witness_commitment(&witness_root, &witness_nonce, &actual_commitment);
+    if (result != ECHO_OK) {
+        if (error) *error = BLOCK_ERR_WITNESS_COMMITMENT;
+        return ECHO_FALSE;
+    }
+
+    /* Compare */
+    if (memcmp(expected_commitment.bytes, actual_commitment.bytes, 32) != 0) {
+        if (error) *error = BLOCK_ERR_WITNESS_COMMITMENT;
+        return ECHO_FALSE;
+    }
+
+    return ECHO_TRUE;
+}
+
+/*
+ * Validate a coinbase transaction.
+ */
+echo_bool_t coinbase_validate(const tx_t *coinbase, uint32_t height,
+                               satoshi_t max_allowed,
+                               block_validation_error_t *error)
+{
+    size_t i;
+    satoshi_t total_output;
+
+    if (coinbase == NULL) {
+        if (error) *error = BLOCK_ERR_COINBASE_INVALID;
+        return ECHO_FALSE;
+    }
+
+    /* Must be a coinbase transaction */
+    if (!tx_is_coinbase(coinbase)) {
+        if (error) *error = BLOCK_ERR_COINBASE_INVALID;
+        return ECHO_FALSE;
+    }
+
+    /* Check scriptsig size limits */
+    if (coinbase->inputs[0].script_sig_len < COINBASE_SCRIPTSIG_MIN ||
+        coinbase->inputs[0].script_sig_len > COINBASE_SCRIPTSIG_MAX) {
+        if (error) *error = BLOCK_ERR_COINBASE_INVALID;
+        return ECHO_FALSE;
+    }
+
+    /* Validate BIP-34 height encoding */
+    if (!coinbase_validate_height(coinbase, height, error)) {
+        return ECHO_FALSE;
+    }
+
+    /* Calculate total output value */
+    total_output = 0;
+    for (i = 0; i < coinbase->output_count; i++) {
+        satoshi_t value = coinbase->outputs[i].value;
+
+        /* Check for negative values */
+        if (value < 0) {
+            if (error) *error = BLOCK_ERR_COINBASE_SUBSIDY;
+            return ECHO_FALSE;
+        }
+
+        /* Check for overflow */
+        if (total_output > ECHO_MAX_SATOSHIS - value) {
+            if (error) *error = BLOCK_ERR_COINBASE_SUBSIDY;
+            return ECHO_FALSE;
+        }
+
+        total_output += value;
+    }
+
+    /* Check against max allowed (subsidy + fees) */
+    if (total_output > max_allowed) {
+        if (error) *error = BLOCK_ERR_COINBASE_SUBSIDY;
+        return ECHO_FALSE;
+    }
+
+    return ECHO_TRUE;
+}
+
+/*
+ * Check if a coinbase output is mature (spendable).
+ */
+echo_bool_t coinbase_is_mature(uint32_t coinbase_height, uint32_t current_height)
+{
+    /*
+     * Coinbase outputs cannot be spent until COINBASE_MATURITY blocks
+     * have been mined on top of the block containing them.
+     *
+     * If coinbase is in block H, it can be spent starting at block H+100.
+     * So: current_height >= coinbase_height + COINBASE_MATURITY
+     */
+    if (current_height < coinbase_height) {
+        /* Can't spend from future blocks */
+        return ECHO_FALSE;
+    }
+
+    if (current_height - coinbase_height < COINBASE_MATURITY) {
         return ECHO_FALSE;
     }
 

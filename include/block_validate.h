@@ -21,6 +21,7 @@
 
 #include "echo_types.h"
 #include "block.h"
+#include "tx.h"
 
 /*
  * Timestamp validation constants.
@@ -92,6 +93,12 @@ typedef enum {
     BLOCK_ERR_SIZE_EXCEEDED,        /* Block size/weight exceeded */
     BLOCK_ERR_SIGOPS_EXCEEDED,      /* Too many signature operations */
     BLOCK_ERR_TX_INVALID,           /* A transaction failed validation */
+
+    /* Coinbase-specific errors (Session 5.3) */
+    BLOCK_ERR_COINBASE_INVALID,     /* Coinbase transaction malformed */
+    BLOCK_ERR_COINBASE_HEIGHT,      /* BIP-34 height encoding invalid/mismatch */
+    BLOCK_ERR_COINBASE_SUBSIDY,     /* Coinbase output exceeds allowed subsidy */
+    BLOCK_ERR_WITNESS_COMMITMENT,   /* Witness commitment invalid/missing */
 
 } block_validation_error_t;
 
@@ -452,5 +459,163 @@ echo_result_t difficulty_adjust_target(uint32_t old_bits,
  *   ECHO_ERR_NULL_PARAM if target is NULL
  */
 echo_result_t difficulty_get_powlimit(hash256_t *target);
+
+/*
+ * ============================================================================
+ * Coinbase Validation (Session 5.3)
+ * ============================================================================
+ */
+
+/*
+ * Coinbase maturity constants.
+ * Coinbase outputs cannot be spent until this many blocks have passed.
+ */
+#define COINBASE_MATURITY  100
+
+/*
+ * BIP-34 activation height (mainnet).
+ * After this height, coinbase must encode block height as first item.
+ */
+#define BIP34_HEIGHT  227931
+
+/*
+ * Witness commitment magic prefix.
+ * OP_RETURN outputs containing witness commitment start with these 4 bytes.
+ */
+#define WITNESS_COMMITMENT_PREFIX_LEN  4
+extern const uint8_t WITNESS_COMMITMENT_PREFIX[4];
+
+/*
+ * Calculate the block subsidy for a given height.
+ *
+ * The initial subsidy is 50 BTC (5,000,000,000 satoshis).
+ * It halves every 210,000 blocks:
+ *   Heights 0-209,999:        50 BTC
+ *   Heights 210,000-419,999:  25 BTC
+ *   Heights 420,000-629,999:  12.5 BTC
+ *   etc.
+ *
+ * Parameters:
+ *   height - Block height
+ *
+ * Returns:
+ *   Block subsidy in satoshis
+ */
+satoshi_t coinbase_subsidy(uint32_t height);
+
+/*
+ * Parse the block height from a BIP-34 coinbase scriptsig.
+ *
+ * BIP-34 requires the coinbase scriptsig to begin with the block height
+ * encoded as a minimally-encoded script number (CScriptNum).
+ *
+ * Parameters:
+ *   script     - Coinbase scriptsig bytes
+ *   script_len - Length of scriptsig
+ *   height     - Output: extracted block height
+ *
+ * Returns:
+ *   ECHO_OK on success
+ *   ECHO_ERR_NULL_PARAM if script or height is NULL
+ *   ECHO_ERR_INVALID_FORMAT if scriptsig doesn't encode height properly
+ */
+echo_result_t coinbase_parse_height(const uint8_t *script, size_t script_len,
+                                     uint32_t *height);
+
+/*
+ * Validate the BIP-34 height encoding in a coinbase.
+ *
+ * Checks that the scriptsig correctly encodes the expected height.
+ * Only enforced after BIP34_HEIGHT.
+ *
+ * Parameters:
+ *   coinbase        - The coinbase transaction
+ *   expected_height - Expected block height
+ *   error           - Output: specific error (may be NULL)
+ *
+ * Returns:
+ *   ECHO_TRUE if height is valid or BIP-34 not active
+ *   ECHO_FALSE if height encoding is invalid
+ */
+echo_bool_t coinbase_validate_height(const tx_t *coinbase, uint32_t expected_height,
+                                      block_validation_error_t *error);
+
+/*
+ * Find the witness commitment output in a coinbase transaction.
+ *
+ * The witness commitment is in an OP_RETURN output with the format:
+ *   OP_RETURN <commitment>
+ * Where <commitment> starts with the 4-byte magic prefix aa21a9ed
+ * followed by the 32-byte commitment hash.
+ *
+ * Parameters:
+ *   coinbase   - The coinbase transaction
+ *   commitment - Output: 32-byte witness commitment (if found)
+ *
+ * Returns:
+ *   ECHO_OK if commitment found and extracted
+ *   ECHO_ERR_NOT_FOUND if no witness commitment output exists
+ *   ECHO_ERR_NULL_PARAM if coinbase or commitment is NULL
+ */
+echo_result_t coinbase_find_witness_commitment(const tx_t *coinbase,
+                                                hash256_t *commitment);
+
+/*
+ * Validate the witness commitment in a block.
+ *
+ * For blocks with SegWit transactions, verifies:
+ *   1. Coinbase has a witness commitment output
+ *   2. Coinbase witness stack has exactly one 32-byte item (the nonce)
+ *   3. SHA256d(witness_merkle_root || nonce) matches the commitment
+ *
+ * Parameters:
+ *   block - The full block
+ *   error - Output: specific error (may be NULL)
+ *
+ * Returns:
+ *   ECHO_TRUE if witness commitment is valid or not required
+ *   ECHO_FALSE if commitment is invalid
+ */
+echo_bool_t block_validate_witness_commitment(const block_t *block,
+                                               block_validation_error_t *error);
+
+/*
+ * Validate a coinbase transaction.
+ *
+ * Checks:
+ *   1. Exactly one input with null outpoint
+ *   2. BIP-34 height encoding (if active)
+ *   3. Total output value <= subsidy + fees
+ *   4. Scriptsig size within limits (2-100 bytes)
+ *
+ * Parameters:
+ *   coinbase        - The coinbase transaction
+ *   height          - Block height
+ *   max_allowed     - Maximum allowed output value (subsidy + fees)
+ *   error           - Output: specific error (may be NULL)
+ *
+ * Returns:
+ *   ECHO_TRUE if coinbase is valid
+ *   ECHO_FALSE if validation fails
+ */
+echo_bool_t coinbase_validate(const tx_t *coinbase, uint32_t height,
+                               satoshi_t max_allowed,
+                               block_validation_error_t *error);
+
+/*
+ * Check if a coinbase output is mature (spendable).
+ *
+ * Coinbase outputs cannot be spent until COINBASE_MATURITY blocks
+ * have been mined on top of the block containing them.
+ *
+ * Parameters:
+ *   coinbase_height - Height of block containing the coinbase
+ *   current_height  - Current chain height
+ *
+ * Returns:
+ *   ECHO_TRUE if mature (current_height - coinbase_height >= COINBASE_MATURITY)
+ *   ECHO_FALSE if immature
+ */
+echo_bool_t coinbase_is_mature(uint32_t coinbase_height, uint32_t current_height);
 
 #endif /* ECHO_BLOCK_VALIDATE_H */
