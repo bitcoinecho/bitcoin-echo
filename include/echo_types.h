@@ -113,6 +113,10 @@ typedef enum {
     ECHO_ERR_CONSENSUS_SPENT  = -51, /* UTXO already spent */
     ECHO_ERR_CONSENSUS_MATURITY = -52, /* Coinbase not mature */
 
+    /* UTXO errors */
+    ECHO_ERR_EXISTS           = -55, /* Item already exists */
+    ECHO_ERR_NOMEM            = -56, /* Memory allocation failed */
+
     /* Platform errors */
     ECHO_ERR_PLATFORM_IO      = -60, /* I/O operation failed */
     ECHO_ERR_PLATFORM_NET     = -61, /* Network operation failed */
