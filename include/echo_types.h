@@ -117,9 +117,14 @@ typedef enum {
     ECHO_ERR_EXISTS           = -55, /* Item already exists */
     ECHO_ERR_NOMEM            = -56, /* Memory allocation failed */
 
+    /* Chain state errors */
+    ECHO_ERR_INVALID_BLOCK    = -60, /* Block invalid or doesn't connect */
+    ECHO_ERR_UNDERFLOW        = -61, /* Arithmetic underflow */
+    ECHO_ERR_OVERFLOW         = -62, /* Arithmetic overflow */
+
     /* Platform errors */
-    ECHO_ERR_PLATFORM_IO      = -60, /* I/O operation failed */
-    ECHO_ERR_PLATFORM_NET     = -61, /* Network operation failed */
+    ECHO_ERR_PLATFORM_IO      = -70, /* I/O operation failed */
+    ECHO_ERR_PLATFORM_NET     = -71, /* Network operation failed */
 
 } echo_result_t;
 
