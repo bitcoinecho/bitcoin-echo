@@ -6,7 +6,7 @@ A complete, ossified implementation of the Bitcoin protocol in pure C.
 
 ## Status
 
-**Phase 5: Block Validation** — Complete
+**Phase 6: Chain Selection** — Complete
 
 | Component | Status |
 |-----------|--------|
@@ -38,8 +38,13 @@ A complete, ossified implementation of the Bitcoin protocol in pure C.
 | Difficulty Adjustment | Complete |
 | Coinbase Validation | Complete |
 | Full Block Validation | Complete |
+| **Chain Selection** | |
+| UTXO Set | Complete |
+| Chain State | Complete |
+| Chain Selection Algorithm | Complete |
+| Consensus Engine Integration | Complete |
 
-Next: [Phase 6 — Chain Selection](https://github.com/bitcoinecho/bitcoinecho-org/blob/main/ROADMAP.md#phase-6-consensus-engine--chain-selection)
+Next: [Phase 7 — Storage Layer](https://github.com/bitcoinecho/bitcoinecho-org/blob/main/ROADMAP.md#phase-7-storage)
 
 ## Building
 
