@@ -12,24 +12,21 @@
  */
 
 /* Feature test macros must come before any includes */
-#include <_time.h>
-#include <stdint.h>
-#include <sys/_endian.h>
-#include <sys/_pthread/_pthread_cond_t.h>
-#include <sys/_pthread/_pthread_mutex_t.h>
-#include <sys/_pthread/_pthread_t.h>
-#include <sys/_types/_socklen_t.h>
-#include <sys/_types/_ssize_t.h>
-#include <sys/_types/_timeval.h>
 #define _POSIX_C_SOURCE 200809L
 
-#include "platform.h"
-
+/* Standard C headers */
 #include <errno.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+
+/* POSIX types and threading */
+#include <pthread.h>
+#include <sys/types.h>
+#include <time.h>
 
 /* Networking */
 #include <arpa/inet.h>
@@ -38,17 +35,14 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <sys/socket.h>
-#include <sys/types.h>
-
-/* Threading */
-#include <pthread.h>
-#include <time.h>
 
 /* File System */
 #include <sys/stat.h>
 
 /* Time */
 #include <sys/time.h>
+
+#include "platform.h"
 
 /* Entropy - prefer getentropy on modern systems, fallback to /dev/urandom */
 #if defined(__APPLE__) && defined(__MACH__)
