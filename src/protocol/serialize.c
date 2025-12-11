@@ -13,7 +13,6 @@
 #include "protocol.h"
 #include "protocol_serialize.h"
 #include "tx.h"
-#include <_string.h>
 #include <stdint.h>
 #include <string.h>
 
