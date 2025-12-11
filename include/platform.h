@@ -60,6 +60,28 @@ typedef struct plat_cond   plat_cond_t;
  */
 
 /*
+ * Allocate a socket structure.
+ *
+ * Returns:
+ *   Pointer to allocated socket, or NULL on failure
+ *
+ * Notes:
+ *   - Must call plat_socket_free() when done
+ */
+plat_socket_t *plat_socket_alloc(void);
+
+/*
+ * Free a socket structure.
+ *
+ * Parameters:
+ *   sock - Socket to free (may be NULL)
+ *
+ * Notes:
+ *   - Socket should already be closed via plat_socket_close()
+ */
+void plat_socket_free(plat_socket_t *sock);
+
+/*
  * Create a TCP socket.
  *
  * Parameters:

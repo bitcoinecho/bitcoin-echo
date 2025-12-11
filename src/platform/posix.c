@@ -97,6 +97,18 @@ struct plat_cond {
  * ============================================================================
  */
 
+plat_socket_t *plat_socket_alloc(void) {
+    plat_socket_t *sock = malloc(sizeof(plat_socket_t));
+    if (sock) {
+        sock->fd = -1;
+    }
+    return sock;
+}
+
+void plat_socket_free(plat_socket_t *sock) {
+    free(sock);
+}
+
 int plat_socket_create(plat_socket_t *sock)
 {
     int fd;

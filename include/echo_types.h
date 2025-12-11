@@ -132,6 +132,17 @@ typedef enum {
     ECHO_ERR_DB               = -80, /* Database operation failed */
     ECHO_ERR_IO               = -81, /* File I/O error */
 
+    /* Network/protocol errors */
+    ECHO_ERR_NETWORK          = -90, /* Network operation failed */
+    ECHO_ERR_PROTOCOL         = -91, /* Protocol violation */
+    ECHO_ERR_WOULD_BLOCK      = -92, /* Operation would block (not an error) */
+    ECHO_ERR_INVALID_STATE    = -93, /* Invalid state for operation */
+    ECHO_ERR_FULL             = -94, /* Queue or buffer full */
+    ECHO_ERR_INVALID_PARAM    = -95, /* Invalid parameter value */
+
+    /* Success codes */
+    ECHO_SUCCESS              = 0    /* Operation succeeded (alias for ECHO_OK) */
+
 } echo_result_t;
 
 /*
