@@ -3,6 +3,10 @@ echo
 echo.exe
 *.o
 *.obj
+*.dSYM/
+*.a
+*.so
+*.dylib
 
 # Test binaries
 test/unit/test_*

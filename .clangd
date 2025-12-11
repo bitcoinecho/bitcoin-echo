@@ -2,7 +2,45 @@ CompileFlags:
   Add:
     - -Iinclude
     - -std=c11
+    - -pedantic
+    - -Wall
+    - -Wextra
+    - -Werror=implicit-function-declaration
+    - -Werror=incompatible-pointer-types
+    - -Werror=int-conversion
+    - -Wconversion
+    - -Wsign-conversion
+    - -Wcast-qual
+    - -Wcast-align
+    - -Wwrite-strings
+    - -Wundef
+    - -Wshadow
+    - -Wstrict-prototypes
+    - -Wmissing-prototypes
+  Remove:
+    - -std=c++*
+    - -std=gnu*
 
 Diagnostics:
   UnusedIncludes: Strict
   MissingIncludes: Strict
+  # Suppress common noise from system headers
+  Suppress:
+    - 'bugprone-reserved-identifier'
+  ClangTidy:
+    Add:
+      - bugprone-*
+      - cert-*
+      - clang-analyzer-*
+      - misc-*
+      - portability-*
+      - readability-identifier-naming
+      - readability-magic-numbers
+      - readability-simplify-boolean-expr
+    Remove:
+      - bugprone-easily-swappable-parameters
+      - readability-magic-numbers  # We use constants appropriately
+      - cert-err33-c  # Too noisy for our use case
+
+Index:
+  Background: Build
