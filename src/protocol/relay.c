@@ -5,11 +5,12 @@
 #include "relay.h"
 #include "block.h"
 #include "echo_types.h"
+#include "peer.h"
 #include "platform.h"
 #include "protocol.h"
-#include "sha256.h"
 #include "tx.h"
 #include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -21,7 +22,7 @@
 #define MAX_BANS 1000
 
 /* Inventory item expiry time (10 minutes) */
-#define INVENTORY_EXPIRY_MS (10 * 60 * 1000ULL)
+#define INVENTORY_EXPIRY_MS (10ULL * 60ULL * 1000ULL)
 
 /**
  * Banned address entry
@@ -39,9 +40,9 @@ typedef struct {
  * Associates a peer pointer with its inventory state.
  */
 typedef struct {
-  peer_t *peer;                 /* Peer pointer */
-  peer_inventory_t inventory;   /* Inventory state */
-  echo_bool_t active;           /* Whether this slot is in use */
+  peer_t *peer;               /* Peer pointer */
+  peer_inventory_t inventory; /* Inventory state */
+  echo_bool_t active;         /* Whether this slot is in use */
 } peer_entry_t;
 
 /**
@@ -163,7 +164,7 @@ static echo_bool_t check_getdata_rate_limit(peer_inventory_t *inv) {
   inv->getdata_count_recent++;
 
   return inv->getdata_count_recent > MAX_GETDATA_PER_SECOND ? ECHO_TRUE
-                                                             : ECHO_FALSE;
+                                                            : ECHO_FALSE;
 }
 
 /* ========== Public API ========== */
@@ -260,8 +261,8 @@ echo_result_t relay_handle_inv(relay_manager_t *mgr, peer_t *peer,
   /* Build getdata request for items we don't have */
   msg_getdata_t getdata;
   getdata.count = 0;
-  getdata.inventory =
-      calloc(msg->count, sizeof(inv_vector_t)); // NOLINT(bugprone-sizeof-expression)
+  getdata.inventory = calloc(
+      msg->count, sizeof(inv_vector_t)); // NOLINT(bugprone-sizeof-expression)
   if (getdata.inventory == NULL) {
     return ECHO_ERR_MEMORY;
   }
@@ -278,8 +279,8 @@ echo_result_t relay_handle_inv(relay_manager_t *mgr, peer_t *peer,
     if (inv->type == INV_BLOCK || inv->type == INV_WITNESS_BLOCK) {
       /* Check if we have the block */
       block_t block;
-      if (mgr->callbacks.get_block(&inv->hash, &block,
-                                   mgr->callbacks.ctx) == ECHO_SUCCESS) {
+      if (mgr->callbacks.get_block(&inv->hash, &block, mgr->callbacks.ctx) ==
+          ECHO_SUCCESS) {
         have_item = ECHO_TRUE;
       }
     } else if (inv->type == INV_TX || inv->type == INV_WITNESS_TX) {
@@ -335,8 +336,8 @@ echo_result_t relay_handle_getdata(relay_manager_t *mgr, peer_t *peer,
   /* Track items we don't have (for notfound message) */
   msg_notfound_t notfound;
   notfound.count = 0;
-  notfound.inventory =
-      calloc(msg->count, sizeof(inv_vector_t)); // NOLINT(bugprone-sizeof-expression)
+  notfound.inventory = calloc(
+      msg->count, sizeof(inv_vector_t)); // NOLINT(bugprone-sizeof-expression)
   if (notfound.inventory == NULL) {
     return ECHO_ERR_MEMORY;
   }
@@ -349,8 +350,7 @@ echo_result_t relay_handle_getdata(relay_manager_t *mgr, peer_t *peer,
     if (inv->type == INV_BLOCK || inv->type == INV_WITNESS_BLOCK) {
       /* Retrieve and send block */
       block_t block;
-      result = mgr->callbacks.get_block(&inv->hash, &block,
-                                        mgr->callbacks.ctx);
+      result = mgr->callbacks.get_block(&inv->hash, &block, mgr->callbacks.ctx);
       if (result == ECHO_SUCCESS) {
         msg_t msg_out;
         msg_out.type = MSG_BLOCK;

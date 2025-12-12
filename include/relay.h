@@ -41,7 +41,7 @@
 #define BAN_THRESHOLD 100
 
 /* Ban duration in milliseconds (24 hours) */
-#define BAN_DURATION_MS (24 * 60 * 60 * 1000ULL)
+#define BAN_DURATION_MS (24ULL * 60ULL * 60ULL * 1000ULL)
 
 /**
  * Ban reason
