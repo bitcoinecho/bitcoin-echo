@@ -28,6 +28,53 @@
 - Remove unused includes - they mislead future maintainers
 - If you use `uint32_t`, explicitly include `<stdint.h>` even if another header does
 
+## Code Quality Enforcement (Added Phase 8)
+
+**As of Phase 8, all code must pass clangd + clang-tidy analysis before commit:**
+
+### Active Tooling
+- **clangd LSP server** configured via `.clangd` in project root
+- **Format on save** enabled in VSCode
+- **clang-tidy checks** enforce cert-*, bugprone-*, misc-*, portability-*, readability-* rules
+- **Include-cleaner** validates explicit include hygiene (see MissingIncludes/UnusedIncludes diagnostics)
+
+### Writing New Code
+1. Write code and save file - auto-formatting applies immediately
+2. Address ALL clangd warnings shown in Problems panel
+3. Fix include issues: add missing headers, remove unused ones
+4. Only use NOLINT suppressions when absolutely necessary with explanatory comment
+
+### NOLINT Usage Guidelines
+Use NOLINT suppressions **sparingly** and **only** with clear justification:
+
+```c
+// NOLINTBEGIN(cert-err34-c) - sscanf is correct here: we check return value
+// and need exactly 2 hex chars, not all available hex like strtoul would read
+if (sscanf(hex + i * 2, "%02x", &byte) != 1)
+  return 0;
+// NOLINTEND(cert-err34-c)
+```
+
+**Valid reasons for NOLINT:**
+- Platform-specific false positives (see `posix.c` in `.clangd` config)
+- Algorithm requires specific pattern clang-tidy flags incorrectly
+- Bitcoin protocol quirk that appears wrong but is intentional
+
+**Invalid reasons:**
+- "It's too hard to fix properly"
+- "The warning is annoying"
+- "I don't understand the warning"
+
+### Compliance Status
+- **`include/` and `src/` folders**: ✅ Fully compliant - use as reference examples
+- **`test/` folder**: ⚠️  Partially compliant - being incrementally updated
+  - `test/unit/test_block.c` - proper NOLINT usage for sscanf
+  - `test/unit/test_block_validate.c` - include hygiene example
+
+**Key reference files:**
+- `src/platform/posix.c` - platform-specific suppression via .clangd config
+- `.clangd` - project-wide configuration with documented exceptions
+
 ## Context Loading Strategy
 
 To avoid context window limits and ensure focused implementation:
