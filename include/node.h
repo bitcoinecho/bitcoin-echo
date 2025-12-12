@@ -1,0 +1,457 @@
+/**
+ * Bitcoin Echo — Node Lifecycle Management
+ *
+ * This module provides the application layer entry point and orchestration
+ * logic for the Bitcoin Echo node. It coordinates:
+ *
+ *   - Platform layer initialization
+ *   - Database loading and chain state restoration
+ *   - Network startup and peer management
+ *   - Graceful shutdown with resource cleanup
+ *
+ * The node is the integration point where all layers come together:
+ *   - Platform abstraction (sockets, threads, files)
+ *   - Storage layer (block files, UTXO database, block index)
+ *   - Consensus engine (validation, chain state)
+ *   - Protocol layer (P2P messaging, sync, mempool)
+ *
+ * Session 9.1: Node initialization and shutdown sequences.
+ *
+ * Build once. Build right. Stop.
+ */
+
+#ifndef ECHO_NODE_H
+#define ECHO_NODE_H
+
+#include "block_index_db.h"
+#include "blocks_storage.h"
+#include "chainstate.h"
+#include "consensus.h"
+#include "discovery.h"
+#include "echo_config.h"
+#include "echo_types.h"
+#include "mempool.h"
+#include "peer.h"
+#include "sync.h"
+#include "utxo_db.h"
+#include <stdbool.h>
+#include <stdint.h>
+
+/*
+ * ============================================================================
+ * NODE CONFIGURATION
+ * ============================================================================
+ */
+
+/**
+ * Node configuration.
+ *
+ * All configuration is compile-time per project philosophy, but this struct
+ * allows the node to be created with a specific data directory path.
+ */
+typedef struct {
+  char data_dir[512]; /* Path to data directory */
+  uint16_t port;      /* P2P port (default: network-specific) */
+  uint16_t rpc_port;  /* RPC port (default: network-specific) */
+} node_config_t;
+
+/**
+ * Initialize node configuration with defaults.
+ *
+ * Parameters:
+ *   config   - Configuration structure to initialize
+ *   data_dir - Path to data directory (will be created if needed)
+ */
+void node_config_init(node_config_t *config, const char *data_dir);
+
+/*
+ * ============================================================================
+ * NODE STATE
+ * ============================================================================
+ */
+
+/**
+ * Node state enumeration.
+ */
+typedef enum {
+  NODE_STATE_UNINITIALIZED, /* Not yet initialized */
+  NODE_STATE_INITIALIZING,  /* Initialization in progress */
+  NODE_STATE_STARTING,      /* Starting network and services */
+  NODE_STATE_RUNNING,       /* Fully operational */
+  NODE_STATE_STOPPING,      /* Shutdown in progress */
+  NODE_STATE_STOPPED,       /* Fully stopped */
+  NODE_STATE_ERROR          /* Error state */
+} node_state_t;
+
+/**
+ * Node statistics.
+ */
+typedef struct {
+  /* Chain state */
+  uint32_t chain_height;      /* Current chain height */
+  work256_t chain_work;       /* Total accumulated work */
+  size_t utxo_count;          /* Number of UTXOs */
+  size_t block_index_count;   /* Number of known block headers */
+
+  /* Network state */
+  size_t peer_count;          /* Number of connected peers */
+  size_t outbound_peers;      /* Number of outbound connections */
+  size_t inbound_peers;       /* Number of inbound connections */
+
+  /* Mempool state */
+  size_t mempool_size;        /* Number of transactions in mempool */
+  size_t mempool_bytes;       /* Total mempool size in bytes */
+
+  /* Sync state */
+  bool is_syncing;            /* Whether in initial block download */
+  float sync_progress;        /* Sync progress (0.0 - 100.0) */
+
+  /* Timing */
+  uint64_t start_time;        /* Node start time (plat_time_ms) */
+  uint64_t uptime_ms;         /* Uptime in milliseconds */
+} node_stats_t;
+
+/*
+ * ============================================================================
+ * NODE STRUCTURE
+ * ============================================================================
+ */
+
+/**
+ * The node (opaque structure).
+ *
+ * Contains all node state including databases, consensus engine,
+ * network connections, and service threads.
+ */
+typedef struct node node_t;
+
+/*
+ * ============================================================================
+ * NODE LIFECYCLE
+ * ============================================================================
+ */
+
+/**
+ * Create and initialize a node.
+ *
+ * This performs the complete initialization sequence:
+ *   1. Create data directory structure if needed
+ *   2. Open or create databases (UTXO, block index)
+ *   3. Initialize block storage manager
+ *   4. Create and restore consensus engine state
+ *   5. Initialize mempool
+ *   6. Initialize peer discovery
+ *
+ * The node is created but NOT started. Network connections are not
+ * established until node_start() is called.
+ *
+ * Parameters:
+ *   config - Node configuration
+ *
+ * Returns:
+ *   Newly created node, or NULL on failure.
+ *   On failure, call node_get_error() for details (if applicable).
+ */
+node_t *node_create(const node_config_t *config);
+
+/**
+ * Start the node.
+ *
+ * This starts all services:
+ *   1. Start listening for inbound connections
+ *   2. Connect to outbound peers
+ *   3. Begin initial block download if needed
+ *
+ * The node runs in the background using platform threads.
+ * Use node_is_running() to check status and node_get_stats() for progress.
+ *
+ * Parameters:
+ *   node - The node to start
+ *
+ * Returns:
+ *   ECHO_OK on success, error code on failure.
+ */
+echo_result_t node_start(node_t *node);
+
+/**
+ * Stop the node gracefully.
+ *
+ * This performs graceful shutdown:
+ *   1. Stop accepting new connections
+ *   2. Disconnect all peers with proper goodbye
+ *   3. Flush pending database writes
+ *   4. Close databases
+ *   5. Release all resources
+ *
+ * This function blocks until shutdown is complete.
+ *
+ * Parameters:
+ *   node - The node to stop
+ *
+ * Returns:
+ *   ECHO_OK on success, error code on failure.
+ */
+echo_result_t node_stop(node_t *node);
+
+/**
+ * Destroy a node and free all resources.
+ *
+ * If the node is running, this calls node_stop() first.
+ *
+ * Parameters:
+ *   node - The node to destroy (may be NULL)
+ */
+void node_destroy(node_t *node);
+
+/*
+ * ============================================================================
+ * NODE QUERIES
+ * ============================================================================
+ */
+
+/**
+ * Get current node state.
+ *
+ * Parameters:
+ *   node - The node
+ *
+ * Returns:
+ *   Current node state
+ */
+node_state_t node_get_state(const node_t *node);
+
+/**
+ * Check if node is running.
+ *
+ * Parameters:
+ *   node - The node
+ *
+ * Returns:
+ *   true if node is in NODE_STATE_RUNNING
+ */
+bool node_is_running(const node_t *node);
+
+/**
+ * Check if node is in initial block download.
+ *
+ * Parameters:
+ *   node - The node
+ *
+ * Returns:
+ *   true if node is syncing the blockchain
+ */
+bool node_is_syncing(const node_t *node);
+
+/**
+ * Get node statistics.
+ *
+ * Parameters:
+ *   node  - The node
+ *   stats - Output: statistics structure
+ */
+void node_get_stats(const node_t *node, node_stats_t *stats);
+
+/**
+ * Get human-readable string for node state.
+ *
+ * Parameters:
+ *   state - Node state
+ *
+ * Returns:
+ *   Static string describing the state
+ */
+const char *node_state_string(node_state_t state);
+
+/*
+ * ============================================================================
+ * NODE COMPONENT ACCESS
+ * ============================================================================
+ *
+ * These functions provide access to node subsystems for the event loop
+ * and RPC interface (implemented in later sessions).
+ */
+
+/**
+ * Get the consensus engine.
+ *
+ * Parameters:
+ *   node - The node
+ *
+ * Returns:
+ *   Pointer to consensus engine
+ */
+consensus_engine_t *node_get_consensus(node_t *node);
+
+/**
+ * Get the consensus engine (const version).
+ *
+ * Parameters:
+ *   node - The node
+ *
+ * Returns:
+ *   Const pointer to consensus engine
+ */
+const consensus_engine_t *node_get_consensus_const(const node_t *node);
+
+/**
+ * Get the mempool.
+ *
+ * Parameters:
+ *   node - The node
+ *
+ * Returns:
+ *   Pointer to mempool
+ */
+mempool_t *node_get_mempool(node_t *node);
+
+/**
+ * Get the mempool (const version).
+ *
+ * Parameters:
+ *   node - The node
+ *
+ * Returns:
+ *   Const pointer to mempool
+ */
+const mempool_t *node_get_mempool_const(const node_t *node);
+
+/**
+ * Get the sync manager.
+ *
+ * Parameters:
+ *   node - The node
+ *
+ * Returns:
+ *   Pointer to sync manager
+ */
+sync_manager_t *node_get_sync_manager(node_t *node);
+
+/**
+ * Get the peer address manager.
+ *
+ * Parameters:
+ *   node - The node
+ *
+ * Returns:
+ *   Pointer to peer address manager
+ */
+peer_addr_manager_t *node_get_addr_manager(node_t *node);
+
+/**
+ * Get the block storage manager.
+ *
+ * Parameters:
+ *   node - The node
+ *
+ * Returns:
+ *   Pointer to block storage manager
+ */
+block_file_manager_t *node_get_block_storage(node_t *node);
+
+/**
+ * Get the UTXO database.
+ *
+ * Parameters:
+ *   node - The node
+ *
+ * Returns:
+ *   Pointer to UTXO database
+ */
+utxo_db_t *node_get_utxo_db(node_t *node);
+
+/**
+ * Get the block index database.
+ *
+ * Parameters:
+ *   node - The node
+ *
+ * Returns:
+ *   Pointer to block index database
+ */
+block_index_db_t *node_get_block_index_db(node_t *node);
+
+/**
+ * Get the node's data directory path.
+ *
+ * Parameters:
+ *   node - The node
+ *
+ * Returns:
+ *   Path to data directory
+ */
+const char *node_get_data_dir(const node_t *node);
+
+/*
+ * ============================================================================
+ * PEER MANAGEMENT
+ * ============================================================================
+ */
+
+/**
+ * Maximum number of peers the node can track.
+ */
+#define NODE_MAX_PEERS ECHO_MAX_TOTAL_PEERS
+
+/**
+ * Get the number of connected peers.
+ *
+ * Parameters:
+ *   node - The node
+ *
+ * Returns:
+ *   Number of connected peers
+ */
+size_t node_get_peer_count(const node_t *node);
+
+/**
+ * Get a connected peer by index.
+ *
+ * Parameters:
+ *   node  - The node
+ *   index - Peer index (0 to node_get_peer_count() - 1)
+ *
+ * Returns:
+ *   Pointer to peer, or NULL if index out of range
+ */
+peer_t *node_get_peer(node_t *node, size_t index);
+
+/**
+ * Disconnect a peer.
+ *
+ * Parameters:
+ *   node   - The node
+ *   peer   - Peer to disconnect
+ *   reason - Disconnect reason
+ */
+void node_disconnect_peer(node_t *node, peer_t *peer,
+                          peer_disconnect_reason_t reason);
+
+/*
+ * ============================================================================
+ * SIGNAL HANDLING
+ * ============================================================================
+ */
+
+/**
+ * Request node shutdown.
+ *
+ * This is signal-safe and can be called from a signal handler.
+ * The node will begin graceful shutdown at the next opportunity.
+ *
+ * Parameters:
+ *   node - The node
+ */
+void node_request_shutdown(node_t *node);
+
+/**
+ * Check if shutdown has been requested.
+ *
+ * Parameters:
+ *   node - The node
+ *
+ * Returns:
+ *   true if shutdown has been requested
+ */
+bool node_shutdown_requested(const node_t *node);
+
+#endif /* ECHO_NODE_H */
