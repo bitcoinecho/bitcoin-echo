@@ -1,9 +1,12 @@
 # Bitcoin Echo
 
+[![Version](https://img.shields.io/badge/version-0.1-orange.svg)](https://github.com/bitcoinecho/bitcoin-echo/releases)
 [![Tests](https://github.com/bitcoinecho/bitcoin-echo/actions/workflows/test.yml/badge.svg)](https://github.com/bitcoinecho/bitcoin-echo/actions/workflows/test.yml)
 [![C Standard](https://img.shields.io/badge/C-C11-blue.svg)](https://en.wikipedia.org/wiki/C11_(C_standard_revision))
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Dependencies](https://img.shields.io/badge/dependencies-none-success.svg)]()
+
+> **⚠️ Development Status**: Bitcoin Echo is currently under active development (v0.1). The codebase is not yet feature-complete and should not be used in production. See [Status](#status) below for implementation progress.
 
 A complete, ossified implementation of the Bitcoin protocol in pure C.
 
