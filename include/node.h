@@ -428,6 +428,72 @@ void node_disconnect_peer(node_t *node, peer_t *peer,
 
 /*
  * ============================================================================
+ * EVENT LOOP PROCESSING
+ * ============================================================================
+ */
+
+/**
+ * Process peer connections and messages.
+ *
+ * This is the main peer processing routine for the event loop:
+ *   1. Accept new inbound connections (if listening)
+ *   2. Check outbound connection attempts
+ *   3. Receive and process messages from all connected peers
+ *   4. Send queued messages to peers
+ *   5. Disconnect unresponsive or misbehaving peers
+ *
+ * This function should be called regularly from the main event loop.
+ *
+ * Parameters:
+ *   node - The node
+ *
+ * Returns:
+ *   ECHO_OK on success
+ */
+echo_result_t node_process_peers(node_t *node);
+
+/**
+ * Process received blocks.
+ *
+ * This validates and applies received blocks to the chain:
+ *   1. Validate block headers and transactions
+ *   2. Update chain state and UTXO set
+ *   3. Handle reorganizations
+ *   4. Update sync progress
+ *   5. Relay new blocks to peers
+ *
+ * This function should be called regularly from the main event loop.
+ *
+ * Parameters:
+ *   node - The node
+ *
+ * Returns:
+ *   ECHO_OK on success
+ */
+echo_result_t node_process_blocks(node_t *node);
+
+/**
+ * Perform periodic maintenance tasks.
+ *
+ * This handles timer-based operations:
+ *   1. Ping peers to keep connections alive
+ *   2. Request new blocks/headers if syncing stalled
+ *   3. Evict stale mempool transactions
+ *   4. Update sync progress metrics
+ *   5. Cleanup disconnected peers
+ *
+ * This function should be called at regular intervals (e.g., every second).
+ *
+ * Parameters:
+ *   node - The node
+ *
+ * Returns:
+ *   ECHO_OK on success
+ */
+echo_result_t node_maintenance(node_t *node);
+
+/*
+ * ============================================================================
  * SIGNAL HANDLING
  * ============================================================================
  */

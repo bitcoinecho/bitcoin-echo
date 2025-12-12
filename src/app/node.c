@@ -31,7 +31,9 @@
 #include "mempool.h"
 #include "peer.h"
 #include "platform.h"
+#include "protocol.h"
 #include "sync.h"
+#include "tx.h"
 #include "utxo_db.h"
 #include <stdbool.h>
 #include <stdint.h>
@@ -742,6 +744,399 @@ void node_disconnect_peer(node_t *node, peer_t *peer,
     peer_disconnect(peer, reason, NULL);
     node->peer_count--;
   }
+}
+
+/*
+ * ============================================================================
+ * EVENT LOOP PROCESSING
+ * ============================================================================
+ */
+
+/**
+ * Generate random 64-bit nonce using platform random bytes.
+ */
+static uint64_t generate_nonce(void) {
+  uint64_t nonce;
+  plat_random_bytes((uint8_t *)&nonce, sizeof(nonce));
+  return nonce;
+}
+
+/**
+ * Handle a received message from a peer.
+ *
+ * Dispatches message to appropriate handler based on type.
+ */
+static void node_handle_peer_message(node_t *node, peer_t *peer,
+                                     const msg_t *msg) {
+  if (node == NULL || peer == NULL || msg == NULL) {
+    return;
+  }
+
+  switch (msg->type) {
+  case MSG_VERSION:
+    /* Version handled during handshake in peer.c */
+    break;
+
+  case MSG_VERACK:
+    /* Verack handled during handshake in peer.c */
+    /* When handshake complete, add peer to sync manager */
+    if (peer_is_ready(peer) && node->sync_mgr != NULL) {
+      sync_add_peer(node->sync_mgr, peer, peer->start_height);
+    }
+    break;
+
+  case MSG_PING:
+    /* Respond with pong */
+    {
+      msg_t pong;
+      memset(&pong, 0, sizeof(pong));
+      pong.type = MSG_PONG;
+      pong.payload.pong.nonce = msg->payload.ping.nonce;
+      peer_queue_message(peer, &pong);
+    }
+    break;
+
+  case MSG_PONG:
+    /* Pong received - peer is alive */
+    break;
+
+  case MSG_ADDR:
+    /* Update address manager with new addresses */
+    if (msg->payload.addr.count > 0 && msg->payload.addr.addresses != NULL) {
+      discovery_add_addresses(&node->addr_manager,
+                              msg->payload.addr.addresses,
+                              msg->payload.addr.count);
+    }
+    break;
+
+  case MSG_GETADDR:
+    /* Send known addresses to peer */
+    {
+      /* Allocate buffer for addresses to send */
+      #define MAX_ADDR_TO_SEND 1000
+      net_addr_t addrs[MAX_ADDR_TO_SEND];
+      size_t count = discovery_select_addresses_to_advertise(
+          &node->addr_manager, addrs, MAX_ADDR_TO_SEND);
+
+      if (count > 0) {
+        msg_t addr_msg;
+        memset(&addr_msg, 0, sizeof(addr_msg));
+        addr_msg.type = MSG_ADDR;
+        addr_msg.payload.addr.count = count;
+        addr_msg.payload.addr.addresses = addrs;
+        peer_queue_message(peer, &addr_msg);
+      }
+      #undef MAX_ADDR_TO_SEND
+    }
+    break;
+
+  case MSG_HEADERS:
+    /* Forward to sync manager */
+    if (node->sync_mgr != NULL && msg->payload.headers.count > 0) {
+      sync_handle_headers(node->sync_mgr, peer, msg->payload.headers.headers,
+                          msg->payload.headers.count);
+    }
+    break;
+
+  case MSG_BLOCK:
+    /* Forward to sync manager */
+    if (node->sync_mgr != NULL) {
+      sync_handle_block(node->sync_mgr, peer, &msg->payload.block.block);
+    }
+    break;
+
+  case MSG_TX:
+    /* Forward to mempool */
+    if (node->mempool != NULL) {
+      mempool_accept_result_t result;
+      mempool_add(node->mempool, &msg->payload.tx.tx, &result);
+      /* Ignore result - transaction may already be in mempool */
+    }
+    break;
+
+  case MSG_INV:
+    /* Inventory announcement - request interesting items */
+    if (msg->payload.inv.count > 0 && msg->payload.inv.inventory != NULL) {
+      /* Allocate buffer for getdata inventory vectors */
+      #define MAX_GETDATA_ITEMS 1000
+      inv_vector_t items[MAX_GETDATA_ITEMS];
+      size_t item_count = 0;
+
+      /* Request blocks and transactions we don't have */
+      for (size_t i = 0; i < msg->payload.inv.count && item_count < MAX_GETDATA_ITEMS; i++) {
+        const inv_vector_t *inv = &msg->payload.inv.inventory[i];
+
+        /* For Session 9.2, request all announced items */
+        /* Filtering logic (already have? want?) will be added in later sessions */
+        memcpy(&items[item_count], inv, sizeof(inv_vector_t));
+        item_count++;
+      }
+
+      if (item_count > 0) {
+        msg_t getdata;
+        memset(&getdata, 0, sizeof(getdata));
+        getdata.type = MSG_GETDATA;
+        getdata.payload.getdata.count = item_count;
+        getdata.payload.getdata.inventory = items;
+        peer_queue_message(peer, &getdata);
+      }
+      #undef MAX_GETDATA_ITEMS
+    }
+    break;
+
+  case MSG_GETDATA:
+    /* Peer requesting data from us */
+    if (msg->payload.getdata.count > 0 && msg->payload.getdata.inventory != NULL) {
+      for (size_t i = 0; i < msg->payload.getdata.count; i++) {
+        const inv_vector_t *inv = &msg->payload.getdata.inventory[i];
+
+        if (inv->type == INV_BLOCK || inv->type == INV_WITNESS_BLOCK) {
+          /* Serving blocks from storage - deferred to later sessions */
+          /* For now, we focus on syncing, not serving */
+        } else if (inv->type == INV_TX || inv->type == INV_WITNESS_TX) {
+          /* Try to send transaction from mempool */
+          if (node->mempool != NULL) {
+            const mempool_entry_t *entry =
+                mempool_lookup(node->mempool, &inv->hash);
+            if (entry != NULL) {
+              msg_t tx_msg;
+              memset(&tx_msg, 0, sizeof(tx_msg));
+              tx_msg.type = MSG_TX;
+              memcpy(&tx_msg.payload.tx.tx, &entry->tx, sizeof(tx_t));
+              peer_queue_message(peer, &tx_msg);
+            }
+          }
+        }
+      }
+    }
+    break;
+
+  case MSG_NOTFOUND:
+    /* Peer doesn't have requested data - noted but no action needed */
+    break;
+
+  case MSG_REJECT:
+    /* Peer rejected something we sent - log for debugging */
+    break;
+
+  case MSG_SENDHEADERS:
+  case MSG_SENDCMPCT:
+  case MSG_FEEFILTER:
+  case MSG_WTXIDRELAY:
+    /* Feature negotiation messages - acknowledged but not implemented */
+    break;
+
+  case MSG_GETHEADERS:
+  case MSG_GETBLOCKS:
+    /* Peer requesting headers/blocks from us - not yet implemented */
+    break;
+
+  default:
+    /* Unknown message type - ignore */
+    break;
+  }
+}
+
+echo_result_t node_process_peers(node_t *node) {
+  if (node == NULL) {
+    return ECHO_ERR_INVALID_PARAM;
+  }
+
+  if (node->state != NODE_STATE_RUNNING) {
+    return ECHO_OK; /* Not running, nothing to process */
+  }
+
+  /* Step 1: Accept new inbound connections if listening */
+  if (node->is_listening && node->listen_socket != NULL) {
+    /* Find empty peer slot for inbound connection */
+    for (size_t i = 0; i < NODE_MAX_PEERS; i++) {
+      peer_t *peer = &node->peers[i];
+      if (!peer_is_connected(peer)) {
+        /* Try to accept connection (non-blocking) */
+        uint64_t nonce = generate_nonce();
+        echo_result_t result = peer_accept(peer, node->listen_socket, nonce);
+        if (result == ECHO_OK) {
+          node->peer_count++;
+
+          /* Send version message to start handshake */
+          uint32_t our_height = 0;
+          if (node->consensus != NULL) {
+            our_height = consensus_get_height(node->consensus);
+          }
+
+          /* Service flags: NODE_NETWORK (1) */
+          uint64_t services = 1;
+          peer_send_version(peer, services, (int32_t)our_height, true);
+        }
+        break; /* Only accept one per loop iteration */
+      }
+    }
+  }
+
+  /* Step 2: Process all connected peers */
+  for (size_t i = 0; i < NODE_MAX_PEERS; i++) {
+    peer_t *peer = &node->peers[i];
+
+    if (!peer_is_connected(peer)) {
+      continue;
+    }
+
+    /* Step 2a: Receive and process messages */
+    msg_t msg;
+    echo_result_t result = peer_receive(peer, &msg);
+
+    if (result == ECHO_OK) {
+      /* Message received - handle it */
+      node_handle_peer_message(node, peer, &msg);
+    } else if (result == ECHO_ERR_WOULD_BLOCK) {
+      /* No message available - not an error */
+    } else {
+      /* Network or protocol error - disconnect peer */
+      peer_disconnect_reason_t reason = (result == ECHO_ERR_PROTOCOL)
+                                            ? PEER_DISCONNECT_PROTOCOL_ERROR
+                                            : PEER_DISCONNECT_NETWORK_ERROR;
+      node_disconnect_peer(node, peer, reason);
+      continue;
+    }
+
+    /* Step 2b: Send queued messages */
+    result = peer_send_queued(peer);
+    if (result != ECHO_OK && result != ECHO_ERR_WOULD_BLOCK) {
+      /* Send failed - disconnect peer */
+      node_disconnect_peer(node, peer, PEER_DISCONNECT_NETWORK_ERROR);
+      continue;
+    }
+
+    /* Step 2c: Check for timeout */
+    uint64_t now = plat_time_ms();
+    uint64_t timeout_threshold = 20 * 60 * 1000; /* 20 minutes */
+
+    if (now - peer->last_recv > timeout_threshold) {
+      node_disconnect_peer(node, peer, PEER_DISCONNECT_TIMEOUT);
+    }
+  }
+
+  return ECHO_OK;
+}
+
+echo_result_t node_process_blocks(node_t *node) {
+  if (node == NULL) {
+    return ECHO_ERR_INVALID_PARAM;
+  }
+
+  if (node->state != NODE_STATE_RUNNING) {
+    return ECHO_OK;
+  }
+
+  /* The sync manager handles block validation and chain updates internally
+   * when sync_handle_block() is called from message processing.
+   *
+   * This function serves as a hook for any additional block processing
+   * that needs to happen outside of direct message handling, such as:
+   * - Reorganization notifications
+   * - Block relay to other peers
+   * - Mempool cleanup after new blocks
+   *
+   * For Session 9.2, the sync manager does the heavy lifting.
+   * Additional logic can be added here in future sessions if needed.
+   */
+
+  return ECHO_OK;
+}
+
+echo_result_t node_maintenance(node_t *node) {
+  if (node == NULL) {
+    return ECHO_ERR_INVALID_PARAM;
+  }
+
+  if (node->state != NODE_STATE_RUNNING) {
+    return ECHO_OK;
+  }
+
+  uint64_t now = plat_time_ms();
+
+  /* Task 1: Ping peers to keep connections alive */
+  for (size_t i = 0; i < NODE_MAX_PEERS; i++) {
+    peer_t *peer = &node->peers[i];
+
+    if (!peer_is_ready(peer)) {
+      continue;
+    }
+
+    /* Send ping every 2 minutes if we haven't sent anything recently */
+    uint64_t ping_interval = 2ULL * 60 * 1000; /* 2 minutes */
+    if (now - peer->last_send > ping_interval) {
+      msg_t ping;
+      memset(&ping, 0, sizeof(ping));
+      ping.type = MSG_PING;
+      ping.payload.ping.nonce = generate_nonce();
+      peer_queue_message(peer, &ping);
+    }
+  }
+
+  /* Task 2: Tick sync manager for timeout processing and retries */
+  if (node->sync_mgr != NULL) {
+    sync_tick(node->sync_mgr);
+    sync_process_timeouts(node->sync_mgr);
+  }
+
+  /* Task 3: Evict stale mempool transactions (future session) */
+  /* Mempool maintenance will be added when mempool_tick() is implemented */
+
+  /* Task 4: Attempt outbound connections if below target */
+  size_t outbound_count = 0;
+  for (size_t i = 0; i < NODE_MAX_PEERS; i++) {
+    if (peer_is_connected(&node->peers[i]) && !node->peers[i].inbound) {
+      outbound_count++;
+    }
+  }
+
+  if (outbound_count < ECHO_MAX_OUTBOUND_PEERS) {
+    /* Try to make one new outbound connection */
+    net_addr_t addr;
+    echo_result_t addr_result =
+        discovery_select_outbound_address(&node->addr_manager, &addr);
+    if (addr_result == ECHO_OK) {
+      /* Find empty slot */
+      for (size_t i = 0; i < NODE_MAX_PEERS; i++) {
+        peer_t *peer = &node->peers[i];
+        if (!peer_is_connected(peer)) {
+          /* Convert IPv4-mapped IPv6 address to string */
+          char ip_str[64];
+          snprintf(ip_str, sizeof(ip_str), "%d.%d.%d.%d", addr.ip[12],
+                   addr.ip[13], addr.ip[14], addr.ip[15]);
+
+          uint64_t nonce = generate_nonce();
+          echo_result_t result = peer_connect(peer, ip_str, addr.port, nonce);
+          if (result == ECHO_OK) {
+            node->peer_count++;
+
+            /* Send version message to start handshake */
+            uint32_t our_height = 0;
+            if (node->consensus != NULL) {
+              our_height = consensus_get_height(node->consensus);
+            }
+
+            /* Service flags: NODE_NETWORK (1) */
+            uint64_t services = 1;
+            peer_send_version(peer, services, (int32_t)our_height, true);
+          }
+          break; /* Only one connection attempt per maintenance cycle */
+        }
+      }
+    }
+  }
+
+  /* Task 5: Cleanup disconnected peers */
+  for (size_t i = 0; i < NODE_MAX_PEERS; i++) {
+    peer_t *peer = &node->peers[i];
+    if (peer->state == PEER_STATE_DISCONNECTED && peer->socket != NULL) {
+      /* Ensure socket is fully cleaned up */
+      peer_init(peer); /* Re-initialize to clean state */
+    }
+  }
+
+  return ECHO_OK;
 }
 
 /*

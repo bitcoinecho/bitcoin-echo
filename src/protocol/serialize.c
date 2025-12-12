@@ -727,6 +727,15 @@ echo_result_t msg_addr_deserialize(const uint8_t *buf, size_t buf_len,
   msg->count = (size_t)count;
   msg->addresses = NULL; /* Caller must allocate */
 
+  /* TODO(Session 9.3+): Implement full addr deserialization using read_net_addr()
+   * Currently this is a stub that only reads the count and calculates consumed bytes.
+   * When full peer discovery is needed, this should:
+   * 1. Allocate msg->addresses array (or use caller-provided buffer)
+   * 2. Loop through and call read_net_addr() for each address
+   * 3. Return the fully populated address list
+   * The read_net_addr() helper function is already implemented above.
+   */
+
   if (consumed) {
     /* Each address is 30 bytes (4 timestamp + 8 services + 16 ip + 2 port) */
     size_t addr_bytes = msg->count * 30;
