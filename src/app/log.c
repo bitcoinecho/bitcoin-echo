@@ -17,13 +17,11 @@
 #include "log.h"
 
 #include "platform.h"
-#include <_time.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#include <sys/_types/_va_list.h>
 #include <time.h>
 
 /*
