@@ -8,10 +8,9 @@
 
 #include <stdio.h>
 #include <string.h>
+#include "test_utils.h"
 #include "secp256k1.h"
 
-static int tests_run = 0;
-static int tests_passed = 0;
 
 static int hex_to_bytes(uint8_t *out, const char *hex, size_t out_len)
 {
@@ -41,9 +40,6 @@ static int hex_to_bytes(uint8_t *out, const char *hex, size_t out_len)
 static void test_der_valid(void)
 {
     secp256k1_ecdsa_sig_t sig;
-
-    tests_run++;
-
     /*
      * Valid DER signature from Bitcoin transaction
      * r = 0x7a...e7, s = 0x7b...6d
@@ -63,19 +59,17 @@ static void test_der_valid(void)
     };
 
     if (secp256k1_ecdsa_sig_parse_der(&sig, der, sizeof(der))) {
-        tests_passed++;
-        printf("  [PASS] Valid DER signature (64-byte r,s)\n");
+        test_case("Valid DER signature (64-byte r,s)");
+        test_pass();
     } else {
-        printf("  [FAIL] Valid DER signature (64-byte r,s)\n");
+        test_case("Valid DER signature (64-byte r,s)");
+        test_fail("Valid DER signature (64-byte r,s)");
     }
 }
 
 static void test_der_with_leading_zero(void)
 {
     secp256k1_ecdsa_sig_t sig;
-
-    tests_run++;
-
     /*
      * Valid signature with leading zero on r (high bit set)
      */
@@ -95,19 +89,17 @@ static void test_der_with_leading_zero(void)
     };
 
     if (secp256k1_ecdsa_sig_parse_der(&sig, der, sizeof(der))) {
-        tests_passed++;
-        printf("  [PASS] DER with required leading zero\n");
+        test_case("DER with required leading zero");
+        test_pass();
     } else {
-        printf("  [FAIL] DER with required leading zero\n");
+        test_case("DER with required leading zero");
+        test_fail("DER with required leading zero");
     }
 }
 
 static void test_der_short_r(void)
 {
     secp256k1_ecdsa_sig_t sig;
-
-    tests_run++;
-
     /*
      * Valid signature with short r (< 32 bytes)
      */
@@ -123,19 +115,17 @@ static void test_der_short_r(void)
     };
 
     if (secp256k1_ecdsa_sig_parse_der(&sig, der, sizeof(der))) {
-        tests_passed++;
-        printf("  [PASS] DER with short r\n");
+        test_case("DER with short r");
+        test_pass();
     } else {
-        printf("  [FAIL] DER with short r\n");
+        test_case("DER with short r");
+        test_fail("DER with short r");
     }
 }
 
 static void test_der_invalid_tag(void)
 {
     secp256k1_ecdsa_sig_t sig;
-
-    tests_run++;
-
     /* Wrong SEQUENCE tag */
     uint8_t der[] = {
         0x31, 0x06,  /* Wrong tag (should be 0x30) */
@@ -144,19 +134,17 @@ static void test_der_invalid_tag(void)
     };
 
     if (!secp256k1_ecdsa_sig_parse_der(&sig, der, sizeof(der))) {
-        tests_passed++;
-        printf("  [PASS] Reject invalid SEQUENCE tag\n");
+        test_case("Reject invalid SEQUENCE tag");
+        test_pass();
     } else {
-        printf("  [FAIL] Reject invalid SEQUENCE tag\n");
+        test_case("Reject invalid SEQUENCE tag");
+        test_fail("Reject invalid SEQUENCE tag");
     }
 }
 
 static void test_der_unnecessary_zero(void)
 {
     secp256k1_ecdsa_sig_t sig;
-
-    tests_run++;
-
     /*
      * Invalid: unnecessary leading zero (high bit not set)
      */
@@ -169,19 +157,17 @@ static void test_der_unnecessary_zero(void)
     };
 
     if (!secp256k1_ecdsa_sig_parse_der(&sig, der, sizeof(der))) {
-        tests_passed++;
-        printf("  [PASS] Reject unnecessary leading zero\n");
+        test_case("Reject unnecessary leading zero");
+        test_pass();
     } else {
-        printf("  [FAIL] Reject unnecessary leading zero\n");
+        test_case("Reject unnecessary leading zero");
+        test_fail("Reject unnecessary leading zero");
     }
 }
 
 static void test_der_negative(void)
 {
     secp256k1_ecdsa_sig_t sig;
-
-    tests_run++;
-
     /* Invalid: negative integer (high bit set, no leading zero) */
     uint8_t der[] = {
         0x30, 0x06,
@@ -192,19 +178,17 @@ static void test_der_negative(void)
     };
 
     if (!secp256k1_ecdsa_sig_parse_der(&sig, der, sizeof(der))) {
-        tests_passed++;
-        printf("  [PASS] Reject negative integer\n");
+        test_case("Reject negative integer");
+        test_pass();
     } else {
-        printf("  [FAIL] Reject negative integer\n");
+        test_case("Reject negative integer");
+        test_fail("Reject negative integer");
     }
 }
 
 static void test_der_zero_r(void)
 {
     secp256k1_ecdsa_sig_t sig;
-
-    tests_run++;
-
     /* Invalid: r = 0 */
     uint8_t der[] = {
         0x30, 0x06,
@@ -215,19 +199,17 @@ static void test_der_zero_r(void)
     };
 
     if (!secp256k1_ecdsa_sig_parse_der(&sig, der, sizeof(der))) {
-        tests_passed++;
-        printf("  [PASS] Reject r = 0\n");
+        test_case("Reject r = 0");
+        test_pass();
     } else {
-        printf("  [FAIL] Reject r = 0\n");
+        test_case("Reject r = 0");
+        test_fail("Reject r = 0");
     }
 }
 
 static void test_der_length_mismatch(void)
 {
     secp256k1_ecdsa_sig_t sig;
-
-    tests_run++;
-
     /* Invalid: length byte doesn't match content */
     uint8_t der[] = {
         0x30, 0x07,  /* Claims 7 bytes but only 6 follow */
@@ -236,19 +218,17 @@ static void test_der_length_mismatch(void)
     };
 
     if (!secp256k1_ecdsa_sig_parse_der(&sig, der, sizeof(der))) {
-        tests_passed++;
-        printf("  [PASS] Reject length mismatch\n");
+        test_case("Reject length mismatch");
+        test_pass();
     } else {
-        printf("  [FAIL] Reject length mismatch\n");
+        test_case("Reject length mismatch");
+        test_fail("Reject length mismatch");
     }
 }
 
 static void test_der_extra_bytes(void)
 {
     secp256k1_ecdsa_sig_t sig;
-
-    tests_run++;
-
     /* Invalid: extra bytes after signature */
     uint8_t der[] = {
         0x30, 0x06,
@@ -258,10 +238,11 @@ static void test_der_extra_bytes(void)
     };
 
     if (!secp256k1_ecdsa_sig_parse_der(&sig, der, sizeof(der))) {
-        tests_passed++;
-        printf("  [PASS] Reject extra bytes\n");
+        test_case("Reject extra bytes");
+        test_pass();
     } else {
-        printf("  [FAIL] Reject extra bytes\n");
+        test_case("Reject extra bytes");
+        test_fail("Reject extra bytes");
     }
 }
 
@@ -275,9 +256,6 @@ static void test_scalar_mul_basic(void)
 {
     secp256k1_scalar_t a, b, r;
     int i;
-
-    tests_run++;
-
     /* 2 * 3 = 6 */
     for (i = 0; i < 8; i++) {
         a.limbs[i] = 0;
@@ -289,10 +267,11 @@ static void test_scalar_mul_basic(void)
     secp256k1_scalar_mul(&r, &a, &b);
 
     if (r.limbs[0] == 6 && r.limbs[1] == 0 && r.limbs[7] == 0) {
-        tests_passed++;
-        printf("  [PASS] Scalar mul: 2 * 3 = 6\n");
+        test_case("Scalar mul: 2 * 3 = 6");
+        test_pass();
     } else {
-        printf("  [FAIL] Scalar mul: 2 * 3 = 6 (got %u)\n", r.limbs[0]);
+        test_case("Scalar mul: 2 * 3 = 6");
+        test_fail("Scalar mul: 2 * 3 = 6");
     }
 }
 
@@ -301,9 +280,6 @@ static void test_scalar_inv(void)
     secp256k1_scalar_t a, inv, product;
     int i;
     int is_one;
-
-    tests_run++;
-
     /* inv(7) * 7 should equal 1 */
     for (i = 0; i < 8; i++) {
         a.limbs[i] = 0;
@@ -319,10 +295,11 @@ static void test_scalar_inv(void)
     }
 
     if (is_one) {
-        tests_passed++;
-        printf("  [PASS] Scalar inv: inv(7) * 7 = 1\n");
+        test_case("Scalar inv: inv(7) * 7 = 1");
+        test_pass();
     } else {
-        printf("  [FAIL] Scalar inv: inv(7) * 7 = 1\n");
+        test_case("Scalar inv: inv(7) * 7 = 1");
+        test_fail("Scalar inv: inv(7) * 7 = 1");
     }
 }
 
@@ -349,16 +326,14 @@ static void test_ecdsa_valid_signature(void)
     secp256k1_point_t pubkey;
     uint8_t msg_hash[32];
     uint8_t pubkey_bytes[33];
-
-    tests_run++;
-
     /* Public key = G (compressed format) */
     hex_to_bytes(pubkey_bytes,
         "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
         33);
 
     if (!secp256k1_pubkey_parse(&pubkey, pubkey_bytes, 33)) {
-        printf("  [FAIL] Valid ECDSA sig - pubkey parse failed\n");
+        test_case("Valid ECDSA sig - pubkey parse failed");
+        test_fail("Valid ECDSA sig - pubkey parse failed");
         return;
     }
 
@@ -387,15 +362,17 @@ static void test_ecdsa_valid_signature(void)
     };
 
     if (!secp256k1_ecdsa_sig_parse_der(&sig, der_sig, sizeof(der_sig))) {
-        printf("  [FAIL] Valid ECDSA sig - DER parse failed\n");
+        test_case("Valid ECDSA sig - DER parse failed");
+        test_fail("Valid ECDSA sig - DER parse failed");
         return;
     }
 
     if (secp256k1_ecdsa_verify(&sig, msg_hash, &pubkey)) {
-        tests_passed++;
-        printf("  [PASS] Valid ECDSA signature verification\n");
+        test_case("Valid ECDSA signature verification");
+        test_pass();
     } else {
-        printf("  [FAIL] Valid ECDSA signature verification\n");
+        test_case("Valid ECDSA signature verification");
+        test_fail("Valid ECDSA signature verification");
     }
 }
 
@@ -408,9 +385,6 @@ static void test_ecdsa_wrong_message(void)
     secp256k1_point_t pubkey;
     uint8_t msg_hash[32];
     uint8_t pubkey_bytes[33];
-
-    tests_run++;
-
     hex_to_bytes(pubkey_bytes,
         "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
         33);
@@ -440,10 +414,11 @@ static void test_ecdsa_wrong_message(void)
     secp256k1_ecdsa_sig_parse_der(&sig, der_sig, sizeof(der_sig));
 
     if (!secp256k1_ecdsa_verify(&sig, msg_hash, &pubkey)) {
-        tests_passed++;
-        printf("  [PASS] Reject wrong message\n");
+        test_case("Reject wrong message");
+        test_pass();
     } else {
-        printf("  [FAIL] Reject wrong message\n");
+        test_case("Reject wrong message");
+        test_fail("Reject wrong message");
     }
 }
 
@@ -456,9 +431,6 @@ static void test_ecdsa_wrong_pubkey(void)
     secp256k1_point_t pubkey;
     uint8_t msg_hash[32];
     uint8_t pubkey_bytes[33];
-
-    tests_run++;
-
     /* 2*G instead of G (pubkey for d=2, not d=1) */
     hex_to_bytes(pubkey_bytes,
         "02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5",
@@ -488,10 +460,11 @@ static void test_ecdsa_wrong_pubkey(void)
     secp256k1_ecdsa_sig_parse_der(&sig, der_sig, sizeof(der_sig));
 
     if (!secp256k1_ecdsa_verify(&sig, msg_hash, &pubkey)) {
-        tests_passed++;
-        printf("  [PASS] Reject wrong pubkey\n");
+        test_case("Reject wrong pubkey");
+        test_pass();
     } else {
-        printf("  [FAIL] Reject wrong pubkey\n");
+        test_case("Reject wrong pubkey");
+        test_fail("Reject wrong pubkey");
     }
 }
 
@@ -514,16 +487,14 @@ static void test_ecdsa_different_nonce(void)
     uint8_t msg_hash[32];
     uint8_t pubkey_bytes[33];
     uint8_t r_bytes[32];
-
-    tests_run++;
-
     /* Public key = G */
     hex_to_bytes(pubkey_bytes,
         "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
         33);
 
     if (!secp256k1_pubkey_parse(&pubkey, pubkey_bytes, 33)) {
-        printf("  [FAIL] Different nonce - pubkey parse failed\n");
+        test_case("Different nonce - pubkey parse failed");
+        test_fail("Different nonce - pubkey parse failed");
         return;
     }
 
@@ -566,10 +537,11 @@ static void test_ecdsa_different_nonce(void)
     secp256k1_scalar_mul(&sig.s, &inv_two, &one_plus_r);
 
     if (secp256k1_ecdsa_verify(&sig, msg_hash, &pubkey)) {
-        tests_passed++;
-        printf("  [PASS] ECDSA with k=2 nonce\n");
+        test_case("ECDSA with k=2 nonce");
+        test_pass();
     } else {
-        printf("  [FAIL] ECDSA with k=2 nonce\n");
+        test_case("ECDSA with k=2 nonce");
+        test_fail("ECDSA with k=2 nonce");
     }
 }
 
@@ -581,9 +553,6 @@ static void test_ecdsa_infinity_pubkey(void)
     secp256k1_ecdsa_sig_t sig;
     secp256k1_point_t pubkey;
     uint8_t msg_hash[32] = {1};
-
-    tests_run++;
-
     /* Set pubkey to infinity */
     secp256k1_point_set_infinity(&pubkey);
 
@@ -597,10 +566,11 @@ static void test_ecdsa_infinity_pubkey(void)
     }
 
     if (!secp256k1_ecdsa_verify(&sig, msg_hash, &pubkey)) {
-        tests_passed++;
-        printf("  [PASS] Reject infinity pubkey\n");
+        test_case("Reject infinity pubkey");
+        test_pass();
     } else {
-        printf("  [FAIL] Reject infinity pubkey\n");
+        test_case("Reject infinity pubkey");
+        test_fail("Reject infinity pubkey");
     }
 }
 
@@ -613,9 +583,6 @@ static void test_ecdsa_uncompressed_pubkey(void)
     secp256k1_point_t pubkey;
     uint8_t msg_hash[32];
     uint8_t pubkey_bytes[65];
-
-    tests_run++;
-
     /* Generator G in uncompressed format */
     hex_to_bytes(pubkey_bytes,
         "04"
@@ -624,7 +591,8 @@ static void test_ecdsa_uncompressed_pubkey(void)
         65);
 
     if (!secp256k1_pubkey_parse(&pubkey, pubkey_bytes, 65)) {
-        printf("  [FAIL] Uncompressed pubkey - parse failed\n");
+        test_case("Uncompressed pubkey - parse failed");
+        test_fail("Uncompressed pubkey - parse failed");
         return;
     }
 
@@ -648,24 +616,25 @@ static void test_ecdsa_uncompressed_pubkey(void)
     };
 
     if (!secp256k1_ecdsa_sig_parse_der(&sig, der_sig, sizeof(der_sig))) {
-        printf("  [FAIL] Uncompressed pubkey - DER parse failed\n");
+        test_case("Uncompressed pubkey - DER parse failed");
+        test_fail("Uncompressed pubkey - DER parse failed");
         return;
     }
 
     if (secp256k1_ecdsa_verify(&sig, msg_hash, &pubkey)) {
-        tests_passed++;
-        printf("  [PASS] ECDSA with uncompressed pubkey\n");
+        test_case("ECDSA with uncompressed pubkey");
+        test_pass();
     } else {
-        printf("  [FAIL] ECDSA with uncompressed pubkey\n");
+        test_case("ECDSA with uncompressed pubkey");
+        test_fail("ECDSA with uncompressed pubkey");
     }
 }
 
 int main(void)
 {
-    printf("ECDSA Verification Tests\n");
-    printf("========================\n\n");
+    test_suite_begin("ECDSA Verification Tests");
 
-    printf("DER Parsing:\n");
+    test_section("DER Parsing");
     test_der_valid();
     test_der_with_leading_zero();
     test_der_short_r();
@@ -676,11 +645,11 @@ int main(void)
     test_der_length_mismatch();
     test_der_extra_bytes();
 
-    printf("\nScalar Arithmetic:\n");
+    test_section("Scalar Arithmetic");
     test_scalar_mul_basic();
     test_scalar_inv();
 
-    printf("\nECDSA Verification:\n");
+    test_section("ECDSA Verification");
     test_ecdsa_valid_signature();
     test_ecdsa_wrong_message();
     test_ecdsa_wrong_pubkey();
@@ -688,8 +657,6 @@ int main(void)
     test_ecdsa_infinity_pubkey();
     test_ecdsa_uncompressed_pubkey();
 
-    printf("\n");
-    printf("Results: %d/%d tests passed\n", tests_passed, tests_run);
-
-    return (tests_passed == tests_run) ? 0 : 1;
+    test_suite_end();
+    return test_global_summary();
 }

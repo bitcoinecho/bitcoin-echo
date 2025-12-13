@@ -10,15 +10,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <assert.h>
-
-static int test_count = 0;
-static int pass_count = 0;
-
-#define TEST(name) \
-    do { \
-        printf("Testing %s...\n", name); \
-        test_count++; \
-    } while(0)
+#include "test_utils.h"
 
 #define PASS() \
     do { \
@@ -39,8 +31,6 @@ static int pass_count = 0;
  * ======================================================================== */
 
 static void test_read_write_primitives(void) {
-    TEST("read/write primitive types");
-
     uint8_t buf[128];
     uint8_t *ptr = buf;
     const uint8_t *end = buf + sizeof(buf);
@@ -95,12 +85,10 @@ static void test_read_write_primitives(void) {
     ASSERT(read_u64_le(&rptr, end, &v64) == ECHO_OK);
     ASSERT(v64 == 0x123456789ABCDEF0ULL);
 
-    PASS();
+    test_pass();
 }
 
 static void test_buffer_overflow(void) {
-    TEST("buffer overflow protection");
-
     uint8_t buf[4];
     uint8_t *ptr = buf;
     const uint8_t *end = buf + sizeof(buf);
@@ -118,7 +106,7 @@ static void test_buffer_overflow(void) {
     ASSERT(read_u32_le(&rptr, end, &v32) == ECHO_OK);
     ASSERT(read_u8(&rptr, end, &v8) == ECHO_ERR_TRUNCATED);
 
-    PASS();
+    test_pass();
 }
 
 /* ========================================================================
@@ -126,8 +114,6 @@ static void test_buffer_overflow(void) {
  * ======================================================================== */
 
 static void test_msg_header_serialize(void) {
-    TEST("message header serialization");
-
     msg_header_t header;
     header.magic = MAGIC_MAINNET;
     memset(header.command, 0, COMMAND_LEN);
@@ -155,12 +141,10 @@ static void test_msg_header_serialize(void) {
     uint32_t cksum = buf[20] | (buf[21] << 8) | (buf[22] << 16) | (buf[23] << 24);
     ASSERT(cksum == 0x12345678);
 
-    PASS();
+    test_pass();
 }
 
 static void test_msg_header_deserialize(void) {
-    TEST("message header deserialization");
-
     uint8_t buf[24] = {
         0xF9, 0xBE, 0xB4, 0xD9,  /* magic */
         'p', 'i', 'n', 'g', 0, 0, 0, 0, 0, 0, 0, 0,  /* command */
@@ -176,12 +160,10 @@ static void test_msg_header_deserialize(void) {
     ASSERT(header.length == 8);
     ASSERT(header.checksum == 0x12EFCDAB);
 
-    PASS();
+    test_pass();
 }
 
 static void test_msg_header_roundtrip(void) {
-    TEST("message header round-trip");
-
     msg_header_t original;
     original.magic = MAGIC_TESTNET;
     memset(original.command, 0, COMMAND_LEN);
@@ -200,7 +182,7 @@ static void test_msg_header_roundtrip(void) {
     ASSERT(parsed.length == original.length);
     ASSERT(parsed.checksum == original.checksum);
 
-    PASS();
+    test_pass();
 }
 
 /* ========================================================================
@@ -208,8 +190,6 @@ static void test_msg_header_roundtrip(void) {
  * ======================================================================== */
 
 static void test_msg_ping(void) {
-    TEST("ping message serialization");
-
     msg_ping_t ping;
     ping.nonce = 0x0123456789ABCDEFULL;
 
@@ -229,12 +209,10 @@ static void test_msg_ping(void) {
     ASSERT(consumed == 8);
     ASSERT(parsed.nonce == 0x0123456789ABCDEFULL);
 
-    PASS();
+    test_pass();
 }
 
 static void test_msg_pong(void) {
-    TEST("pong message serialization");
-
     msg_pong_t pong;
     pong.nonce = 0xFEDCBA9876543210ULL;
 
@@ -249,7 +227,7 @@ static void test_msg_pong(void) {
     ASSERT(consumed == 8);
     ASSERT(parsed.nonce == 0xFEDCBA9876543210ULL);
 
-    PASS();
+    test_pass();
 }
 
 /* ========================================================================
@@ -257,8 +235,6 @@ static void test_msg_pong(void) {
  * ======================================================================== */
 
 static void test_msg_version(void) {
-    TEST("version message serialization");
-
     msg_version_t version;
     version.version = 70016;
     version.services = SERVICE_NODE_NETWORK | SERVICE_NODE_WITNESS;
@@ -304,11 +280,10 @@ static void test_msg_version(void) {
     ASSERT(parsed.start_height == 700000);
     ASSERT(parsed.relay == ECHO_TRUE);
 
-    PASS();
+    test_pass();
 }
 
 static void test_msg_version_old_protocol(void) {
-    TEST("version message without relay flag (old protocol)");
 
     msg_version_t version;
     version.version = 60000; /* Old version < 70001 */
@@ -334,7 +309,7 @@ static void test_msg_version_old_protocol(void) {
     ASSERT(msg_version_deserialize(buf, written, &parsed, &consumed) == ECHO_OK);
     ASSERT(parsed.relay == ECHO_TRUE); /* Default for old versions */
 
-    PASS();
+    test_pass();
 }
 
 /* ========================================================================
@@ -342,8 +317,6 @@ static void test_msg_version_old_protocol(void) {
  * ======================================================================== */
 
 static void test_msg_inv(void) {
-    TEST("inv message serialization");
-
     inv_vector_t inventory[3];
 
     /* TX inventory */
@@ -376,12 +349,10 @@ static void test_msg_inv(void) {
     ASSERT(parsed.count == 3);
     ASSERT(consumed == written);
 
-    PASS();
+    test_pass();
 }
 
 static void test_msg_inv_empty(void) {
-    TEST("inv message with zero entries");
-
     msg_inv_t inv;
     inv.count = 0;
     inv.inventory = NULL;
@@ -396,7 +367,7 @@ static void test_msg_inv_empty(void) {
     ASSERT(msg_inv_deserialize(buf, written, &parsed, &consumed) == ECHO_OK);
     ASSERT(parsed.count == 0);
 
-    PASS();
+    test_pass();
 }
 
 /* ========================================================================
@@ -404,8 +375,6 @@ static void test_msg_inv_empty(void) {
  * ======================================================================== */
 
 static void test_msg_addr(void) {
-    TEST("addr message serialization");
-
     net_addr_t addresses[2];
 
     addresses[0].timestamp = 1609459200; /* 2021-01-01 */
@@ -447,7 +416,7 @@ static void test_msg_addr(void) {
     ASSERT(parsed.count == 2);
     ASSERT(consumed == written);
 
-    PASS();
+    test_pass();
 }
 
 /* ========================================================================
@@ -455,8 +424,6 @@ static void test_msg_addr(void) {
  * ======================================================================== */
 
 static void test_msg_getheaders(void) {
-    TEST("getheaders message serialization");
-
     hash256_t locator[3];
     memset(locator[0].bytes, 0x11, 32);
     memset(locator[1].bytes, 0x22, 32);
@@ -485,7 +452,7 @@ static void test_msg_getheaders(void) {
     ASSERT(parsed.hash_count == 3);
     ASSERT(consumed == written);
 
-    PASS();
+    test_pass();
 }
 
 /* ========================================================================
@@ -493,8 +460,6 @@ static void test_msg_getheaders(void) {
  * ======================================================================== */
 
 static void test_msg_feefilter(void) {
-    TEST("feefilter message serialization");
-
     msg_feefilter_t feefilter;
     feefilter.feerate = 1000; /* 1000 satoshis per 1000 bytes */
 
@@ -509,7 +474,7 @@ static void test_msg_feefilter(void) {
     ASSERT(consumed == 8);
     ASSERT(parsed.feerate == 1000);
 
-    PASS();
+    test_pass();
 }
 
 /* ========================================================================
@@ -517,8 +482,6 @@ static void test_msg_feefilter(void) {
  * ======================================================================== */
 
 static void test_msg_sendcmpct(void) {
-    TEST("sendcmpct message serialization");
-
     msg_sendcmpct_t sendcmpct;
     sendcmpct.announce = ECHO_TRUE;
     sendcmpct.version = 2;
@@ -537,7 +500,7 @@ static void test_msg_sendcmpct(void) {
     ASSERT(parsed.announce == ECHO_TRUE);
     ASSERT(parsed.version == 2);
 
-    PASS();
+    test_pass();
 }
 
 /* ========================================================================
@@ -545,8 +508,6 @@ static void test_msg_sendcmpct(void) {
  * ======================================================================== */
 
 static void test_msg_reject(void) {
-    TEST("reject message serialization");
-
     msg_reject_t reject;
     strcpy(reject.message, "tx");
     reject.ccode = REJECT_INVALID;
@@ -569,12 +530,10 @@ static void test_msg_reject(void) {
     ASSERT(parsed.has_data == ECHO_TRUE);
     ASSERT(memcmp(parsed.data.bytes, reject.data.bytes, 32) == 0);
 
-    PASS();
+    test_pass();
 }
 
 static void test_msg_reject_no_data(void) {
-    TEST("reject message without extra data");
-
     msg_reject_t reject;
     strcpy(reject.message, "block");
     reject.ccode = REJECT_DUPLICATE;
@@ -591,7 +550,7 @@ static void test_msg_reject_no_data(void) {
     ASSERT(msg_reject_deserialize(buf, written, &parsed, &consumed) == ECHO_OK);
     ASSERT(parsed.has_data == ECHO_FALSE);
 
-    PASS();
+    test_pass();
 }
 
 /* ========================================================================
@@ -599,44 +558,26 @@ static void test_msg_reject_no_data(void) {
  * ======================================================================== */
 
 int main(void) {
-    printf("Bitcoin Echo — Protocol Serialization Tests\n");
-    printf("=============================================\n\n");
+    test_suite_begin("Protocol Serialization Tests");
 
-    /* Helper primitives */
-    test_read_write_primitives();
-    test_buffer_overflow();
+    test_case("Read write primitives"); test_read_write_primitives(); test_pass();
+    test_case("Buffer overflow"); test_buffer_overflow(); test_pass();
+    test_case("Msg header serialize"); test_msg_header_serialize(); test_pass();
+    test_case("Msg header deserialize"); test_msg_header_deserialize(); test_pass();
+    test_case("Msg header roundtrip"); test_msg_header_roundtrip(); test_pass();
+    test_case("Msg ping"); test_msg_ping(); test_pass();
+    test_case("Msg pong"); test_msg_pong(); test_pass();
+    test_case("Msg version"); test_msg_version(); test_pass();
+    test_case("Msg version old protocol"); test_msg_version_old_protocol(); test_pass();
+    test_case("Msg inv"); test_msg_inv(); test_pass();
+    test_case("Msg inv empty"); test_msg_inv_empty(); test_pass();
+    test_case("Msg addr"); test_msg_addr(); test_pass();
+    test_case("Msg getheaders"); test_msg_getheaders(); test_pass();
+    test_case("Msg feefilter"); test_msg_feefilter(); test_pass();
+    test_case("Msg sendcmpct"); test_msg_sendcmpct(); test_pass();
+    test_case("Msg reject"); test_msg_reject(); test_pass();
+    test_case("Msg reject no data"); test_msg_reject_no_data(); test_pass();
 
-    /* Message header */
-    test_msg_header_serialize();
-    test_msg_header_deserialize();
-    test_msg_header_roundtrip();
-
-    /* Simple messages */
-    test_msg_ping();
-    test_msg_pong();
-    test_msg_feefilter();
-    test_msg_sendcmpct();
-
-    /* version message */
-    test_msg_version();
-    test_msg_version_old_protocol();
-
-    /* inv message */
-    test_msg_inv();
-    test_msg_inv_empty();
-
-    /* addr message */
-    test_msg_addr();
-
-    /* getheaders message */
-    test_msg_getheaders();
-
-    /* reject message */
-    test_msg_reject();
-    test_msg_reject_no_data();
-
-    printf("\n=============================================\n");
-    printf("Tests passed: %d/%d\n", pass_count, test_count);
-
-    return (pass_count == test_count) ? 0 : 1;
+    test_suite_end();
+    return test_global_summary();
 }

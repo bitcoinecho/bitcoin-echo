@@ -11,9 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "script.h"
-
-static int tests_run = 0;
-static int tests_passed = 0;
+#include "test_utils.h"
 
 /*
  * Print a byte array as hex.
@@ -34,15 +32,14 @@ static void test_stack_init(const char *name)
     script_stack_t stack;
     echo_result_t res;
 
-    tests_run++;
     res = stack_init(&stack);
 
     if (res == ECHO_OK && stack_size(&stack) == 0 && stack_empty(&stack)) {
-        tests_passed++;
-        printf("  [PASS] %s\n", name);
+        test_case(name);
+        test_pass();
         stack_free(&stack);
     } else {
-        printf("  [FAIL] %s\n", name);
+        test_fail(name);
         printf("    Result: %d, size: %zu, empty: %d\n",
                res, stack_size(&stack), stack_empty(&stack));
     }
@@ -57,13 +54,13 @@ static void test_push_pop(const char *name, const uint8_t *data, size_t len)
     stack_element_t elem;
     echo_result_t res;
 
-    tests_run++;
 
     stack_init(&stack);
     res = stack_push(&stack, data, len);
 
     if (res != ECHO_OK || stack_size(&stack) != 1) {
-        printf("  [FAIL] %s (push failed)\n", name);
+        test_case(name);
+        test_fail("push failed");
         stack_free(&stack);
         return;
     }
@@ -72,10 +69,10 @@ static void test_push_pop(const char *name, const uint8_t *data, size_t len)
 
     if (res == ECHO_OK && elem.len == len &&
         (len == 0 || memcmp(elem.data, data, len) == 0)) {
-        tests_passed++;
-        printf("  [PASS] %s\n", name);
+        test_case(name);
+            test_pass();
     } else {
-        printf("  [FAIL] %s\n", name);
+        test_fail(name);
         printf("    Expected len: %zu, got: %zu\n", len, elem.len);
     }
 
@@ -93,15 +90,14 @@ static void test_num_encode(const char *name, script_num_t num,
     size_t len;
     echo_result_t res;
 
-    tests_run++;
     res = script_num_encode(num, buf, &len);
 
     if (res == ECHO_OK && len == expected_len &&
         (expected_len == 0 || memcmp(buf, expected, expected_len) == 0)) {
-        tests_passed++;
-        printf("  [PASS] %s\n", name);
+        test_case(name);
+            test_pass();
     } else {
-        printf("  [FAIL] %s\n", name);
+        test_fail(name);
         printf("    Number: %lld\n", (long long)num);
         printf("    Expected (%zu bytes): ", expected_len);
         print_hex(expected, expected_len);
@@ -120,15 +116,14 @@ static void test_num_decode(const char *name, const uint8_t *data, size_t len,
     script_num_t num;
     echo_result_t res;
 
-    tests_run++;
     res = script_num_decode(data, len, &num, ECHO_TRUE, SCRIPT_NUM_MAX_SIZE);
 
     if (should_succeed) {
         if (res == ECHO_OK && num == expected) {
-            tests_passed++;
-            printf("  [PASS] %s\n", name);
+            test_case(name);
+            test_pass();
         } else {
-            printf("  [FAIL] %s\n", name);
+            test_fail(name);
             printf("    Input: ");
             print_hex(data, len);
             printf("\n    Expected: %lld, got: %lld (res=%d)\n",
@@ -136,10 +131,11 @@ static void test_num_decode(const char *name, const uint8_t *data, size_t len,
         }
     } else {
         if (res != ECHO_OK) {
-            tests_passed++;
-            printf("  [PASS] %s\n", name);
+            test_case(name);
+            test_pass();
         } else {
-            printf("  [FAIL] %s (should have failed)\n", name);
+            test_case(name);
+            test_fail("should have failed");
             printf("    Got: %lld\n", (long long)num);
         }
     }
@@ -155,20 +151,20 @@ static void test_num_roundtrip(const char *name, script_num_t num)
     script_num_t decoded;
     echo_result_t res;
 
-    tests_run++;
 
     res = script_num_encode(num, buf, &len);
     if (res != ECHO_OK) {
-        printf("  [FAIL] %s (encode failed)\n", name);
+        test_case(name);
+        test_fail("encode failed");
         return;
     }
 
     res = script_num_decode(buf, len, &decoded, ECHO_TRUE, 8);
     if (res == ECHO_OK && decoded == num) {
-        tests_passed++;
-        printf("  [PASS] %s\n", name);
+        test_case(name);
+            test_pass();
     } else {
-        printf("  [FAIL] %s\n", name);
+        test_fail(name);
         printf("    Original: %lld, decoded: %lld\n",
                (long long)num, (long long)decoded);
     }
@@ -182,14 +178,13 @@ static void test_bool(const char *name, const uint8_t *data, size_t len,
 {
     echo_bool_t result;
 
-    tests_run++;
     result = script_bool(data, len);
 
     if (result == expected) {
-        tests_passed++;
-        printf("  [PASS] %s\n", name);
+        test_case(name);
+            test_pass();
     } else {
-        printf("  [FAIL] %s\n", name);
+        test_fail(name);
         printf("    Data: ");
         print_hex(data, len);
         printf("\n    Expected: %s, got: %s\n",
@@ -208,7 +203,6 @@ static void test_stack_op(const char *name, echo_result_t (*op)(script_stack_t *
     script_stack_t stack;
     echo_result_t res;
 
-    tests_run++;
     stack_init(&stack);
 
     /* Push initial elements */
@@ -221,19 +215,20 @@ static void test_stack_op(const char *name, echo_result_t (*op)(script_stack_t *
 
     if (should_succeed) {
         if (res == ECHO_OK && stack_size(&stack) == expected_count) {
-            tests_passed++;
-            printf("  [PASS] %s\n", name);
+            test_case(name);
+            test_pass();
         } else {
-            printf("  [FAIL] %s\n", name);
+            test_fail(name);
             printf("    Result: %d, expected size: %zu, got: %zu\n",
                    res, expected_count, stack_size(&stack));
         }
     } else {
         if (res != ECHO_OK) {
-            tests_passed++;
-            printf("  [PASS] %s\n", name);
+            test_case(name);
+            test_pass();
         } else {
-            printf("  [FAIL] %s (should have failed)\n", name);
+            test_case(name);
+            test_fail("should have failed");
         }
     }
 
@@ -248,7 +243,6 @@ static void test_context_init(const char *name)
     script_context_t ctx;
     echo_result_t res;
 
-    tests_run++;
     res = script_context_init(&ctx, SCRIPT_VERIFY_NONE);
 
     if (res == ECHO_OK &&
@@ -256,11 +250,11 @@ static void test_context_init(const char *name)
         stack_size(&ctx.altstack) == 0 &&
         ctx.error == SCRIPT_ERR_OK &&
         ctx.op_count == 0) {
-        tests_passed++;
-        printf("  [PASS] %s\n", name);
+        test_case(name);
+            test_pass();
         script_context_free(&ctx);
     } else {
-        printf("  [FAIL] %s\n", name);
+        test_fail(name);
     }
 }
 
@@ -272,7 +266,6 @@ static void test_dup(const char *name)
     script_stack_t stack;
     const stack_element_t *elem;
 
-    tests_run++;
     stack_init(&stack);
 
     uint8_t data[] = {0xab, 0xcd};
@@ -284,15 +277,15 @@ static void test_dup(const char *name)
         if (elem->len == 2 && elem->data[0] == 0xab && elem->data[1] == 0xcd) {
             stack_peek_at(&stack, 1, &elem);
             if (elem->len == 2 && elem->data[0] == 0xab && elem->data[1] == 0xcd) {
-                tests_passed++;
-                printf("  [PASS] %s\n", name);
+                test_case(name);
+            test_pass();
                 stack_free(&stack);
                 return;
             }
         }
     }
 
-    printf("  [FAIL] %s\n", name);
+    test_fail(name);
     stack_free(&stack);
 }
 
@@ -304,7 +297,6 @@ static void test_swap(const char *name)
     script_stack_t stack;
     const stack_element_t *elem;
 
-    tests_run++;
     stack_init(&stack);
 
     uint8_t a = 1, b = 2;
@@ -316,14 +308,14 @@ static void test_swap(const char *name)
     if (elem->len == 1 && elem->data[0] == 1) {
         stack_peek_at(&stack, 1, &elem);
         if (elem->len == 1 && elem->data[0] == 2) {
-            tests_passed++;
-            printf("  [PASS] %s\n", name);
+            test_case(name);
+            test_pass();
             stack_free(&stack);
             return;
         }
     }
 
-    printf("  [FAIL] %s\n", name);
+    test_fail(name);
     stack_free(&stack);
 }
 
@@ -335,7 +327,6 @@ static void test_rot(const char *name)
     script_stack_t stack;
     const stack_element_t *elem;
 
-    tests_run++;
     stack_init(&stack);
 
     uint8_t a = 1, b = 2, c = 3;
@@ -354,13 +345,13 @@ static void test_rot(const char *name)
     stack_peek_at(&stack, 2, &elem);  /* Bottom should be 2 */
     if (elem->data[0] != 2) goto fail;
 
-    tests_passed++;
-    printf("  [PASS] %s\n", name);
+        test_case(name);
+            test_pass();
     stack_free(&stack);
     return;
 
 fail:
-    printf("  [FAIL] %s\n", name);
+    test_fail(name);
     stack_free(&stack);
 }
 
@@ -372,7 +363,6 @@ static void test_pick(const char *name)
     script_stack_t stack;
     const stack_element_t *elem;
 
-    tests_run++;
     stack_init(&stack);
 
     uint8_t a = 1, b = 2, c = 3;
@@ -386,14 +376,14 @@ static void test_pick(const char *name)
     if (stack_size(&stack) == 4) {
         stack_peek(&stack, &elem);
         if (elem->len == 1 && elem->data[0] == 1) {
-            tests_passed++;
-            printf("  [PASS] %s\n", name);
+            test_case(name);
+            test_pass();
             stack_free(&stack);
             return;
         }
     }
 
-    printf("  [FAIL] %s\n", name);
+    test_fail(name);
     stack_free(&stack);
 }
 
@@ -405,7 +395,6 @@ static void test_roll(const char *name)
     script_stack_t stack;
     const stack_element_t *elem;
 
-    tests_run++;
     stack_init(&stack);
 
     uint8_t a = 1, b = 2, c = 3;
@@ -427,14 +416,14 @@ static void test_roll(const char *name)
         stack_peek_at(&stack, 2, &elem);  /* Bottom */
         if (elem->data[0] != 2) goto fail;
 
-        tests_passed++;
-        printf("  [PASS] %s\n", name);
+        test_case(name);
+            test_pass();
         stack_free(&stack);
         return;
     }
 
 fail:
-    printf("  [FAIL] %s\n", name);
+    test_fail(name);
     stack_free(&stack);
 }
 
@@ -446,7 +435,6 @@ static void test_2swap(const char *name)
     script_stack_t stack;
     const stack_element_t *elem;
 
-    tests_run++;
     stack_init(&stack);
 
     uint8_t a = 1, b = 2, c = 3, d = 4;
@@ -463,13 +451,13 @@ static void test_2swap(const char *name)
     stack_peek_at(&stack, 2, &elem); if (elem->data[0] != 4) goto fail;
     stack_peek_at(&stack, 3, &elem); if (elem->data[0] != 3) goto fail;
 
-    tests_passed++;
-    printf("  [PASS] %s\n", name);
+        test_case(name);
+            test_pass();
     stack_free(&stack);
     return;
 
 fail:
-    printf("  [FAIL] %s\n", name);
+    test_fail(name);
     stack_free(&stack);
 }
 
@@ -482,22 +470,22 @@ static void test_push_pop_num(const char *name, script_num_t num)
     script_num_t popped;
     echo_result_t res;
 
-    tests_run++;
     stack_init(&stack);
 
     res = stack_push_num(&stack, num);
     if (res != ECHO_OK) {
-        printf("  [FAIL] %s (push_num failed)\n", name);
+        test_case(name);
+        test_fail("push_num failed");
         stack_free(&stack);
         return;
     }
 
     res = stack_pop_num(&stack, &popped, ECHO_TRUE, SCRIPT_NUM_MAX_SIZE);
     if (res == ECHO_OK && popped == num) {
-        tests_passed++;
-        printf("  [PASS] %s\n", name);
+        test_case(name);
+            test_pass();
     } else {
-        printf("  [FAIL] %s\n", name);
+        test_fail(name);
         printf("    Pushed: %lld, popped: %lld\n",
                (long long)num, (long long)popped);
     }
@@ -510,30 +498,29 @@ static void test_push_pop_num(const char *name, script_num_t num)
  */
 static void test_error_string(const char *name, script_error_t err)
 {
-    tests_run++;
     const char *str = script_error_string(err);
 
+    test_case(name);
     if (str != NULL && strlen(str) > 0) {
-        tests_passed++;
-        printf("  [PASS] %s (%s)\n", name, str);
+        test_pass();
+        printf("    (%s)\n", str);
     } else {
-        printf("  [FAIL] %s\n", name);
+        test_fail("error string empty or NULL");
     }
 }
 
 int main(void)
 {
-    printf("Bitcoin Echo — Script Stack Machine Tests\n");
-    printf("==========================================\n\n");
+    test_suite_begin("Script Stack Machine Tests");
+    
 
     /* Stack initialization */
-    printf("Stack initialization tests:\n");
+    test_section("Stack initialization tests");
     test_stack_init("stack init");
     test_context_init("context init");
-    printf("\n");
 
     /* Push/pop bytes */
-    printf("Push/pop tests:\n");
+    test_section("Push/pop tests");
     {
         uint8_t one[] = {0x01};
         uint8_t multi[] = {0xde, 0xad, 0xbe, 0xef};
@@ -542,10 +529,9 @@ int main(void)
         test_push_pop("push/pop single byte", one, 1);
         test_push_pop("push/pop multi byte", multi, sizeof(multi));
     }
-    printf("\n");
 
     /* Number encoding */
-    printf("Number encoding tests:\n");
+    test_section("Number encoding tests");
     {
         uint8_t exp_zero[] = {0};  /* Empty */
         uint8_t exp_1[] = {0x01};
@@ -567,10 +553,9 @@ int main(void)
         test_num_encode("encode -127", -127, exp_neg127, 1);
         test_num_encode("encode -128", -128, exp_neg128, 2);
     }
-    printf("\n");
 
     /* Number decoding */
-    printf("Number decoding tests:\n");
+    test_section("Number decoding tests");
     {
         uint8_t in_1[] = {0x01};
         uint8_t in_127[] = {0x7f};
@@ -587,10 +572,9 @@ int main(void)
         test_num_decode("decode 0x8080 -> -128", in_neg128, 2, -128, ECHO_TRUE);
         test_num_decode("reject non-minimal", non_minimal, 2, 0, ECHO_FALSE);
     }
-    printf("\n");
 
     /* Number round-trip */
-    printf("Number round-trip tests:\n");
+    test_section("Number round-trip tests");
     test_num_roundtrip("roundtrip 0", 0);
     test_num_roundtrip("roundtrip 1", 1);
     test_num_roundtrip("roundtrip -1", -1);
@@ -601,10 +585,9 @@ int main(void)
     test_num_roundtrip("roundtrip -32768", -32768);
     test_num_roundtrip("roundtrip INT32_MAX", 2147483647LL);
     test_num_roundtrip("roundtrip INT32_MIN", -2147483648LL);
-    printf("\n");
 
     /* Boolean conversion */
-    printf("Boolean conversion tests:\n");
+    test_section("Boolean conversion tests");
     {
         uint8_t zero_1[] = {0x00};
         uint8_t zero_2[] = {0x00, 0x00};
@@ -621,10 +604,9 @@ int main(void)
         test_bool("0x81 is true", neg_one, 1, ECHO_TRUE);
         test_bool("0x0001 is true", nonzero, 2, ECHO_TRUE);
     }
-    printf("\n");
 
     /* Stack operations */
-    printf("Stack operation tests:\n");
+    test_section("Stack operation tests");
     test_dup("OP_DUP");
     test_swap("OP_SWAP");
     test_rot("OP_ROT");
@@ -644,28 +626,22 @@ int main(void)
     test_stack_op("OP_TUCK (2 elem)", stack_tuck, 2, 3, ECHO_TRUE);
     test_stack_op("OP_2OVER (4 elem)", stack_2over, 4, 6, ECHO_TRUE);
     test_stack_op("OP_2ROT (6 elem)", stack_2rot, 6, 6, ECHO_TRUE);
-    printf("\n");
 
     /* Push/pop numbers via stack */
-    printf("Stack number tests:\n");
+    test_section("Stack number tests");
     test_push_pop_num("push/pop 0", 0);
     test_push_pop_num("push/pop 1", 1);
     test_push_pop_num("push/pop -1", -1);
     test_push_pop_num("push/pop 1000", 1000);
     test_push_pop_num("push/pop -1000", -1000);
-    printf("\n");
 
     /* Error strings */
-    printf("Error string tests:\n");
+    test_section("Error string tests");
     test_error_string("SCRIPT_ERR_OK", SCRIPT_ERR_OK);
     test_error_string("SCRIPT_ERR_EVAL_FALSE", SCRIPT_ERR_EVAL_FALSE);
     test_error_string("SCRIPT_ERR_DISABLED_OPCODE", SCRIPT_ERR_DISABLED_OPCODE);
     test_error_string("SCRIPT_ERR_INVALID_STACK_OPERATION", SCRIPT_ERR_INVALID_STACK_OPERATION);
-    printf("\n");
 
-    /* Summary */
-    printf("==========================================\n");
-    printf("Tests: %d/%d passed\n", tests_passed, tests_run);
-
-    return (tests_passed == tests_run) ? 0 : 1;
+    test_suite_end();
+    return test_global_summary();
 }

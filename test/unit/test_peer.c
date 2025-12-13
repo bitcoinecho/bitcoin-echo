@@ -19,23 +19,13 @@
 #include <stdio.h>
 #include <string.h>
 #include <assert.h>
+#include "test_utils.h"
 
-static int tests_run = 0;
-static int tests_passed = 0;
-
-#define TEST(name) static void name(void)
-#define RUN_TEST(name) do { \
-    printf("Running %s...\n", #name); \
-    tests_run++; \
-    name(); \
-    tests_passed++; \
-    printf("  PASSED\n"); \
-} while (0)
 
 /**
  * Test peer initialization.
  */
-TEST(test_peer_init) {
+static void test_peer_init(void) {
     peer_t peer;
     peer_init(&peer);
 
@@ -54,7 +44,7 @@ TEST(test_peer_init) {
 /**
  * Test peer state strings.
  */
-TEST(test_peer_state_strings) {
+static void test_peer_state_strings(void) {
     assert(strcmp(peer_state_string(PEER_STATE_DISCONNECTED), "DISCONNECTED") == 0);
     assert(strcmp(peer_state_string(PEER_STATE_CONNECTING), "CONNECTING") == 0);
     assert(strcmp(peer_state_string(PEER_STATE_CONNECTED), "CONNECTED") == 0);
@@ -71,7 +61,7 @@ TEST(test_peer_state_strings) {
 /**
  * Test peer_is_ready and peer_is_connected.
  */
-TEST(test_peer_state_checks) {
+static void test_peer_state_checks(void) {
     peer_t peer;
     peer_init(&peer);
 
@@ -109,7 +99,7 @@ TEST(test_peer_state_checks) {
 /**
  * Test message queue operations.
  */
-TEST(test_message_queue) {
+static void test_message_queue(void) {
     peer_t peer;
     peer_init(&peer);
     peer.state = PEER_STATE_READY;
@@ -143,7 +133,7 @@ TEST(test_message_queue) {
 /**
  * Test queue full condition.
  */
-TEST(test_message_queue_full) {
+static void test_message_queue_full(void) {
     peer_t peer;
     peer_init(&peer);
     peer.state = PEER_STATE_READY;
@@ -169,7 +159,7 @@ TEST(test_message_queue_full) {
 /**
  * Test queueing in wrong state.
  */
-TEST(test_queue_wrong_state) {
+static void test_queue_wrong_state(void) {
     peer_t peer;
     peer_init(&peer);
     peer.state = PEER_STATE_CONNECTED;  /* Not ready */
@@ -185,7 +175,7 @@ TEST(test_queue_wrong_state) {
 /**
  * Test verack can be queued during handshake.
  */
-TEST(test_queue_verack_during_handshake) {
+static void test_queue_verack_during_handshake(void) {
     peer_t peer;
     peer_init(&peer);
     peer.state = PEER_STATE_HANDSHAKE_RECV;
@@ -200,7 +190,7 @@ TEST(test_queue_verack_during_handshake) {
 /**
  * Test disconnect sets state and reason.
  */
-TEST(test_disconnect) {
+static void test_disconnect(void) {
     peer_t peer;
     peer_init(&peer);
     peer.state = PEER_STATE_READY;
@@ -215,7 +205,7 @@ TEST(test_disconnect) {
 /**
  * Test disconnect when already disconnected (should be safe).
  */
-TEST(test_disconnect_idempotent) {
+static void test_disconnect_idempotent(void) {
     peer_t peer;
     peer_init(&peer);
     peer.state = PEER_STATE_DISCONNECTED;
@@ -232,7 +222,7 @@ TEST(test_disconnect_idempotent) {
 /**
  * Test version message serialization round-trip.
  */
-TEST(test_version_serialization) {
+static void test_version_serialization(void) {
     msg_version_t version;
     memset(&version, 0, sizeof(version));
 
@@ -277,7 +267,7 @@ TEST(test_version_serialization) {
 /**
  * Test message header serialization round-trip.
  */
-TEST(test_header_serialization) {
+static void test_header_serialization(void) {
     msg_header_t header;
     header.magic = MAGIC_MAINNET;
     memset(header.command, 0, COMMAND_LEN);
@@ -305,7 +295,7 @@ TEST(test_header_serialization) {
 /**
  * Test checksum computation.
  */
-TEST(test_checksum) {
+static void test_checksum(void) {
     uint8_t data[] = {0x01, 0x02, 0x03, 0x04};
     uint32_t checksum = msg_checksum(data, sizeof(data));
 
@@ -322,7 +312,7 @@ TEST(test_checksum) {
 /**
  * Test message command parsing.
  */
-TEST(test_command_parsing) {
+static void test_command_parsing(void) {
     assert(msg_parse_command("version") == MSG_VERSION);
     assert(msg_parse_command("verack") == MSG_VERACK);
     assert(msg_parse_command("ping") == MSG_PING);
@@ -341,7 +331,7 @@ TEST(test_command_parsing) {
 /**
  * Test command string conversion.
  */
-TEST(test_command_string) {
+static void test_command_string(void) {
     assert(strcmp(msg_command_string(MSG_VERSION), "version") == 0);
     assert(strcmp(msg_command_string(MSG_VERACK), "verack") == 0);
     assert(strcmp(msg_command_string(MSG_PING), "ping") == 0);
@@ -355,7 +345,7 @@ TEST(test_command_string) {
 /**
  * Test NULL parameter handling.
  */
-TEST(test_null_params) {
+static void test_null_params(void) {
     peer_t peer;
     msg_t msg;
 
@@ -381,7 +371,7 @@ TEST(test_null_params) {
  * Note: This test is skipped because it requires a real socket.
  * In a production test suite, we would use mock sockets.
  */
-TEST(test_receive_insufficient_data) {
+static void test_receive_insufficient_data(void) {
     peer_t peer;
     peer_init(&peer);
 
@@ -397,7 +387,7 @@ TEST(test_receive_insufficient_data) {
  *
  * Note: Simplified test - doesn't actually call peer_receive without socket.
  */
-TEST(test_receive_invalid_magic) {
+static void test_receive_invalid_magic(void) {
     /* Test message header validation */
     msg_header_t header;
     header.magic = 0xDEADBEEF;  /* Wrong magic */
@@ -421,7 +411,7 @@ TEST(test_receive_invalid_magic) {
  *
  * Note: Simplified test - validates message size limits.
  */
-TEST(test_receive_oversized_message) {
+static void test_receive_oversized_message(void) {
     /* Test that MAX_MESSAGE_SIZE is defined and reasonable */
     assert(MAX_MESSAGE_SIZE == 32 * 1024 * 1024);  /* 32MB */
 
@@ -449,7 +439,7 @@ TEST(test_receive_oversized_message) {
 /**
  * Test address truncation.
  */
-TEST(test_address_truncation) {
+static void test_address_truncation(void) {
     peer_t peer;
     char long_address[128];
     memset(long_address, 'A', sizeof(long_address) - 1);
@@ -464,7 +454,7 @@ TEST(test_address_truncation) {
 /**
  * Test disconnect message truncation.
  */
-TEST(test_disconnect_message_truncation) {
+static void test_disconnect_message_truncation(void) {
     peer_t peer;
     peer_init(&peer);
     peer.state = PEER_STATE_READY;
@@ -480,32 +470,28 @@ TEST(test_disconnect_message_truncation) {
 }
 
 int main(void) {
-    printf("Bitcoin Echo — Peer Connection Management Tests\n");
-    printf("==============================================\n\n");
+    test_suite_begin("Peer Management Tests");
+    test_case("Peer init"); test_peer_init(); test_pass();
+    test_case("Peer state strings"); test_peer_state_strings(); test_pass();
+    test_case("Peer state checks"); test_peer_state_checks(); test_pass();
+    test_case("Message queue"); test_message_queue(); test_pass();
+    test_case("Message queue full"); test_message_queue_full(); test_pass();
+    test_case("Queue wrong state"); test_queue_wrong_state(); test_pass();
+    test_case("Queue verack during handshake"); test_queue_verack_during_handshake(); test_pass();
+    test_case("Disconnect"); test_disconnect(); test_pass();
+    test_case("Disconnect idempotent"); test_disconnect_idempotent(); test_pass();
+    test_case("Version serialization"); test_version_serialization(); test_pass();
+    test_case("Header serialization"); test_header_serialization(); test_pass();
+    test_case("Checksum"); test_checksum(); test_pass();
+    test_case("Command parsing"); test_command_parsing(); test_pass();
+    test_case("Command string"); test_command_string(); test_pass();
+    test_case("Null params"); test_null_params(); test_pass();
+    test_case("Receive insufficient data"); test_receive_insufficient_data(); test_pass();
+    test_case("Receive invalid magic"); test_receive_invalid_magic(); test_pass();
+    test_case("Receive oversized message"); test_receive_oversized_message(); test_pass();
+    test_case("Address truncation"); test_address_truncation(); test_pass();
+    test_case("Disconnect message truncation"); test_disconnect_message_truncation(); test_pass();
 
-    RUN_TEST(test_peer_init);
-    RUN_TEST(test_peer_state_strings);
-    RUN_TEST(test_peer_state_checks);
-    RUN_TEST(test_message_queue);
-    RUN_TEST(test_message_queue_full);
-    RUN_TEST(test_queue_wrong_state);
-    RUN_TEST(test_queue_verack_during_handshake);
-    RUN_TEST(test_disconnect);
-    RUN_TEST(test_disconnect_idempotent);
-    RUN_TEST(test_version_serialization);
-    RUN_TEST(test_header_serialization);
-    RUN_TEST(test_checksum);
-    RUN_TEST(test_command_parsing);
-    RUN_TEST(test_command_string);
-    RUN_TEST(test_null_params);
-    RUN_TEST(test_receive_insufficient_data);
-    RUN_TEST(test_receive_invalid_magic);
-    RUN_TEST(test_receive_oversized_message);
-    RUN_TEST(test_address_truncation);
-    RUN_TEST(test_disconnect_message_truncation);
-
-    printf("\n==============================================\n");
-    printf("Tests passed: %d/%d\n", tests_passed, tests_run);
-
-    return (tests_passed == tests_run) ? 0 : 1;
+    test_suite_end();
+    return test_global_summary();
 }

@@ -24,29 +24,13 @@
 #include "sha256.h"
 #include "block.h"
 #include "tx.h"
-
-/* Test counters */
-static int tests_run = 0;
-static int tests_passed = 0;
+#include "test_utils.h"
 
 /* Test macros */
-#define TEST(name) static bool test_##name(void)
-#define RUN_TEST(name) do { \
-    tests_run++; \
-    printf("  Testing %s... ", #name); \
-    fflush(stdout); \
-    if (test_##name()) { \
-        tests_passed++; \
-        printf("PASSED\n"); \
-    } else { \
-        printf("FAILED\n"); \
-    } \
-} while(0)
-
 #define ASSERT(cond) do { \
     if (!(cond)) { \
         printf("Assertion failed: %s (line %d)\n", #cond, __LINE__); \
-        return false; \
+        return; \
     } \
 } while(0)
 
@@ -54,7 +38,7 @@ static int tests_passed = 0;
     if ((a) != (b)) { \
         printf("Assertion failed: %s == %s (got %ld vs %ld, line %d)\n", \
                #a, #b, (long)(a), (long)(b), __LINE__); \
-        return false; \
+        return; \
     } \
 } while(0)
 
@@ -62,7 +46,7 @@ static int tests_passed = 0;
     if (strcmp((a), (b)) != 0) { \
         printf("Assertion failed: %s == %s (got '%s' vs '%s', line %d)\n", \
                #a, #b, (a), (b), __LINE__); \
-        return false; \
+        return; \
     } \
 } while(0)
 
@@ -70,21 +54,21 @@ static int tests_passed = 0;
  * Test: Engine Lifecycle
  * ======================================================================== */
 
-TEST(engine_create_destroy) {
+static void engine_create_destroy(void) {
     consensus_engine_t *engine = consensus_engine_create();
     ASSERT(engine != NULL);
 
     consensus_engine_destroy(engine);
-    return true;
+
 }
 
-TEST(engine_destroy_null) {
+static void engine_destroy_null(void) {
     /* Should not crash */
     consensus_engine_destroy(NULL);
-    return true;
+
 }
 
-TEST(engine_initial_state) {
+static void engine_initial_state(void) {
     consensus_engine_t *engine = consensus_engine_create();
     ASSERT(engine != NULL);
 
@@ -98,14 +82,14 @@ TEST(engine_initial_state) {
     ASSERT_EQ(consensus_block_index_count(engine), 0);
 
     consensus_engine_destroy(engine);
-    return true;
+
 }
 
 /* ========================================================================
  * Test: Error Strings
  * ======================================================================== */
 
-TEST(error_strings) {
+static void error_strings(void) {
     /* Test that all error codes have strings */
     ASSERT_STREQ(consensus_error_str(CONSENSUS_OK), "OK");
     ASSERT(consensus_error_str(CONSENSUS_ERR_BLOCK_HEADER) != NULL);
@@ -116,14 +100,14 @@ TEST(error_strings) {
     /* Unknown error should not crash */
     ASSERT(consensus_error_str(999) != NULL);
 
-    return true;
+
 }
 
 /* ========================================================================
  * Test: Result Initialization
  * ======================================================================== */
 
-TEST(result_init) {
+static void result_init(void) {
     consensus_result_t result;
 
     /* Set some garbage */
@@ -139,63 +123,63 @@ TEST(result_init) {
     ASSERT_EQ(result.block_error, BLOCK_VALID);
     ASSERT_EQ(result.tx_error, TX_VALIDATE_OK);
 
-    return true;
+
 }
 
 /* ========================================================================
  * Test: Script Verification Flags
  * ======================================================================== */
 
-TEST(script_flags_pre_bip16) {
+static void script_flags_pre_bip16(void) {
     uint32_t flags = consensus_get_script_flags(0);
     ASSERT_EQ(flags & SCRIPT_VERIFY_P2SH, 0);
     ASSERT_EQ(flags & SCRIPT_VERIFY_DERSIG, 0);
     ASSERT_EQ(flags & SCRIPT_VERIFY_WITNESS, 0);
-    return true;
+
 }
 
-TEST(script_flags_post_bip16) {
+static void script_flags_post_bip16(void) {
     uint32_t flags = consensus_get_script_flags(CONSENSUS_BIP16_HEIGHT);
     ASSERT(flags & SCRIPT_VERIFY_P2SH);
-    return true;
+
 }
 
-TEST(script_flags_post_bip66) {
+static void script_flags_post_bip66(void) {
     uint32_t flags = consensus_get_script_flags(CONSENSUS_BIP66_HEIGHT);
     ASSERT(flags & SCRIPT_VERIFY_P2SH);
     ASSERT(flags & SCRIPT_VERIFY_DERSIG);
-    return true;
+
 }
 
-TEST(script_flags_post_bip65) {
+static void script_flags_post_bip65(void) {
     uint32_t flags = consensus_get_script_flags(CONSENSUS_BIP65_HEIGHT);
     ASSERT(flags & SCRIPT_VERIFY_CHECKLOCKTIMEVERIFY);
-    return true;
+
 }
 
-TEST(script_flags_post_csv) {
+static void script_flags_post_csv(void) {
     uint32_t flags = consensus_get_script_flags(CONSENSUS_CSV_HEIGHT);
     ASSERT(flags & SCRIPT_VERIFY_CHECKSEQUENCEVERIFY);
-    return true;
+
 }
 
-TEST(script_flags_post_segwit) {
+static void script_flags_post_segwit(void) {
     uint32_t flags = consensus_get_script_flags(CONSENSUS_SEGWIT_HEIGHT);
     ASSERT(flags & SCRIPT_VERIFY_WITNESS);
-    return true;
+
 }
 
-TEST(script_flags_post_taproot) {
+static void script_flags_post_taproot(void) {
     uint32_t flags = consensus_get_script_flags(CONSENSUS_TAPROOT_HEIGHT);
     ASSERT(flags & SCRIPT_VERIFY_TAPROOT);
-    return true;
+
 }
 
 /* ========================================================================
  * Test: Chain Tip Queries
  * ======================================================================== */
 
-TEST(chain_tip_initial) {
+static void chain_tip_initial(void) {
     consensus_engine_t *engine = consensus_engine_create();
     ASSERT(engine != NULL);
 
@@ -207,10 +191,10 @@ TEST(chain_tip_initial) {
     ASSERT(work256_is_zero(&tip.chainwork));
 
     consensus_engine_destroy(engine);
-    return true;
+
 }
 
-TEST(block_hash_not_found) {
+static void block_hash_not_found(void) {
     consensus_engine_t *engine = consensus_engine_create();
     ASSERT(engine != NULL);
 
@@ -222,10 +206,10 @@ TEST(block_hash_not_found) {
     ASSERT_EQ(result, ECHO_ERR_NOT_FOUND);
 
     consensus_engine_destroy(engine);
-    return true;
+
 }
 
-TEST(is_main_chain_unknown) {
+static void is_main_chain_unknown(void) {
     consensus_engine_t *engine = consensus_engine_create();
     ASSERT(engine != NULL);
 
@@ -236,14 +220,14 @@ TEST(is_main_chain_unknown) {
     ASSERT(!consensus_is_main_chain(engine, &random_hash));
 
     consensus_engine_destroy(engine);
-    return true;
+
 }
 
 /* ========================================================================
  * Test: UTXO Queries
  * ======================================================================== */
 
-TEST(utxo_lookup_empty) {
+static void utxo_lookup_empty(void) {
     consensus_engine_t *engine = consensus_engine_create();
     ASSERT(engine != NULL);
 
@@ -259,24 +243,24 @@ TEST(utxo_lookup_empty) {
     ASSERT(!consensus_utxo_exists(engine, &outpoint));
 
     consensus_engine_destroy(engine);
-    return true;
+
 }
 
-TEST(utxo_count_empty) {
+static void utxo_count_empty(void) {
     consensus_engine_t *engine = consensus_engine_create();
     ASSERT(engine != NULL);
 
     ASSERT_EQ(consensus_utxo_count(engine), 0);
 
     consensus_engine_destroy(engine);
-    return true;
+
 }
 
 /* ========================================================================
  * Test: Block Index Queries
  * ======================================================================== */
 
-TEST(block_index_lookup_empty) {
+static void block_index_lookup_empty(void) {
     consensus_engine_t *engine = consensus_engine_create();
     ASSERT(engine != NULL);
 
@@ -287,20 +271,20 @@ TEST(block_index_lookup_empty) {
     ASSERT(index == NULL);
 
     consensus_engine_destroy(engine);
-    return true;
+
 }
 
-TEST(block_index_count_empty) {
+static void block_index_count_empty(void) {
     consensus_engine_t *engine = consensus_engine_create();
     ASSERT(engine != NULL);
 
     ASSERT_EQ(consensus_block_index_count(engine), 0);
 
     consensus_engine_destroy(engine);
-    return true;
+
 }
 
-TEST(best_block_index_empty) {
+static void best_block_index_empty(void) {
     consensus_engine_t *engine = consensus_engine_create();
     ASSERT(engine != NULL);
 
@@ -308,14 +292,14 @@ TEST(best_block_index_empty) {
     ASSERT(best == NULL);
 
     consensus_engine_destroy(engine);
-    return true;
+
 }
 
 /* ========================================================================
  * Test: Header Validation
  * ======================================================================== */
 
-TEST(validate_header_genesis) {
+static void validate_header_genesis(void) {
     consensus_engine_t *engine = consensus_engine_create();
     ASSERT(engine != NULL);
 
@@ -328,10 +312,10 @@ TEST(validate_header_genesis) {
     (void)consensus_validate_header(engine, &genesis, &result);
 
     consensus_engine_destroy(engine);
-    return true;
+
 }
 
-TEST(validate_header_disconnected) {
+static void validate_header_disconnected(void) {
     consensus_engine_t *engine = consensus_engine_create();
     ASSERT(engine != NULL);
 
@@ -351,14 +335,14 @@ TEST(validate_header_disconnected) {
     ASSERT_EQ(result.error, CONSENSUS_ERR_INVALID_PREV);
 
     consensus_engine_destroy(engine);
-    return true;
+
 }
 
 /* ========================================================================
  * Test: Statistics
  * ======================================================================== */
 
-TEST(stats_initial) {
+static void stats_initial(void) {
     consensus_engine_t *engine = consensus_engine_create();
     ASSERT(engine != NULL);
 
@@ -370,14 +354,14 @@ TEST(stats_initial) {
     ASSERT_EQ(stats.block_index_count, 0);
 
     consensus_engine_destroy(engine);
-    return true;
+
 }
 
 /* ========================================================================
  * Test: Chainstate Access
  * ======================================================================== */
 
-TEST(get_chainstate) {
+static void get_chainstate(void) {
     consensus_engine_t *engine = consensus_engine_create();
     ASSERT(engine != NULL);
 
@@ -385,10 +369,10 @@ TEST(get_chainstate) {
     ASSERT(chainstate != NULL);
 
     consensus_engine_destroy(engine);
-    return true;
+
 }
 
-TEST(get_utxo_set) {
+static void get_utxo_set(void) {
     consensus_engine_t *engine = consensus_engine_create();
     ASSERT(engine != NULL);
 
@@ -396,14 +380,14 @@ TEST(get_utxo_set) {
     ASSERT(utxo_set != NULL);
 
     consensus_engine_destroy(engine);
-    return true;
+
 }
 
 /* ========================================================================
  * Test: Add Header
  * ======================================================================== */
 
-TEST(add_header_genesis) {
+static void add_header_genesis(void) {
     consensus_engine_t *engine = consensus_engine_create();
     ASSERT(engine != NULL);
 
@@ -421,10 +405,10 @@ TEST(add_header_genesis) {
     ASSERT_EQ(consensus_block_index_count(engine), 1);
 
     consensus_engine_destroy(engine);
-    return true;
+
 }
 
-TEST(add_header_duplicate) {
+static void add_header_duplicate(void) {
     consensus_engine_t *engine = consensus_engine_create();
     ASSERT(engine != NULL);
 
@@ -440,14 +424,14 @@ TEST(add_header_duplicate) {
     ASSERT_EQ(result, ECHO_ERR_EXISTS);
 
     consensus_engine_destroy(engine);
-    return true;
+
 }
 
 /* ========================================================================
  * Test: Context Building
  * ======================================================================== */
 
-TEST(build_validation_ctx_genesis) {
+static void build_validation_ctx_genesis(void) {
     consensus_engine_t *engine = consensus_engine_create();
     ASSERT(engine != NULL);
 
@@ -462,10 +446,10 @@ TEST(build_validation_ctx_genesis) {
     ASSERT_EQ(ctx.header_ctx.timestamp_count, 0);
 
     consensus_engine_destroy(engine);
-    return true;
+
 }
 
-TEST(build_validation_ctx_height_1) {
+static void build_validation_ctx_height_1(void) {
     consensus_engine_t *engine = consensus_engine_create();
     ASSERT(engine != NULL);
 
@@ -481,21 +465,21 @@ TEST(build_validation_ctx_height_1) {
     ASSERT_EQ(ctx.height, 1);
 
     consensus_engine_destroy(engine);
-    return true;
+
 }
 
 /* ========================================================================
  * Test: Subsidy Calculation (via coinbase validation)
  * ======================================================================== */
 
-TEST(subsidy_initial) {
+static void subsidy_initial(void) {
     /* Initial subsidy is 50 BTC */
     satoshi_t subsidy = coinbase_subsidy(0);
     ASSERT_EQ(subsidy, 5000000000LL);
-    return true;
+
 }
 
-TEST(subsidy_first_halving) {
+static void subsidy_first_halving(void) {
     /* First halving at block 210000 */
     satoshi_t before = coinbase_subsidy(209999);
     satoshi_t after = coinbase_subsidy(210000);
@@ -503,10 +487,10 @@ TEST(subsidy_first_halving) {
     ASSERT_EQ(before, 5000000000LL);  /* 50 BTC */
     ASSERT_EQ(after, 2500000000LL);   /* 25 BTC */
 
-    return true;
+
 }
 
-TEST(subsidy_second_halving) {
+static void subsidy_second_halving(void) {
     /* Second halving at block 420000 */
     satoshi_t before = coinbase_subsidy(419999);
     satoshi_t after = coinbase_subsidy(420000);
@@ -514,14 +498,14 @@ TEST(subsidy_second_halving) {
     ASSERT_EQ(before, 2500000000LL);  /* 25 BTC */
     ASSERT_EQ(after, 1250000000LL);   /* 12.5 BTC */
 
-    return true;
+
 }
 
 /* ========================================================================
  * Test: Would Reorg
  * ======================================================================== */
 
-TEST(would_reorg_no_tip) {
+static void would_reorg_no_tip(void) {
     consensus_engine_t *engine = consensus_engine_create();
     ASSERT(engine != NULL);
 
@@ -533,14 +517,14 @@ TEST(would_reorg_no_tip) {
     ASSERT(!reorg);
 
     consensus_engine_destroy(engine);
-    return true;
+
 }
 
 /* ========================================================================
  * Test: Activation Heights
  * ======================================================================== */
 
-TEST(activation_heights) {
+static void activation_heights(void) {
     /* Verify activation heights are defined correctly */
     ASSERT(CONSENSUS_BIP16_HEIGHT > 0);
     ASSERT(CONSENSUS_BIP34_HEIGHT > CONSENSUS_BIP16_HEIGHT);
@@ -550,14 +534,14 @@ TEST(activation_heights) {
     ASSERT(CONSENSUS_SEGWIT_HEIGHT > CONSENSUS_CSV_HEIGHT);
     ASSERT(CONSENSUS_TAPROOT_HEIGHT > CONSENSUS_SEGWIT_HEIGHT);
 
-    return true;
+
 }
 
 /* ========================================================================
  * Test: Block Validation (Basic Structure)
  * ======================================================================== */
 
-TEST(validate_block_null_coinbase) {
+static void validate_block_null_coinbase(void) {
     consensus_engine_t *engine = consensus_engine_create();
     ASSERT(engine != NULL);
 
@@ -576,14 +560,14 @@ TEST(validate_block_null_coinbase) {
     ASSERT(!valid);
 
     consensus_engine_destroy(engine);
-    return true;
+
 }
 
 /* ========================================================================
  * Test: TX Context Building (Error Cases)
  * ======================================================================== */
 
-TEST(tx_ctx_missing_utxo) {
+static void tx_ctx_missing_utxo(void) {
     consensus_engine_t *engine = consensus_engine_create();
     ASSERT(engine != NULL);
 
@@ -612,17 +596,17 @@ TEST(tx_ctx_missing_utxo) {
     free(tx.outputs);
 
     consensus_engine_destroy(engine);
-    return true;
+
 }
 
 /* ========================================================================
  * Test: Free TX Context
  * ======================================================================== */
 
-TEST(free_tx_ctx_null) {
+static void free_tx_ctx_null(void) {
     /* Should not crash */
     consensus_free_tx_ctx(NULL);
-    return true;
+
 }
 
 /* ========================================================================
@@ -630,87 +614,77 @@ TEST(free_tx_ctx_null) {
  * ======================================================================== */
 
 int main(void) {
-    printf("=== Consensus Engine Tests ===\n\n");
+    test_suite_begin("Consensus Engine Tests");
 
-    printf("Engine Lifecycle:\n");
-    RUN_TEST(engine_create_destroy);
-    RUN_TEST(engine_destroy_null);
-    RUN_TEST(engine_initial_state);
+    test_section("Engine Lifecycle");
+    test_case("Create and destroy engine"); engine_create_destroy(); test_pass();
+    test_case("Destroy NULL engine"); engine_destroy_null(); test_pass();
+    test_case("Initial engine state"); engine_initial_state(); test_pass();
 
-    printf("\nError Handling:\n");
-    RUN_TEST(error_strings);
-    RUN_TEST(result_init);
+    test_section("Error Handling");
+    test_case("Error code strings"); error_strings(); test_pass();
+    test_case("Result initialization"); result_init(); test_pass();
 
-    printf("\nScript Verification Flags:\n");
-    RUN_TEST(script_flags_pre_bip16);
-    RUN_TEST(script_flags_post_bip16);
-    RUN_TEST(script_flags_post_bip66);
-    RUN_TEST(script_flags_post_bip65);
-    RUN_TEST(script_flags_post_csv);
-    RUN_TEST(script_flags_post_segwit);
-    RUN_TEST(script_flags_post_taproot);
+    test_section("Script Verification Flags");
+    test_case("Pre-BIP16 flags"); script_flags_pre_bip16(); test_pass();
+    test_case("Post-BIP16 flags (P2SH)"); script_flags_post_bip16(); test_pass();
+    test_case("Post-BIP66 flags (DER sigs)"); script_flags_post_bip66(); test_pass();
+    test_case("Post-BIP65 flags (CLTV)"); script_flags_post_bip65(); test_pass();
+    test_case("Post-CSV flags"); script_flags_post_csv(); test_pass();
+    test_case("Post-SegWit flags"); script_flags_post_segwit(); test_pass();
+    test_case("Post-Taproot flags"); script_flags_post_taproot(); test_pass();
 
-    printf("\nChain Tip Queries:\n");
-    RUN_TEST(chain_tip_initial);
-    RUN_TEST(block_hash_not_found);
-    RUN_TEST(is_main_chain_unknown);
+    test_section("Chain Tip Queries");
+    test_case("Initial chain tip"); chain_tip_initial(); test_pass();
+    test_case("Block hash not found"); block_hash_not_found(); test_pass();
+    test_case("Unknown hash not on main chain"); is_main_chain_unknown(); test_pass();
 
-    printf("\nUTXO Queries:\n");
-    RUN_TEST(utxo_lookup_empty);
-    RUN_TEST(utxo_count_empty);
+    test_section("UTXO Queries");
+    test_case("Lookup in empty UTXO set"); utxo_lookup_empty(); test_pass();
+    test_case("UTXO count in empty set"); utxo_count_empty(); test_pass();
 
-    printf("\nBlock Index Queries:\n");
-    RUN_TEST(block_index_lookup_empty);
-    RUN_TEST(block_index_count_empty);
-    RUN_TEST(best_block_index_empty);
+    test_section("Block Index Queries");
+    test_case("Lookup in empty block index"); block_index_lookup_empty(); test_pass();
+    test_case("Block index count when empty"); block_index_count_empty(); test_pass();
+    test_case("Best block index when empty"); best_block_index_empty(); test_pass();
 
-    printf("\nHeader Validation:\n");
-    RUN_TEST(validate_header_genesis);
-    RUN_TEST(validate_header_disconnected);
+    test_section("Header Validation");
+    test_case("Validate genesis header"); validate_header_genesis(); test_pass();
+    test_case("Reject disconnected header"); validate_header_disconnected(); test_pass();
 
-    printf("\nStatistics:\n");
-    RUN_TEST(stats_initial);
+    test_section("Statistics");
+    test_case("Initial statistics"); stats_initial(); test_pass();
 
-    printf("\nChainstate Access:\n");
-    RUN_TEST(get_chainstate);
-    RUN_TEST(get_utxo_set);
+    test_section("Chainstate Access");
+    test_case("Get chainstate pointer"); get_chainstate(); test_pass();
+    test_case("Get UTXO set pointer"); get_utxo_set(); test_pass();
 
-    printf("\nAdd Header:\n");
-    RUN_TEST(add_header_genesis);
-    RUN_TEST(add_header_duplicate);
+    test_section("Add Header");
+    test_case("Add genesis header"); add_header_genesis(); test_pass();
+    test_case("Reject duplicate header"); add_header_duplicate(); test_pass();
 
-    printf("\nContext Building:\n");
-    RUN_TEST(build_validation_ctx_genesis);
-    RUN_TEST(build_validation_ctx_height_1);
+    test_section("Context Building");
+    test_case("Build validation context for genesis"); build_validation_ctx_genesis(); test_pass();
+    test_case("Build validation context for height 1"); build_validation_ctx_height_1(); test_pass();
 
-    printf("\nSubsidy Calculation:\n");
-    RUN_TEST(subsidy_initial);
-    RUN_TEST(subsidy_first_halving);
-    RUN_TEST(subsidy_second_halving);
+    test_section("Subsidy Calculation");
+    test_case("Initial subsidy (50 BTC)"); subsidy_initial(); test_pass();
+    test_case("First halving (50→25 BTC)"); subsidy_first_halving(); test_pass();
+    test_case("Second halving (25→12.5 BTC)"); subsidy_second_halving(); test_pass();
 
-    printf("\nReorg Detection:\n");
-    RUN_TEST(would_reorg_no_tip);
+    test_section("Reorg Detection");
+    test_case("No reorg with no tip"); would_reorg_no_tip(); test_pass();
 
-    printf("\nActivation Heights:\n");
-    RUN_TEST(activation_heights);
+    test_section("Activation Heights");
+    test_case("BIP activation height ordering"); activation_heights(); test_pass();
 
-    printf("\nBlock Validation:\n");
-    RUN_TEST(validate_block_null_coinbase);
+    test_section("Block Validation");
+    test_case("Reject block with no coinbase"); validate_block_null_coinbase(); test_pass();
 
-    printf("\nTransaction Context:\n");
-    RUN_TEST(tx_ctx_missing_utxo);
-    RUN_TEST(free_tx_ctx_null);
+    test_section("Transaction Context");
+    test_case("Error on missing UTXO"); tx_ctx_missing_utxo(); test_pass();
+    test_case("Free NULL tx context"); free_tx_ctx_null(); test_pass();
 
-    printf("\n=== Results ===\n");
-    printf("Tests run: %d\n", tests_run);
-    printf("Tests passed: %d\n", tests_passed);
-    printf("Tests failed: %d\n", tests_run - tests_passed);
-
-    if (tests_passed == tests_run) {
-        printf("\n*** ALL TESTS PASSED ***\n");
-        return 0;
-    } else {
-        printf("\n*** SOME TESTS FAILED ***\n");
-        return 1;
-    }
+    test_suite_end();
+    return test_global_summary();
 }

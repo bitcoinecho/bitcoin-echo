@@ -118,10 +118,18 @@ static size_t format_timestamp(char *buf, size_t buf_len) {
 #endif
 
   /* Format: YYYY-MM-DD HH:MM:SS.mmm */
+  /* Buffer is 32 bytes, timestamp is max 23 bytes + null, no truncation possible */
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wformat-truncation"
+#endif
   int written =
       snprintf(buf, buf_len, "%04d-%02d-%02d %02d:%02d:%02d.%03u",
                tm_local.tm_year + 1900, tm_local.tm_mon + 1, tm_local.tm_mday,
                tm_local.tm_hour, tm_local.tm_min, tm_local.tm_sec, ms_part);
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
   return (written > 0) ? (size_t)written : 0;
 }

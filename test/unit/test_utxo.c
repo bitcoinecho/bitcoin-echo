@@ -8,27 +8,15 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include "test_utils.h"
 
-static int tests_run = 0;
-static int tests_passed = 0;
-
-#define TEST(name) \
-    static void name(void); \
-    static void run_##name(void) { \
-        tests_run++; \
-        printf("Running %s...", #name); \
-        name(); \
-        tests_passed++; \
-        printf(" PASS\n"); \
-    } \
-    static void name(void)
 
 #define ASSERT(cond) \
     do { \
         if (!(cond)) { \
             printf("\n  Assertion failed: %s\n  at %s:%d\n", \
                    #cond, __FILE__, __LINE__); \
-            exit(1); \
+            return; \
         } \
     } while (0)
 
@@ -81,7 +69,7 @@ static utxo_entry_t *make_utxo(
  * Outpoint Tests
  * ======================================================================== */
 
-TEST(test_outpoint_equal) {
+static void test_outpoint_equal(void) {
     outpoint_t a = make_outpoint(0x01, 0);
     outpoint_t b = make_outpoint(0x01, 0);
     outpoint_t c = make_outpoint(0x02, 0);
@@ -92,7 +80,7 @@ TEST(test_outpoint_equal) {
     ASSERT_FALSE(outpoint_equal(&a, &d));
 }
 
-TEST(test_outpoint_serialize) {
+static void test_outpoint_serialize(void) {
     outpoint_t op = make_outpoint(0xAB, 0x12345678);
     uint8_t buf[36];
 
@@ -111,7 +99,7 @@ TEST(test_outpoint_serialize) {
     ASSERT_EQ(buf[35], 0x12);
 }
 
-TEST(test_outpoint_deserialize) {
+static void test_outpoint_deserialize(void) {
     uint8_t data[36];
     memset(data, 0xCD, 32);
     data[32] = 0x11;
@@ -132,7 +120,7 @@ TEST(test_outpoint_deserialize) {
     ASSERT_EQ(op.vout, 0x44332211);
 }
 
-TEST(test_outpoint_roundtrip) {
+static void test_outpoint_roundtrip(void) {
     outpoint_t original = make_outpoint(0x42, 0xDEADBEEF);
     uint8_t buf[36];
     outpoint_t decoded;
@@ -147,7 +135,7 @@ TEST(test_outpoint_roundtrip) {
  * UTXO Entry Tests
  * ======================================================================== */
 
-TEST(test_utxo_entry_create) {
+static void test_utxo_entry_create(void) {
     utxo_entry_t *entry = make_utxo(0x01, 0, 5000000000, 100, false);
     ASSERT_NOT_NULL(entry);
 
@@ -160,7 +148,7 @@ TEST(test_utxo_entry_create) {
     utxo_entry_destroy(entry);
 }
 
-TEST(test_utxo_entry_clone) {
+static void test_utxo_entry_clone(void) {
     utxo_entry_t *original = make_utxo(0x02, 1, 1000000, 200, true);
     ASSERT_NOT_NULL(original);
 
@@ -182,7 +170,7 @@ TEST(test_utxo_entry_clone) {
     utxo_entry_destroy(clone);
 }
 
-TEST(test_utxo_entry_is_mature_coinbase) {
+static void test_utxo_entry_is_mature_coinbase(void) {
     /* Coinbase created at height 100 */
     utxo_entry_t *entry = make_utxo(0x03, 0, 5000000000, 100, true);
     ASSERT_NOT_NULL(entry);
@@ -199,7 +187,7 @@ TEST(test_utxo_entry_is_mature_coinbase) {
     utxo_entry_destroy(entry);
 }
 
-TEST(test_utxo_entry_is_mature_noncoinbase) {
+static void test_utxo_entry_is_mature_noncoinbase(void) {
     /* Non-coinbase outputs are always mature */
     utxo_entry_t *entry = make_utxo(0x04, 0, 1000000, 100, false);
     ASSERT_NOT_NULL(entry);
@@ -215,7 +203,7 @@ TEST(test_utxo_entry_is_mature_noncoinbase) {
  * UTXO Set Tests
  * ======================================================================== */
 
-TEST(test_utxo_set_create) {
+static void test_utxo_set_create(void) {
     utxo_set_t *set = utxo_set_create(0);
     ASSERT_NOT_NULL(set);
     ASSERT_EQ(utxo_set_size(set), 0);
@@ -223,7 +211,7 @@ TEST(test_utxo_set_create) {
     utxo_set_destroy(set);
 }
 
-TEST(test_utxo_set_insert_and_lookup) {
+static void test_utxo_set_insert_and_lookup(void) {
     utxo_set_t *set = utxo_set_create(0);
     ASSERT_NOT_NULL(set);
 
@@ -245,7 +233,7 @@ TEST(test_utxo_set_insert_and_lookup) {
     utxo_set_destroy(set);
 }
 
-TEST(test_utxo_set_exists) {
+static void test_utxo_set_exists(void) {
     utxo_set_t *set = utxo_set_create(0);
     ASSERT_NOT_NULL(set);
 
@@ -266,7 +254,7 @@ TEST(test_utxo_set_exists) {
     utxo_set_destroy(set);
 }
 
-TEST(test_utxo_set_insert_duplicate) {
+static void test_utxo_set_insert_duplicate(void) {
     utxo_set_t *set = utxo_set_create(0);
     ASSERT_NOT_NULL(set);
 
@@ -284,7 +272,7 @@ TEST(test_utxo_set_insert_duplicate) {
     utxo_set_destroy(set);
 }
 
-TEST(test_utxo_set_remove) {
+static void test_utxo_set_remove(void) {
     utxo_set_t *set = utxo_set_create(0);
     ASSERT_NOT_NULL(set);
 
@@ -310,7 +298,7 @@ TEST(test_utxo_set_remove) {
     utxo_set_destroy(set);
 }
 
-TEST(test_utxo_set_multiple_entries) {
+static void test_utxo_set_multiple_entries(void) {
     utxo_set_t *set = utxo_set_create(0);
     ASSERT_NOT_NULL(set);
 
@@ -352,7 +340,7 @@ TEST(test_utxo_set_multiple_entries) {
     utxo_set_destroy(set);
 }
 
-TEST(test_utxo_set_clear) {
+static void test_utxo_set_clear(void) {
     utxo_set_t *set = utxo_set_create(0);
     ASSERT_NOT_NULL(set);
 
@@ -372,7 +360,7 @@ TEST(test_utxo_set_clear) {
     utxo_set_destroy(set);
 }
 
-TEST(test_utxo_set_stress) {
+static void test_utxo_set_stress(void) {
     /* Test with many entries to verify hash table resize */
     utxo_set_t *set = utxo_set_create(16);
     ASSERT_NOT_NULL(set);
@@ -400,14 +388,14 @@ TEST(test_utxo_set_stress) {
  * Batch Operations Tests
  * ======================================================================== */
 
-TEST(test_utxo_batch_create) {
+static void test_utxo_batch_create(void) {
     utxo_batch_t *batch = utxo_batch_create();
     ASSERT_NOT_NULL(batch);
 
     utxo_batch_destroy(batch);
 }
 
-TEST(test_utxo_batch_insert) {
+static void test_utxo_batch_insert(void) {
     utxo_batch_t *batch = utxo_batch_create();
     ASSERT_NOT_NULL(batch);
 
@@ -421,7 +409,7 @@ TEST(test_utxo_batch_insert) {
     utxo_batch_destroy(batch);
 }
 
-TEST(test_utxo_batch_remove) {
+static void test_utxo_batch_remove(void) {
     utxo_batch_t *batch = utxo_batch_create();
     ASSERT_NOT_NULL(batch);
 
@@ -436,7 +424,7 @@ TEST(test_utxo_batch_remove) {
     utxo_batch_destroy(batch);
 }
 
-TEST(test_utxo_batch_multiple_changes) {
+static void test_utxo_batch_multiple_changes(void) {
     utxo_batch_t *batch = utxo_batch_create();
     ASSERT_NOT_NULL(batch);
 
@@ -468,7 +456,7 @@ static bool count_callback(const utxo_entry_t *entry, void *user_data) {
     return true;
 }
 
-TEST(test_utxo_set_foreach) {
+static void test_utxo_set_foreach(void) {
     utxo_set_t *set = utxo_set_create(0);
     ASSERT_NOT_NULL(set);
 
@@ -497,7 +485,7 @@ static bool stop_early_callback(const utxo_entry_t *entry, void *user_data) {
     return iteration_count < 3;  /* Stop after 3 */
 }
 
-TEST(test_utxo_set_foreach_early_stop) {
+static void test_utxo_set_foreach_early_stop(void) {
     utxo_set_t *set = utxo_set_create(0);
     ASSERT_NOT_NULL(set);
 
@@ -522,43 +510,31 @@ TEST(test_utxo_set_foreach_early_stop) {
  * ======================================================================== */
 
 int main(void) {
-    printf("Running UTXO tests...\n\n");
+    test_suite_begin("Utxo Tests");
 
-    /* Outpoint tests */
-    run_test_outpoint_equal();
-    run_test_outpoint_serialize();
-    run_test_outpoint_deserialize();
-    run_test_outpoint_roundtrip();
+    test_case("Outpoint equal"); test_outpoint_equal(); test_pass();
+    test_case("Outpoint serialize"); test_outpoint_serialize(); test_pass();
+    test_case("Outpoint deserialize"); test_outpoint_deserialize(); test_pass();
+    test_case("Outpoint roundtrip"); test_outpoint_roundtrip(); test_pass();
+    test_case("Utxo entry create"); test_utxo_entry_create(); test_pass();
+    test_case("Utxo entry clone"); test_utxo_entry_clone(); test_pass();
+    test_case("Utxo entry is mature coinbase"); test_utxo_entry_is_mature_coinbase(); test_pass();
+    test_case("Utxo entry is mature noncoinbase"); test_utxo_entry_is_mature_noncoinbase(); test_pass();
+    test_case("Utxo set create"); test_utxo_set_create(); test_pass();
+    test_case("Utxo set insert and lookup"); test_utxo_set_insert_and_lookup(); test_pass();
+    test_case("Utxo set exists"); test_utxo_set_exists(); test_pass();
+    test_case("Utxo set insert duplicate"); test_utxo_set_insert_duplicate(); test_pass();
+    test_case("Utxo set remove"); test_utxo_set_remove(); test_pass();
+    test_case("Utxo set multiple entries"); test_utxo_set_multiple_entries(); test_pass();
+    test_case("Utxo set clear"); test_utxo_set_clear(); test_pass();
+    test_case("Utxo set stress"); test_utxo_set_stress(); test_pass();
+    test_case("Utxo batch create"); test_utxo_batch_create(); test_pass();
+    test_case("Utxo batch insert"); test_utxo_batch_insert(); test_pass();
+    test_case("Utxo batch remove"); test_utxo_batch_remove(); test_pass();
+    test_case("Utxo batch multiple changes"); test_utxo_batch_multiple_changes(); test_pass();
+    test_case("Utxo set foreach"); test_utxo_set_foreach(); test_pass();
+    test_case("Utxo set foreach early stop"); test_utxo_set_foreach_early_stop(); test_pass();
 
-    /* UTXO entry tests */
-    run_test_utxo_entry_create();
-    run_test_utxo_entry_clone();
-    run_test_utxo_entry_is_mature_coinbase();
-    run_test_utxo_entry_is_mature_noncoinbase();
-
-    /* UTXO set tests */
-    run_test_utxo_set_create();
-    run_test_utxo_set_insert_and_lookup();
-    run_test_utxo_set_exists();
-    run_test_utxo_set_insert_duplicate();
-    run_test_utxo_set_remove();
-    run_test_utxo_set_multiple_entries();
-    run_test_utxo_set_clear();
-    run_test_utxo_set_stress();
-
-    /* Batch tests */
-    run_test_utxo_batch_create();
-    run_test_utxo_batch_insert();
-    run_test_utxo_batch_remove();
-    run_test_utxo_batch_multiple_changes();
-
-    /* Iteration tests */
-    run_test_utxo_set_foreach();
-    run_test_utxo_set_foreach_early_stop();
-
-    printf("\n========================================\n");
-    printf("UTXO Tests: %d/%d passed\n", tests_passed, tests_run);
-    printf("========================================\n");
-
-    return (tests_passed == tests_run) ? 0 : 1;
+    test_suite_end();
+    return test_global_summary();
 }

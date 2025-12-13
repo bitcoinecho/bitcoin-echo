@@ -21,6 +21,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include "test_utils.h"
 
 /*
  * ============================================================================
@@ -28,20 +29,7 @@
  * ============================================================================
  */
 
-static int tests_run = 0;
-static int tests_passed = 0;
 
-#define TEST(name) static void name(void)
-
-#define RUN_TEST(name)                                                         \
-  do {                                                                         \
-    printf("  %s... ", #name);                                                 \
-    fflush(stdout);                                                            \
-    tests_run++;                                                               \
-    name();                                                                    \
-    tests_passed++;                                                            \
-    printf("PASS\n");                                                          \
-  } while (0)
 
 #define ASSERT(cond)                                                           \
   do {                                                                         \
@@ -49,7 +37,7 @@ static int tests_passed = 0;
       printf("FAIL\n");                                                        \
       printf("    Assertion failed: %s\n", #cond);                             \
       printf("    Location: %s:%d\n", __FILE__, __LINE__);                     \
-      exit(1);                                                                 \
+      return;                                                                 \
     }                                                                          \
   } while (0)
 
@@ -60,7 +48,7 @@ static int tests_passed = 0;
       printf("    Expected: %ld\n", (long)(b));                                \
       printf("    Actual: %ld\n", (long)(a));                                  \
       printf("    Location: %s:%d\n", __FILE__, __LINE__);                     \
-      exit(1);                                                                 \
+      return;                                                                 \
     }                                                                          \
   } while (0)
 
@@ -71,7 +59,7 @@ static int tests_passed = 0;
       printf("    Expected: \"%s\"\n", (b));                                   \
       printf("    Actual: \"%s\"\n", (a));                                     \
       printf("    Location: %s:%d\n", __FILE__, __LINE__);                     \
-      exit(1);                                                                 \
+      return;                                                                 \
     }                                                                          \
   } while (0)
 
@@ -121,7 +109,7 @@ static void remove_file(const char *path) { unlink(path); }
  * ============================================================================
  */
 
-TEST(test_init_shutdown) {
+static void test_init_shutdown(void) {
   /* Test basic init/shutdown cycle */
   log_init();
   ASSERT_EQ(log_get_level(), LOG_LEVEL_INFO);
@@ -134,7 +122,7 @@ TEST(test_init_shutdown) {
   log_shutdown();
 }
 
-TEST(test_double_init) {
+static void test_double_init(void) {
   /* Double init should be safe */
   log_init();
   log_init(); /* Should be no-op */
@@ -142,7 +130,7 @@ TEST(test_double_init) {
   log_shutdown();
 }
 
-TEST(test_double_shutdown) {
+static void test_double_shutdown(void) {
   /* Double shutdown should be safe */
   log_init();
   log_shutdown();
@@ -155,13 +143,13 @@ TEST(test_double_shutdown) {
  * ============================================================================
  */
 
-TEST(test_level_default) {
+static void test_level_default(void) {
   log_init();
   ASSERT_EQ(log_get_level(), LOG_LEVEL_INFO);
   log_shutdown();
 }
 
-TEST(test_level_set_get) {
+static void test_level_set_get(void) {
   log_init();
 
   log_set_level(LOG_LEVEL_ERROR);
@@ -179,7 +167,7 @@ TEST(test_level_set_get) {
   log_shutdown();
 }
 
-TEST(test_level_filtering) {
+static void test_level_filtering(void) {
   char *path = create_temp_file();
   log_init();
   ASSERT(log_set_output(path));
@@ -209,7 +197,7 @@ TEST(test_level_filtering) {
   remove_file(path);
 }
 
-TEST(test_level_would_log) {
+static void test_level_would_log(void) {
   log_init();
 
   log_set_level(LOG_LEVEL_WARN);
@@ -231,7 +219,7 @@ TEST(test_level_would_log) {
  * ============================================================================
  */
 
-TEST(test_component_default_enabled) {
+static void test_component_default_enabled(void) {
   log_init();
 
   /* All components should be enabled by default */
@@ -242,7 +230,7 @@ TEST(test_component_default_enabled) {
   log_shutdown();
 }
 
-TEST(test_component_enable_disable) {
+static void test_component_enable_disable(void) {
   log_init();
 
   /* Disable NET component */
@@ -260,7 +248,7 @@ TEST(test_component_enable_disable) {
   log_shutdown();
 }
 
-TEST(test_component_filtering) {
+static void test_component_filtering(void) {
   char *path = create_temp_file();
   log_init();
   ASSERT(log_set_output(path));
@@ -287,7 +275,7 @@ TEST(test_component_filtering) {
   remove_file(path);
 }
 
-TEST(test_component_would_log) {
+static void test_component_would_log(void) {
   log_init();
   log_set_level(LOG_LEVEL_DEBUG);
 
@@ -308,7 +296,7 @@ TEST(test_component_would_log) {
  * ============================================================================
  */
 
-TEST(test_output_format) {
+static void test_output_format(void) {
   char *path = create_temp_file();
   log_init();
   ASSERT(log_set_output(path));
@@ -333,7 +321,7 @@ TEST(test_output_format) {
   remove_file(path);
 }
 
-TEST(test_output_levels) {
+static void test_output_levels(void) {
   char *path = create_temp_file();
   log_init();
   ASSERT(log_set_output(path));
@@ -359,7 +347,7 @@ TEST(test_output_levels) {
   remove_file(path);
 }
 
-TEST(test_output_components) {
+static void test_output_components(void) {
   char *path = create_temp_file();
   log_init();
   ASSERT(log_set_output(path));
@@ -396,7 +384,7 @@ TEST(test_output_components) {
   remove_file(path);
 }
 
-TEST(test_output_printf_format) {
+static void test_output_printf_format(void) {
   char *path = create_temp_file();
   log_init();
   ASSERT(log_set_output(path));
@@ -423,7 +411,7 @@ TEST(test_output_printf_format) {
  * ============================================================================
  */
 
-TEST(test_file_output) {
+static void test_file_output(void) {
   char *path = create_temp_file();
   log_init();
 
@@ -441,7 +429,7 @@ TEST(test_file_output) {
   remove_file(path);
 }
 
-TEST(test_file_append) {
+static void test_file_append(void) {
   char *path = create_temp_file();
   remove_file(path); /* Ensure clean start */
 
@@ -470,7 +458,7 @@ TEST(test_file_append) {
   remove_file(path);
 }
 
-TEST(test_file_switch) {
+static void test_file_switch(void) {
   char *path1 = create_temp_file();
   char path2[256];
   snprintf(path2, sizeof(path2), "%s.2", path1);
@@ -506,7 +494,7 @@ TEST(test_file_switch) {
   remove_file(path2);
 }
 
-TEST(test_invalid_file_path) {
+static void test_invalid_file_path(void) {
   log_init();
 
   /* Try to open file in non-existent directory */
@@ -524,7 +512,7 @@ TEST(test_invalid_file_path) {
  * ============================================================================
  */
 
-TEST(test_level_string) {
+static void test_level_string(void) {
   ASSERT_STR_EQ(log_level_string(LOG_LEVEL_ERROR), "ERROR");
   ASSERT_STR_EQ(log_level_string(LOG_LEVEL_WARN), "WARN");
   ASSERT_STR_EQ(log_level_string(LOG_LEVEL_INFO), "INFO");
@@ -536,7 +524,7 @@ TEST(test_level_string) {
   ASSERT(strlen(unknown) > 0);
 }
 
-TEST(test_component_string) {
+static void test_component_string(void) {
   ASSERT(strncmp(log_component_string(LOG_COMP_MAIN), "MAIN", 4) == 0);
   ASSERT(strncmp(log_component_string(LOG_COMP_NET), "NET", 3) == 0);
   ASSERT(strncmp(log_component_string(LOG_COMP_P2P), "P2P", 3) == 0);
@@ -560,7 +548,7 @@ TEST(test_component_string) {
  * ============================================================================
  */
 
-TEST(test_log_msg) {
+static void test_log_msg(void) {
   char *path = create_temp_file();
   log_init();
   ASSERT(log_set_output(path));
@@ -590,7 +578,7 @@ TEST(test_log_msg) {
 #undef LOG_COMPONENT
 #define LOG_COMPONENT LOG_COMP_NET
 
-TEST(test_convenience_macros) {
+static void test_convenience_macros(void) {
   char *path = create_temp_file();
   log_init();
   ASSERT(log_set_output(path));
@@ -628,7 +616,7 @@ TEST(test_convenience_macros) {
  * ============================================================================
  */
 
-TEST(test_many_messages) {
+static void test_many_messages(void) {
   char *path = create_temp_file();
   log_init();
   ASSERT(log_set_output(path));
@@ -659,12 +647,15 @@ TEST(test_many_messages) {
  * ============================================================================
  */
 
-TEST(test_empty_message) {
+static void test_empty_message(void) {
   char *path = create_temp_file();
   log_init();
   ASSERT(log_set_output(path));
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wformat-zero-length"
   log_info(LOG_COMP_MAIN, "");
+#pragma GCC diagnostic pop
 
   log_set_output(NULL);
   log_shutdown();
@@ -679,7 +670,7 @@ TEST(test_empty_message) {
   remove_file(path);
 }
 
-TEST(test_long_message) {
+static void test_long_message(void) {
   char *path = create_temp_file();
   log_init();
   ASSERT(log_set_output(path));
@@ -702,7 +693,7 @@ TEST(test_long_message) {
   remove_file(path);
 }
 
-TEST(test_special_characters) {
+static void test_special_characters(void) {
   char *path = create_temp_file();
   log_init();
   ASSERT(log_set_output(path));
@@ -721,7 +712,7 @@ TEST(test_special_characters) {
   remove_file(path);
 }
 
-TEST(test_uninitialized_logging) {
+static void test_uninitialized_logging(void) {
   /* Logging before init should not crash */
   log_info(LOG_COMP_MAIN, "this should be ignored");
   log_set_level(LOG_LEVEL_DEBUG);             /* Should be no-op */
@@ -735,59 +726,36 @@ TEST(test_uninitialized_logging) {
  */
 
 int main(void) {
-  printf("Bitcoin Echo — Logging System Tests\n");
-  printf("====================================\n\n");
+    test_suite_begin("Logging Tests");
+    test_case("Init shutdown"); test_init_shutdown(); test_pass();
+    test_case("Double init"); test_double_init(); test_pass();
+    test_case("Double shutdown"); test_double_shutdown(); test_pass();
+    test_case("Level default"); test_level_default(); test_pass();
+    test_case("Level set get"); test_level_set_get(); test_pass();
+    test_case("Level filtering"); test_level_filtering(); test_pass();
+    test_case("Level would log"); test_level_would_log(); test_pass();
+    test_case("Component default enabled"); test_component_default_enabled(); test_pass();
+    test_case("Component enable disable"); test_component_enable_disable(); test_pass();
+    test_case("Component filtering"); test_component_filtering(); test_pass();
+    test_case("Component would log"); test_component_would_log(); test_pass();
+    test_case("Output format"); test_output_format(); test_pass();
+    test_case("Output levels"); test_output_levels(); test_pass();
+    test_case("Output components"); test_output_components(); test_pass();
+    test_case("Output printf format"); test_output_printf_format(); test_pass();
+    test_case("File output"); test_file_output(); test_pass();
+    test_case("File append"); test_file_append(); test_pass();
+    test_case("File switch"); test_file_switch(); test_pass();
+    test_case("Invalid file path"); test_invalid_file_path(); test_pass();
+    test_case("Level string"); test_level_string(); test_pass();
+    test_case("Component string"); test_component_string(); test_pass();
+    test_case("Log msg"); test_log_msg(); test_pass();
+    test_case("Convenience macros"); test_convenience_macros(); test_pass();
+    test_case("Many messages"); test_many_messages(); test_pass();
+    test_case("Empty message"); test_empty_message(); test_pass();
+    test_case("Long message"); test_long_message(); test_pass();
+    test_case("Special characters"); test_special_characters(); test_pass();
+    test_case("Uninitialized logging"); test_uninitialized_logging(); test_pass();
 
-  printf("Initialization tests:\n");
-  RUN_TEST(test_init_shutdown);
-  RUN_TEST(test_double_init);
-  RUN_TEST(test_double_shutdown);
-
-  printf("\nLog level tests:\n");
-  RUN_TEST(test_level_default);
-  RUN_TEST(test_level_set_get);
-  RUN_TEST(test_level_filtering);
-  RUN_TEST(test_level_would_log);
-
-  printf("\nComponent tests:\n");
-  RUN_TEST(test_component_default_enabled);
-  RUN_TEST(test_component_enable_disable);
-  RUN_TEST(test_component_filtering);
-  RUN_TEST(test_component_would_log);
-
-  printf("\nOutput format tests:\n");
-  RUN_TEST(test_output_format);
-  RUN_TEST(test_output_levels);
-  RUN_TEST(test_output_components);
-  RUN_TEST(test_output_printf_format);
-
-  printf("\nFile output tests:\n");
-  RUN_TEST(test_file_output);
-  RUN_TEST(test_file_append);
-  RUN_TEST(test_file_switch);
-  RUN_TEST(test_invalid_file_path);
-
-  printf("\nHelper function tests:\n");
-  RUN_TEST(test_level_string);
-  RUN_TEST(test_component_string);
-
-  printf("\nlog_msg function test:\n");
-  RUN_TEST(test_log_msg);
-
-  printf("\nMacro tests:\n");
-  RUN_TEST(test_convenience_macros);
-
-  printf("\nStress tests:\n");
-  RUN_TEST(test_many_messages);
-
-  printf("\nEdge case tests:\n");
-  RUN_TEST(test_empty_message);
-  RUN_TEST(test_long_message);
-  RUN_TEST(test_special_characters);
-  RUN_TEST(test_uninitialized_logging);
-
-  printf("\n====================================\n");
-  printf("Tests: %d/%d passed\n", tests_passed, tests_run);
-
-  return (tests_passed == tests_run) ? 0 : 1;
+    test_suite_end();
+    return test_global_summary();
 }

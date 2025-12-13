@@ -9,13 +9,12 @@
 
 #include "block.h"
 #include "echo_types.h"
+#include "test_utils.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-static int tests_run = 0;
-static int tests_passed = 0;
 
 /*
  * Convert hex string to bytes.
@@ -91,7 +90,6 @@ static void test_genesis_header(void) {
       "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f";
   uint8_t expected_hash[32];
 
-  tests_run++;
 
   /* Generate genesis header */
   block_genesis_header(&header);
@@ -99,13 +97,13 @@ static void test_genesis_header(void) {
   /* Verify header fields */
   if (header.version != 1 || header.timestamp != 1231006505 ||
       header.bits != 0x1d00ffff || header.nonce != 2083236893) {
-    printf("  [FAIL] Genesis header fields incorrect\n");
+    test_fail("Genesis header fields incorrect");
     return;
   }
 
   /* Compute hash */
   if (block_header_hash(&header, &hash) != ECHO_OK) {
-    printf("  [FAIL] Genesis header hash computation failed\n");
+    test_fail("Genesis header hash computation failed");
     return;
   }
 
@@ -117,11 +115,12 @@ static void test_genesis_header(void) {
   memcpy(display_hash, hash.bytes, 32);
 
   if (bytes_equal(hash.bytes, expected_hash, 32)) {
-    tests_passed++;
-    printf("  [PASS] Genesis block hash correct\n");
+    test_pass();
+    test_case("Genesis block hash correct");
+      test_pass();
   } else {
     reverse_bytes(display_hash, 32);
-    printf("  [FAIL] Genesis block hash incorrect\n");
+    test_fail("Genesis block hash incorrect");
     printf("    Expected: %s\n", expected_hash_hex);
     printf("    Got:      ");
     print_hex(display_hash, 32);
@@ -138,10 +137,9 @@ static void test_header_roundtrip(const char *name, const char *hex) {
   block_header_t header;
   echo_result_t result;
 
-  tests_run++;
 
   if (hex_to_bytes(hex, data, sizeof(data)) != BLOCK_HEADER_SIZE) {
-    printf("  [FAIL] %s (invalid hex)\n", name);
+    test_fail("%s (invalid hex)");
     return;
   }
 
@@ -161,10 +159,11 @@ static void test_header_roundtrip(const char *name, const char *hex) {
 
   /* Compare */
   if (bytes_equal(data, serialized, BLOCK_HEADER_SIZE)) {
-    tests_passed++;
-    printf("  [PASS] %s\n", name);
+    test_pass();
+    test_case(name);
+        test_pass();
   } else {
-    printf("  [FAIL] %s (roundtrip mismatch)\n", name);
+    test_fail("%s (roundtrip mismatch)");
   }
 }
 
@@ -179,38 +178,38 @@ static void test_block_hash(const char *name, const char *header_hex,
   uint8_t expected_hash[32];
   uint8_t display_hash[32];
 
-  tests_run++;
 
   if (hex_to_bytes(header_hex, header_data, sizeof(header_data)) !=
       BLOCK_HEADER_SIZE) {
-    printf("  [FAIL] %s (invalid header hex)\n", name);
+    test_fail("%s (invalid header hex)");
     return;
   }
 
   if (hex_to_bytes(expected_hash_hex, expected_hash, 32) != 32) {
-    printf("  [FAIL] %s (invalid expected hash hex)\n", name);
+    test_fail("%s (invalid expected hash hex)");
     return;
   }
   /* Expected hash is in big-endian display format, reverse to little-endian */
   reverse_bytes(expected_hash, 32);
 
   if (block_header_parse(header_data, BLOCK_HEADER_SIZE, &header) != ECHO_OK) {
-    printf("  [FAIL] %s (parse failed)\n", name);
+    test_fail("%s (parse failed)");
     return;
   }
 
   if (block_header_hash(&header, &hash) != ECHO_OK) {
-    printf("  [FAIL] %s (hash computation failed)\n", name);
+    test_fail("%s (hash computation failed)");
     return;
   }
 
   if (bytes_equal(hash.bytes, expected_hash, 32)) {
-    tests_passed++;
-    printf("  [PASS] %s\n", name);
+    test_pass();
+    test_case(name);
+        test_pass();
   } else {
     memcpy(display_hash, hash.bytes, 32);
     reverse_bytes(display_hash, 32);
-    printf("  [FAIL] %s\n", name);
+    test_fail("%s");
     printf("    Expected: %s\n", expected_hash_hex);
     printf("    Got:      ");
     print_hex(display_hash, 32);
@@ -226,7 +225,6 @@ static void test_bits_to_target(const char *name, uint32_t bits,
   hash256_t target;
   uint8_t expected_target[32];
 
-  tests_run++;
 
   /* Parse expected target (big-endian display format) */
   memset(expected_target, 0, 32);
@@ -236,7 +234,7 @@ static void test_bits_to_target(const char *name, uint32_t bits,
     uint8_t temp[32];
 
     if (hex_to_bytes(expected_target_hex, temp, byte_len) != byte_len) {
-      printf("  [FAIL] %s (invalid expected target hex)\n", name);
+      test_fail("%s (invalid expected target hex)");
       return;
     }
 
@@ -247,19 +245,20 @@ static void test_bits_to_target(const char *name, uint32_t bits,
   }
 
   if (block_bits_to_target(bits, &target) != ECHO_OK) {
-    printf("  [FAIL] %s (conversion failed)\n", name);
+    test_fail("%s (conversion failed)");
     return;
   }
 
   if (bytes_equal(target.bytes, expected_target, 32)) {
-    tests_passed++;
-    printf("  [PASS] %s\n", name);
+    test_pass();
+    test_case(name);
+        test_pass();
   } else {
     uint8_t display_target[32];
     memcpy(display_target, target.bytes, 32);
     reverse_bytes(display_target, 32);
 
-    printf("  [FAIL] %s\n", name);
+    test_fail("%s");
     printf("    Expected: %s\n", expected_target_hex);
     printf("    Got:      ");
     print_hex(display_target, 32);
@@ -278,7 +277,6 @@ static void test_target_to_bits(const char *name, const char *target_hex,
   size_t hex_len;
   size_t byte_len;
 
-  tests_run++;
 
   /* Parse target (big-endian display format) */
   memset(target.bytes, 0, 32);
@@ -287,7 +285,7 @@ static void test_target_to_bits(const char *name, const char *target_hex,
 
   if (byte_len > 0) {
     if (hex_to_bytes(target_hex, temp, byte_len) != byte_len) {
-      printf("  [FAIL] %s (invalid target hex)\n", name);
+      test_fail("%s (invalid target hex)");
       return;
     }
 
@@ -297,15 +295,16 @@ static void test_target_to_bits(const char *name, const char *target_hex,
   }
 
   if (block_target_to_bits(&target, &bits) != ECHO_OK) {
-    printf("  [FAIL] %s (conversion failed)\n", name);
+    test_fail("%s (conversion failed)");
     return;
   }
 
   if (bits == expected_bits) {
-    tests_passed++;
-    printf("  [PASS] %s\n", name);
+    test_pass();
+    test_case(name);
+        test_pass();
   } else {
-    printf("  [FAIL] %s\n", name);
+    test_fail("%s");
     printf("    Expected bits: 0x%08x\n", expected_bits);
     printf("    Got bits:      0x%08x\n", bits);
   }
@@ -321,11 +320,10 @@ static void test_pow_check(const char *name, const char *hash_hex,
   size_t hex_len, byte_len;
   echo_bool_t result;
 
-  tests_run++;
 
   /* Parse hash (little-endian in storage, but display is big-endian) */
   if (hex_to_bytes(hash_hex, temp, 32) != 32) {
-    printf("  [FAIL] %s (invalid hash hex)\n", name);
+    test_fail("%s (invalid hash hex)");
     return;
   }
   memcpy(hash.bytes, temp, 32);
@@ -338,7 +336,7 @@ static void test_pow_check(const char *name, const char *hash_hex,
 
   if (byte_len > 0) {
     if (hex_to_bytes(target_hex, temp, byte_len) != byte_len) {
-      printf("  [FAIL] %s (invalid target hex)\n", name);
+      test_fail("%s (invalid target hex)");
       return;
     }
     memcpy(target.bytes + (32 - byte_len), temp, byte_len);
@@ -348,10 +346,11 @@ static void test_pow_check(const char *name, const char *hash_hex,
   result = block_hash_meets_target(&hash, &target);
 
   if (result == expected) {
-    tests_passed++;
-    printf("  [PASS] %s\n", name);
+    test_pass();
+    test_case(name);
+        test_pass();
   } else {
-    printf("  [FAIL] %s\n", name);
+    test_fail("%s");
     printf("    Expected: %s\n", expected ? "valid" : "invalid");
     printf("    Got:      %s\n", result ? "valid" : "invalid");
   }
@@ -368,17 +367,16 @@ static void test_block_parse(const char *name, const char *hex,
   size_t consumed;
   echo_result_t result;
 
-  tests_run++;
 
   data_len = strlen(hex) / 2;
   data = malloc(data_len);
   if (data == NULL) {
-    printf("  [FAIL] %s (malloc failed)\n", name);
+    test_fail("%s (malloc failed)");
     return;
   }
 
   if (hex_to_bytes(hex, data, data_len) != data_len) {
-    printf("  [FAIL] %s (invalid hex)\n", name);
+    test_fail("%s (invalid hex)");
     free(data);
     return;
   }
@@ -387,10 +385,11 @@ static void test_block_parse(const char *name, const char *hex,
 
   if (result == ECHO_OK && consumed == data_len &&
       block.tx_count == expected_tx_count) {
-    tests_passed++;
-    printf("  [PASS] %s\n", name);
+    test_pass();
+    test_case(name);
+        test_pass();
   } else {
-    printf("  [FAIL] %s\n", name);
+    test_fail("%s");
     printf("    Result: %d\n", result);
     if (result == ECHO_OK) {
       printf("    Consumed: %zu/%zu\n", consumed, data_len);
@@ -404,13 +403,12 @@ static void test_block_parse(const char *name, const char *hex,
 }
 
 int main(void) {
-  printf("Bitcoin Echo — Block Tests\n");
-  printf("==========================\n\n");
+  test_suite_begin("Block Tests");
 
   /*
    * Genesis block tests
    */
-  printf("Genesis block tests:\n");
+  test_section("Genesis block tests");
   test_genesis_header();
 
   /* Genesis block header hex */
@@ -425,12 +423,11 @@ int main(void) {
       "Genesis block hash", genesis_header_hex,
       "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f");
 
-  printf("\n");
 
   /*
    * Block 170 tests (first block with a non-coinbase transaction)
    */
-  printf("Block 170 tests:\n");
+  test_section("Block 170 tests");
 
   const char *block_170_header_hex = "0100000055bd840a78798ad0da853f68974f3d183"
                                      "e2bd1db6a842c1feecf222a00000000ff104ccb"
@@ -443,12 +440,11 @@ int main(void) {
       "Block 170 hash", block_170_header_hex,
       "00000000d1145790a8694403d4063f323d499e655c83426834d4ce2f8dd4a2ee");
 
-  printf("\n");
 
   /*
    * Bits/target conversion tests
    */
-  printf("Bits to target tests:\n");
+  test_section("Bits to target tests");
 
   /* Genesis block difficulty (bits = 0x1d00ffff) */
   test_bits_to_target(
@@ -467,20 +463,18 @@ int main(void) {
       "Very high difficulty (0x170b8c8b)", 0x170b8c8b,
       "0000000000000000000b8c8b0000000000000000000000000000000000000000");
 
-  printf("\n");
 
-  printf("Target to bits tests:\n");
+  test_section("Target to bits tests");
   test_target_to_bits(
       "Genesis target",
       "00000000ffff0000000000000000000000000000000000000000000000000000",
       0x1d00ffff);
 
-  printf("\n");
 
   /*
    * Proof-of-work validation tests
    */
-  printf("Proof-of-work tests:\n");
+  test_section("Proof-of-work tests");
 
   /* Genesis block hash should meet genesis target */
   test_pow_check(
@@ -496,13 +490,12 @@ int main(void) {
       "00000000ffff0000000000000000000000000000000000000000000000000000",
       ECHO_FALSE);
 
-  printf("\n");
 
   /*
    * Full block parsing test
    * Genesis block: header + 1 coinbase transaction
    */
-  printf("Full block parsing tests:\n");
+  test_section("Full block parsing tests");
 
   /* Genesis block (header + varint(1) + coinbase tx) */
   /* Note: The genesis block coinbase has a 65-byte pubkey */
@@ -537,12 +530,11 @@ int main(void) {
 
   test_block_parse("Genesis block parse", genesis_block_hex, 1);
 
-  printf("\n");
 
   /*
    * Error handling tests
    */
-  printf("Error handling tests:\n");
+  test_section("Error handling tests");
 
   /* Truncated header */
   {
@@ -550,15 +542,15 @@ int main(void) {
     block_header_t header;
     echo_result_t result;
 
-    tests_run++;
     memset(truncated, 0, sizeof(truncated));
     result = block_header_parse(truncated, sizeof(truncated), &header);
 
+    test_case("Truncated header rejected");
     if (result == ECHO_ERR_TRUNCATED) {
-      tests_passed++;
-      printf("  [PASS] Truncated header rejected\n");
+      test_pass();
     } else {
-      printf("  [FAIL] Truncated header not rejected (result: %d)\n", result);
+      test_fail("Truncated header not rejected");
+      printf("    Result: %d\n", result);
     }
   }
 
@@ -567,22 +559,17 @@ int main(void) {
     block_header_t header;
     echo_result_t result;
 
-    tests_run++;
     result = block_header_parse(NULL, 80, &header);
 
+    test_case("NULL data rejected");
     if (result == ECHO_ERR_NULL_PARAM) {
-      tests_passed++;
-      printf("  [PASS] NULL data rejected\n");
+      test_pass();
     } else {
-      printf("  [FAIL] NULL data not rejected (result: %d)\n", result);
+      test_fail("NULL data not rejected");
+      printf("    Result: %d\n", result);
     }
   }
 
-  printf("\n");
-
-  /* Summary */
-  printf("==========================\n");
-  printf("Tests: %d/%d passed\n", tests_passed, tests_run);
-
-  return (tests_passed == tests_run) ? 0 : 1;
+  test_suite_end();
+  return test_global_summary();
 }

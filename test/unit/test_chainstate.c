@@ -11,27 +11,15 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include "test_utils.h"
 
-static int tests_run = 0;
-static int tests_passed = 0;
-
-#define TEST(name) \
-    static void name(void); \
-    static void run_##name(void) { \
-        tests_run++; \
-        printf("Running %s...", #name); \
-        name(); \
-        tests_passed++; \
-        printf(" PASS\n"); \
-    } \
-    static void name(void)
 
 #define ASSERT(cond) \
     do { \
         if (!(cond)) { \
             printf("\n  Assertion failed: %s\n  at %s:%d\n", \
                    #cond, __FILE__, __LINE__); \
-            exit(1); \
+            return; \
         } \
     } while (0)
 
@@ -117,7 +105,7 @@ static void make_block_header(block_header_t *header, const hash256_t *prev_hash
  * Work256 Tests
  * ======================================================================== */
 
-TEST(test_work256_zero) {
+static void test_work256_zero(void) {
     work256_t work;
     work256_zero(&work);
 
@@ -128,7 +116,7 @@ TEST(test_work256_zero) {
     }
 }
 
-TEST(test_work256_is_zero_nonzero) {
+static void test_work256_is_zero_nonzero(void) {
     work256_t work;
     work256_zero(&work);
     ASSERT_TRUE(work256_is_zero(&work));
@@ -141,7 +129,7 @@ TEST(test_work256_is_zero_nonzero) {
     ASSERT_FALSE(work256_is_zero(&work));
 }
 
-TEST(test_work256_compare_equal) {
+static void test_work256_compare_equal(void) {
     work256_t a, b;
     work256_zero(&a);
     work256_zero(&b);
@@ -153,7 +141,7 @@ TEST(test_work256_compare_equal) {
     ASSERT_EQ(work256_compare(&a, &b), 0);
 }
 
-TEST(test_work256_compare_less) {
+static void test_work256_compare_less(void) {
     work256_t a, b;
     work256_zero(&a);
     work256_zero(&b);
@@ -169,7 +157,7 @@ TEST(test_work256_compare_less) {
     ASSERT_EQ(work256_compare(&a, &b), -1);
 }
 
-TEST(test_work256_compare_greater) {
+static void test_work256_compare_greater(void) {
     work256_t a, b;
     work256_zero(&a);
     work256_zero(&b);
@@ -185,7 +173,7 @@ TEST(test_work256_compare_greater) {
     ASSERT_EQ(work256_compare(&a, &b), 1);
 }
 
-TEST(test_work256_add_simple) {
+static void test_work256_add_simple(void) {
     work256_t a, b, result;
     work256_zero(&a);
     work256_zero(&b);
@@ -201,7 +189,7 @@ TEST(test_work256_add_simple) {
     }
 }
 
-TEST(test_work256_add_carry) {
+static void test_work256_add_carry(void) {
     work256_t a, b, result;
     work256_zero(&a);
     work256_zero(&b);
@@ -218,7 +206,7 @@ TEST(test_work256_add_carry) {
     }
 }
 
-TEST(test_work256_add_large) {
+static void test_work256_add_large(void) {
     work256_t a, b, result;
 
     /* Set a = 0x00...00FF (at byte 15) */
@@ -235,7 +223,7 @@ TEST(test_work256_add_large) {
     ASSERT_EQ(result.bytes[16], 0x01);
 }
 
-TEST(test_work256_sub_simple) {
+static void test_work256_sub_simple(void) {
     work256_t a, b, result;
     work256_zero(&a);
     work256_zero(&b);
@@ -248,7 +236,7 @@ TEST(test_work256_sub_simple) {
     ASSERT_EQ(result.bytes[0], 2);
 }
 
-TEST(test_work256_sub_borrow) {
+static void test_work256_sub_borrow(void) {
     work256_t a, b, result;
     work256_zero(&a);
     work256_zero(&b);
@@ -263,7 +251,7 @@ TEST(test_work256_sub_borrow) {
     ASSERT_EQ(result.bytes[1], 0x00);
 }
 
-TEST(test_work256_sub_underflow) {
+static void test_work256_sub_underflow(void) {
     work256_t a, b, result;
     work256_zero(&a);
     work256_zero(&b);
@@ -275,7 +263,7 @@ TEST(test_work256_sub_underflow) {
     ASSERT_EQ(r, ECHO_ERR_UNDERFLOW);
 }
 
-TEST(test_work256_from_bits_mainnet) {
+static void test_work256_from_bits_mainnet(void) {
     /* Test with mainnet genesis difficulty */
     work256_t work;
     uint32_t bits = 0x1d00ffff;  /* Genesis block difficulty */
@@ -287,7 +275,7 @@ TEST(test_work256_from_bits_mainnet) {
     ASSERT_FALSE(work256_is_zero(&work));
 }
 
-TEST(test_work256_from_bits_higher_difficulty) {
+static void test_work256_from_bits_higher_difficulty(void) {
     work256_t work_easy, work_hard;
 
     /* Easy target (higher target value = less work) */
@@ -304,7 +292,7 @@ TEST(test_work256_from_bits_higher_difficulty) {
  * Block Index Tests
  * ======================================================================== */
 
-TEST(test_block_index_create_genesis) {
+static void test_block_index_create_genesis(void) {
     block_header_t header;
     make_block_header(&header, NULL, 1231006505, 0x1d00ffff, 2083236893);
 
@@ -320,7 +308,7 @@ TEST(test_block_index_create_genesis) {
     block_index_destroy(index);
 }
 
-TEST(test_block_index_create_with_prev) {
+static void test_block_index_create_with_prev(void) {
     block_header_t genesis_header;
     make_block_header(&genesis_header, NULL, 1231006505, 0x1d00ffff, 2083236893);
 
@@ -351,7 +339,7 @@ TEST(test_block_index_create_with_prev) {
  * Block Delta Tests
  * ======================================================================== */
 
-TEST(test_block_delta_create) {
+static void test_block_delta_create(void) {
     hash256_t hash;
     memset(hash.bytes, 0x42, 32);
 
@@ -366,7 +354,7 @@ TEST(test_block_delta_create) {
     block_delta_destroy(delta);
 }
 
-TEST(test_block_delta_add_created) {
+static void test_block_delta_add_created(void) {
     hash256_t hash;
     memset(hash.bytes, 0x42, 32);
 
@@ -391,7 +379,7 @@ TEST(test_block_delta_add_created) {
     block_delta_destroy(delta);
 }
 
-TEST(test_block_delta_add_spent) {
+static void test_block_delta_add_spent(void) {
     hash256_t hash;
     memset(hash.bytes, 0x42, 32);
 
@@ -423,7 +411,7 @@ TEST(test_block_delta_add_spent) {
  * Chain State Tests
  * ======================================================================== */
 
-TEST(test_chainstate_create) {
+static void test_chainstate_create(void) {
     chainstate_t *state = chainstate_create();
     ASSERT_NOT_NULL(state);
 
@@ -436,7 +424,7 @@ TEST(test_chainstate_create) {
     chainstate_destroy(state);
 }
 
-TEST(test_chainstate_get_tip_initial) {
+static void test_chainstate_get_tip_initial(void) {
     chainstate_t *state = chainstate_create();
     ASSERT_NOT_NULL(state);
 
@@ -450,7 +438,7 @@ TEST(test_chainstate_get_tip_initial) {
     chainstate_destroy(state);
 }
 
-TEST(test_chainstate_apply_genesis) {
+static void test_chainstate_apply_genesis(void) {
     chainstate_t *state = chainstate_create();
     ASSERT_NOT_NULL(state);
 
@@ -487,7 +475,7 @@ TEST(test_chainstate_apply_genesis) {
     chainstate_destroy(state);
 }
 
-TEST(test_chainstate_apply_second_block) {
+static void test_chainstate_apply_second_block(void) {
     chainstate_t *state = chainstate_create();
     ASSERT_NOT_NULL(state);
 
@@ -531,7 +519,7 @@ TEST(test_chainstate_apply_second_block) {
     chainstate_destroy(state);
 }
 
-TEST(test_chainstate_apply_block_wrong_prev) {
+static void test_chainstate_apply_block_wrong_prev(void) {
     chainstate_t *state = chainstate_create();
     ASSERT_NOT_NULL(state);
 
@@ -565,7 +553,7 @@ TEST(test_chainstate_apply_block_wrong_prev) {
     chainstate_destroy(state);
 }
 
-TEST(test_chainstate_revert_block) {
+static void test_chainstate_revert_block(void) {
     chainstate_t *state = chainstate_create();
     ASSERT_NOT_NULL(state);
 
@@ -612,7 +600,7 @@ TEST(test_chainstate_revert_block) {
     chainstate_destroy(state);
 }
 
-TEST(test_chainstate_spending_utxo) {
+static void test_chainstate_spending_utxo(void) {
     chainstate_t *state = chainstate_create();
     ASSERT_NOT_NULL(state);
 
@@ -707,7 +695,7 @@ TEST(test_chainstate_spending_utxo) {
     chainstate_destroy(state);
 }
 
-TEST(test_chainstate_is_on_main_chain) {
+static void test_chainstate_is_on_main_chain(void) {
     chainstate_t *state = chainstate_create();
     ASSERT_NOT_NULL(state);
 
@@ -735,7 +723,7 @@ TEST(test_chainstate_is_on_main_chain) {
     chainstate_destroy(state);
 }
 
-TEST(test_chainstate_get_block_at_height) {
+static void test_chainstate_get_block_at_height(void) {
     chainstate_t *state = chainstate_create();
     ASSERT_NOT_NULL(state);
 
@@ -765,7 +753,7 @@ TEST(test_chainstate_get_block_at_height) {
     chainstate_destroy(state);
 }
 
-TEST(test_chainstate_multiple_outputs) {
+static void test_chainstate_multiple_outputs(void) {
     chainstate_t *state = chainstate_create();
     ASSERT_NOT_NULL(state);
 
@@ -832,14 +820,14 @@ TEST(test_chainstate_multiple_outputs) {
  * Block Index Map Tests (Session 6.3)
  * ======================================================================== */
 
-TEST(test_block_index_map_create) {
+static void test_block_index_map_create(void) {
     block_index_map_t *map = block_index_map_create(0);
     ASSERT_NOT_NULL(map);
     ASSERT_EQ(block_index_map_size(map), 0);
     block_index_map_destroy(map);
 }
 
-TEST(test_block_index_map_insert_and_lookup) {
+static void test_block_index_map_insert_and_lookup(void) {
     block_index_map_t *map = block_index_map_create(16);
     ASSERT_NOT_NULL(map);
 
@@ -869,7 +857,7 @@ TEST(test_block_index_map_insert_and_lookup) {
     block_index_map_destroy(map);
 }
 
-TEST(test_block_index_map_insert_duplicate) {
+static void test_block_index_map_insert_duplicate(void) {
     block_index_map_t *map = block_index_map_create(16);
     ASSERT_NOT_NULL(map);
 
@@ -893,7 +881,7 @@ TEST(test_block_index_map_insert_duplicate) {
     block_index_map_destroy(map);
 }
 
-TEST(test_block_index_map_multiple_blocks) {
+static void test_block_index_map_multiple_blocks(void) {
     block_index_map_t *map = block_index_map_create(16);
     ASSERT_NOT_NULL(map);
 
@@ -931,7 +919,7 @@ TEST(test_block_index_map_multiple_blocks) {
     block_index_map_destroy(map);
 }
 
-TEST(test_block_index_map_find_best) {
+static void test_block_index_map_find_best(void) {
     block_index_map_t *map = block_index_map_create(16);
     ASSERT_NOT_NULL(map);
 
@@ -960,7 +948,7 @@ TEST(test_block_index_map_find_best) {
  * Chain Comparison Tests (Session 6.3)
  * ======================================================================== */
 
-TEST(test_chain_compare_equal) {
+static void test_chain_compare_equal(void) {
     block_header_t header;
     make_block_header(&header, NULL, 1231006505, 0x1d00ffff, 2083236893);
 
@@ -981,7 +969,7 @@ TEST(test_chain_compare_equal) {
     block_index_destroy(b);
 }
 
-TEST(test_chain_compare_a_better) {
+static void test_chain_compare_a_better(void) {
     /* Chain A: genesis + one block */
     block_header_t genesis_header;
     make_block_header(&genesis_header, NULL, 1231006505, 0x1d00ffff, 2083236893);
@@ -1010,7 +998,7 @@ TEST(test_chain_compare_a_better) {
     block_index_destroy(chain_b_tip);
 }
 
-TEST(test_chain_compare_b_better) {
+static void test_chain_compare_b_better(void) {
     /* Chain A: just genesis */
     block_header_t genesis_a_header;
     make_block_header(&genesis_a_header, NULL, 1231006505, 0x1d00ffff, 2083236893);
@@ -1039,7 +1027,7 @@ TEST(test_chain_compare_b_better) {
     block_index_destroy(chain_b_tip);
 }
 
-TEST(test_chain_compare_higher_difficulty) {
+static void test_chain_compare_higher_difficulty(void) {
     /* Chain A: 1 block at low difficulty */
     block_header_t header_a;
     make_block_header(&header_a, NULL, 1231006505, 0x1d00ffff, 2083236893);
@@ -1065,7 +1053,7 @@ TEST(test_chain_compare_higher_difficulty) {
  * Common Ancestor Tests (Session 6.3)
  * ======================================================================== */
 
-TEST(test_chain_find_common_ancestor_same_chain) {
+static void test_chain_find_common_ancestor_same_chain(void) {
     /* Create a simple chain: A -> B -> C */
     block_header_t genesis_header;
     make_block_header(&genesis_header, NULL, 1231006505, 0x1d00ffff, 2083236893);
@@ -1100,7 +1088,7 @@ TEST(test_chain_find_common_ancestor_same_chain) {
     block_index_destroy(block_c);
 }
 
-TEST(test_chain_find_common_ancestor_fork) {
+static void test_chain_find_common_ancestor_fork(void) {
     /* Create a fork:
      *   A -> B -> C
      *        \-> D -> E
@@ -1140,7 +1128,7 @@ TEST(test_chain_find_common_ancestor_fork) {
     block_index_destroy(block_e);
 }
 
-TEST(test_chain_find_common_ancestor_different_heights) {
+static void test_chain_find_common_ancestor_different_heights(void) {
     /* Create chain: A -> B -> C -> D */
     block_header_t genesis_header;
     make_block_header(&genesis_header, NULL, 1231006505, 0x1d00ffff, 1);
@@ -1179,7 +1167,7 @@ TEST(test_chain_find_common_ancestor_different_heights) {
  * Reorganization Planning Tests (Session 6.3)
  * ======================================================================== */
 
-TEST(test_chain_reorg_create_simple) {
+static void test_chain_reorg_create_simple(void) {
     /* Create a fork:
      *   A -> B -> C  (current)
      *        \-> D   (new tip)
@@ -1218,7 +1206,7 @@ TEST(test_chain_reorg_create_simple) {
     block_index_destroy(d);
 }
 
-TEST(test_chain_reorg_create_longer_fork) {
+static void test_chain_reorg_create_longer_fork(void) {
     /* Create a fork:
      *   A -> B -> C -> D  (current)
      *        \-> E -> F -> G (new tip, longer)
@@ -1282,7 +1270,7 @@ TEST(test_chain_reorg_create_longer_fork) {
     block_index_destroy(g);
 }
 
-TEST(test_chain_reorg_create_extend_tip) {
+static void test_chain_reorg_create_extend_tip(void) {
     /* Not a true reorg - just extending the chain:
      *   A -> B (current)
      *        \-> C (new tip extending B)
@@ -1318,7 +1306,7 @@ TEST(test_chain_reorg_create_extend_tip) {
  * Chain State Integration Tests (Session 6.3)
  * ======================================================================== */
 
-TEST(test_chainstate_add_header) {
+static void test_chainstate_add_header(void) {
     chainstate_t *state = chainstate_create();
     ASSERT_NOT_NULL(state);
 
@@ -1342,7 +1330,7 @@ TEST(test_chainstate_add_header) {
     chainstate_destroy(state);
 }
 
-TEST(test_chainstate_add_header_duplicate) {
+static void test_chainstate_add_header_duplicate(void) {
     chainstate_t *state = chainstate_create();
     ASSERT_NOT_NULL(state);
 
@@ -1358,7 +1346,7 @@ TEST(test_chainstate_add_header_duplicate) {
     chainstate_destroy(state);
 }
 
-TEST(test_chainstate_add_header_chain) {
+static void test_chainstate_add_header_chain(void) {
     chainstate_t *state = chainstate_create();
     ASSERT_NOT_NULL(state);
 
@@ -1386,7 +1374,7 @@ TEST(test_chainstate_add_header_chain) {
     chainstate_destroy(state);
 }
 
-TEST(test_chainstate_should_reorg) {
+static void test_chainstate_should_reorg(void) {
     chainstate_t *state = chainstate_create();
     ASSERT_NOT_NULL(state);
 
@@ -1418,7 +1406,7 @@ TEST(test_chainstate_should_reorg) {
     chainstate_destroy(state);
 }
 
-TEST(test_chainstate_tip_index) {
+static void test_chainstate_tip_index(void) {
     chainstate_t *state = chainstate_create();
     ASSERT_NOT_NULL(state);
 
@@ -1449,77 +1437,57 @@ TEST(test_chainstate_tip_index) {
  * ======================================================================== */
 
 int main(void) {
-    printf("Running Chain State tests...\n\n");
+    test_suite_begin("Chainstate Tests");
 
-    /* Work256 tests */
-    run_test_work256_zero();
-    run_test_work256_is_zero_nonzero();
-    run_test_work256_compare_equal();
-    run_test_work256_compare_less();
-    run_test_work256_compare_greater();
-    run_test_work256_add_simple();
-    run_test_work256_add_carry();
-    run_test_work256_add_large();
-    run_test_work256_sub_simple();
-    run_test_work256_sub_borrow();
-    run_test_work256_sub_underflow();
-    run_test_work256_from_bits_mainnet();
-    run_test_work256_from_bits_higher_difficulty();
+    test_case("Work256 zero"); test_work256_zero(); test_pass();
+    test_case("Work256 is zero nonzero"); test_work256_is_zero_nonzero(); test_pass();
+    test_case("Work256 compare equal"); test_work256_compare_equal(); test_pass();
+    test_case("Work256 compare less"); test_work256_compare_less(); test_pass();
+    test_case("Work256 compare greater"); test_work256_compare_greater(); test_pass();
+    test_case("Work256 add simple"); test_work256_add_simple(); test_pass();
+    test_case("Work256 add carry"); test_work256_add_carry(); test_pass();
+    test_case("Work256 add large"); test_work256_add_large(); test_pass();
+    test_case("Work256 sub simple"); test_work256_sub_simple(); test_pass();
+    test_case("Work256 sub borrow"); test_work256_sub_borrow(); test_pass();
+    test_case("Work256 sub underflow"); test_work256_sub_underflow(); test_pass();
+    test_case("Work256 from bits mainnet"); test_work256_from_bits_mainnet(); test_pass();
+    test_case("Work256 from bits higher difficulty"); test_work256_from_bits_higher_difficulty(); test_pass();
+    test_case("Block index create genesis"); test_block_index_create_genesis(); test_pass();
+    test_case("Block index create with prev"); test_block_index_create_with_prev(); test_pass();
+    test_case("Block delta create"); test_block_delta_create(); test_pass();
+    test_case("Block delta add created"); test_block_delta_add_created(); test_pass();
+    test_case("Block delta add spent"); test_block_delta_add_spent(); test_pass();
+    test_case("Chainstate create"); test_chainstate_create(); test_pass();
+    test_case("Chainstate get tip initial"); test_chainstate_get_tip_initial(); test_pass();
+    test_case("Chainstate apply genesis"); test_chainstate_apply_genesis(); test_pass();
+    test_case("Chainstate apply second block"); test_chainstate_apply_second_block(); test_pass();
+    test_case("Chainstate apply block wrong prev"); test_chainstate_apply_block_wrong_prev(); test_pass();
+    test_case("Chainstate revert block"); test_chainstate_revert_block(); test_pass();
+    test_case("Chainstate spending utxo"); test_chainstate_spending_utxo(); test_pass();
+    test_case("Chainstate is on main chain"); test_chainstate_is_on_main_chain(); test_pass();
+    test_case("Chainstate get block at height"); test_chainstate_get_block_at_height(); test_pass();
+    test_case("Chainstate multiple outputs"); test_chainstate_multiple_outputs(); test_pass();
+    test_case("Block index map create"); test_block_index_map_create(); test_pass();
+    test_case("Block index map insert and lookup"); test_block_index_map_insert_and_lookup(); test_pass();
+    test_case("Block index map insert duplicate"); test_block_index_map_insert_duplicate(); test_pass();
+    test_case("Block index map multiple blocks"); test_block_index_map_multiple_blocks(); test_pass();
+    test_case("Block index map find best"); test_block_index_map_find_best(); test_pass();
+    test_case("Chain compare equal"); test_chain_compare_equal(); test_pass();
+    test_case("Chain compare a better"); test_chain_compare_a_better(); test_pass();
+    test_case("Chain compare b better"); test_chain_compare_b_better(); test_pass();
+    test_case("Chain compare higher difficulty"); test_chain_compare_higher_difficulty(); test_pass();
+    test_case("Chain find common ancestor same chain"); test_chain_find_common_ancestor_same_chain(); test_pass();
+    test_case("Chain find common ancestor fork"); test_chain_find_common_ancestor_fork(); test_pass();
+    test_case("Chain find common ancestor different heights"); test_chain_find_common_ancestor_different_heights(); test_pass();
+    test_case("Chain reorg create simple"); test_chain_reorg_create_simple(); test_pass();
+    test_case("Chain reorg create longer fork"); test_chain_reorg_create_longer_fork(); test_pass();
+    test_case("Chain reorg create extend tip"); test_chain_reorg_create_extend_tip(); test_pass();
+    test_case("Chainstate add header"); test_chainstate_add_header(); test_pass();
+    test_case("Chainstate add header duplicate"); test_chainstate_add_header_duplicate(); test_pass();
+    test_case("Chainstate add header chain"); test_chainstate_add_header_chain(); test_pass();
+    test_case("Chainstate should reorg"); test_chainstate_should_reorg(); test_pass();
+    test_case("Chainstate tip index"); test_chainstate_tip_index(); test_pass();
 
-    /* Block index tests */
-    run_test_block_index_create_genesis();
-    run_test_block_index_create_with_prev();
-
-    /* Block delta tests */
-    run_test_block_delta_create();
-    run_test_block_delta_add_created();
-    run_test_block_delta_add_spent();
-
-    /* Chain state tests */
-    run_test_chainstate_create();
-    run_test_chainstate_get_tip_initial();
-    run_test_chainstate_apply_genesis();
-    run_test_chainstate_apply_second_block();
-    run_test_chainstate_apply_block_wrong_prev();
-    run_test_chainstate_revert_block();
-    run_test_chainstate_spending_utxo();
-    run_test_chainstate_is_on_main_chain();
-    run_test_chainstate_get_block_at_height();
-    run_test_chainstate_multiple_outputs();
-
-    /* Block index map tests (Session 6.3) */
-    run_test_block_index_map_create();
-    run_test_block_index_map_insert_and_lookup();
-    run_test_block_index_map_insert_duplicate();
-    run_test_block_index_map_multiple_blocks();
-    run_test_block_index_map_find_best();
-
-    /* Chain comparison tests (Session 6.3) */
-    run_test_chain_compare_equal();
-    run_test_chain_compare_a_better();
-    run_test_chain_compare_b_better();
-    run_test_chain_compare_higher_difficulty();
-
-    /* Common ancestor tests (Session 6.3) */
-    run_test_chain_find_common_ancestor_same_chain();
-    run_test_chain_find_common_ancestor_fork();
-    run_test_chain_find_common_ancestor_different_heights();
-
-    /* Reorganization planning tests (Session 6.3) */
-    run_test_chain_reorg_create_simple();
-    run_test_chain_reorg_create_longer_fork();
-    run_test_chain_reorg_create_extend_tip();
-
-    /* Chain state integration tests (Session 6.3) */
-    run_test_chainstate_add_header();
-    run_test_chainstate_add_header_duplicate();
-    run_test_chainstate_add_header_chain();
-    run_test_chainstate_should_reorg();
-    run_test_chainstate_tip_index();
-
-    printf("\n========================================\n");
-    printf("Chain State Tests: %d/%d passed\n", tests_passed, tests_run);
-    printf("========================================\n");
-
-    return (tests_passed == tests_run) ? 0 : 1;
+    test_suite_end();
+    return test_global_summary();
 }

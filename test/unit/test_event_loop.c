@@ -19,16 +19,9 @@
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
+#include "test_utils.h"
 
 /* Test counter */
-static int tests_run = 0;
-static int tests_passed = 0;
-
-#define TEST(name)                                                             \
-  do {                                                                         \
-    printf("Running test: %s...", name);                                       \
-    tests_run++;                                                               \
-  } while (0)
 
 #define PASS()                                                                 \
   do {                                                                         \
@@ -43,8 +36,6 @@ static int tests_passed = 0;
  */
 
 static void test_node_shutdown_signal(void) {
-  TEST("node shutdown signaling");
-
   /* Create node */
   node_config_t config;
   node_config_init(&config, "/tmp/echo_test_event_loop");
@@ -62,7 +53,7 @@ static void test_node_shutdown_signal(void) {
   /* Cleanup */
   node_destroy(node);
 
-  PASS();
+  test_pass();
 }
 
 /*
@@ -72,35 +63,27 @@ static void test_node_shutdown_signal(void) {
  */
 
 static void test_process_peers_null_node(void) {
-  TEST("node_process_peers with NULL node");
-
   echo_result_t result = node_process_peers(NULL);
   assert(result == ECHO_ERR_INVALID_PARAM);
 
-  PASS();
+  test_pass();
 }
 
 static void test_process_blocks_null_node(void) {
-  TEST("node_process_blocks with NULL node");
-
   echo_result_t result = node_process_blocks(NULL);
   assert(result == ECHO_ERR_INVALID_PARAM);
 
-  PASS();
+  test_pass();
 }
 
 static void test_maintenance_null_node(void) {
-  TEST("node_maintenance with NULL node");
-
   echo_result_t result = node_maintenance(NULL);
   assert(result == ECHO_ERR_INVALID_PARAM);
 
-  PASS();
+  test_pass();
 }
 
 static void test_process_peers_uninitialized_node(void) {
-  TEST("node_process_peers with uninitialized node");
-
   node_config_t config;
   node_config_init(&config, "/tmp/echo_test_event_loop_uninit");
 
@@ -113,12 +96,10 @@ static void test_process_peers_uninitialized_node(void) {
 
   node_destroy(node);
 
-  PASS();
+  test_pass();
 }
 
 static void test_process_blocks_uninitialized_node(void) {
-  TEST("node_process_blocks with uninitialized node");
-
   node_config_t config;
   node_config_init(&config, "/tmp/echo_test_event_loop_uninit2");
 
@@ -131,12 +112,10 @@ static void test_process_blocks_uninitialized_node(void) {
 
   node_destroy(node);
 
-  PASS();
+  test_pass();
 }
 
 static void test_maintenance_uninitialized_node(void) {
-  TEST("node_maintenance with uninitialized node");
-
   node_config_t config;
   node_config_init(&config, "/tmp/echo_test_event_loop_uninit3");
 
@@ -149,7 +128,7 @@ static void test_maintenance_uninitialized_node(void) {
 
   node_destroy(node);
 
-  PASS();
+  test_pass();
 }
 
 /*
@@ -159,8 +138,6 @@ static void test_maintenance_uninitialized_node(void) {
  */
 
 static void test_generate_nonce(void) {
-  TEST("generate_nonce produces different values");
-
   uint64_t nonce1 = generate_nonce();
   uint64_t nonce2 = generate_nonce();
   uint64_t nonce3 = generate_nonce();
@@ -170,7 +147,7 @@ static void test_generate_nonce(void) {
   int all_different = (nonce1 != nonce2) && (nonce2 != nonce3) && (nonce1 != nonce3);
   assert(all_different);
 
-  PASS();
+  test_pass();
 }
 
 /*
@@ -180,8 +157,6 @@ static void test_generate_nonce(void) {
  */
 
 static void test_handle_ping_message(void) {
-  TEST("handle PING message generates PONG");
-
   node_config_t config;
   node_config_init(&config, "/tmp/echo_test_ping");
 
@@ -208,12 +183,10 @@ static void test_handle_ping_message(void) {
 
   node_destroy(node);
 
-  PASS();
+  test_pass();
 }
 
 static void test_handle_null_message(void) {
-  TEST("handle NULL message safely");
-
   node_config_t config;
   node_config_init(&config, "/tmp/echo_test_null_msg");
 
@@ -230,12 +203,10 @@ static void test_handle_null_message(void) {
 
   node_destroy(node);
 
-  PASS();
+  test_pass();
 }
 
 static void test_handle_unknown_message(void) {
-  TEST("handle unknown message type");
-
   node_config_t config;
   node_config_init(&config, "/tmp/echo_test_unknown_msg");
 
@@ -256,7 +227,7 @@ static void test_handle_unknown_message(void) {
 
   node_destroy(node);
 
-  PASS();
+  test_pass();
 }
 
 /*
@@ -266,8 +237,6 @@ static void test_handle_unknown_message(void) {
  */
 
 static void test_event_loop_functions_sequence(void) {
-  TEST("event loop functions called in sequence");
-
   node_config_t config;
   node_config_init(&config, "/tmp/echo_test_sequence");
 
@@ -290,12 +259,10 @@ static void test_event_loop_functions_sequence(void) {
 
   node_destroy(node);
 
-  PASS();
+  test_pass();
 }
 
 static void test_shutdown_requested_stops_loop(void) {
-  TEST("shutdown request would stop event loop");
-
   node_config_t config;
   node_config_init(&config, "/tmp/echo_test_shutdown_loop");
 
@@ -321,7 +288,7 @@ static void test_shutdown_requested_stops_loop(void) {
 
   node_destroy(node);
 
-  PASS();
+  test_pass();
 }
 
 /*
@@ -331,43 +298,22 @@ static void test_shutdown_requested_stops_loop(void) {
  */
 
 int main(void) {
-  printf("Bitcoin Echo — Event Loop Tests (Session 9.2)\n");
-  printf("==============================================\n\n");
+    test_suite_begin("Event Loop Tests");
 
-  /* Node state tests */
-  test_node_shutdown_signal();
+    test_case("Node shutdown signal"); test_node_shutdown_signal(); test_pass();
+    test_case("Process peers null node"); test_process_peers_null_node(); test_pass();
+    test_case("Process blocks null node"); test_process_blocks_null_node(); test_pass();
+    test_case("Maintenance null node"); test_maintenance_null_node(); test_pass();
+    test_case("Process peers uninitialized node"); test_process_peers_uninitialized_node(); test_pass();
+    test_case("Process blocks uninitialized node"); test_process_blocks_uninitialized_node(); test_pass();
+    test_case("Maintenance uninitialized node"); test_maintenance_uninitialized_node(); test_pass();
+    test_case("Generate nonce"); test_generate_nonce(); test_pass();
+    test_case("Handle ping message"); test_handle_ping_message(); test_pass();
+    test_case("Handle null message"); test_handle_null_message(); test_pass();
+    test_case("Handle unknown message"); test_handle_unknown_message(); test_pass();
+    test_case("Event loop functions sequence"); test_event_loop_functions_sequence(); test_pass();
+    test_case("Shutdown requested stops loop"); test_shutdown_requested_stops_loop(); test_pass();
 
-  /* Basic operation tests */
-  test_process_peers_null_node();
-  test_process_blocks_null_node();
-  test_maintenance_null_node();
-  test_process_peers_uninitialized_node();
-  test_process_blocks_uninitialized_node();
-  test_maintenance_uninitialized_node();
-
-  /* Helper function tests */
-  test_generate_nonce();
-
-  /* Message handling tests */
-  test_handle_ping_message();
-  test_handle_null_message();
-  test_handle_unknown_message();
-
-  /* Integration tests */
-  test_event_loop_functions_sequence();
-  test_shutdown_requested_stops_loop();
-
-  /* Summary */
-  printf("\n==============================================\n");
-  printf("Tests run: %d\n", tests_run);
-  printf("Tests passed: %d\n", tests_passed);
-  printf("Tests failed: %d\n", tests_run - tests_passed);
-
-  if (tests_passed == tests_run) {
-    printf("\n✓ All tests passed!\n");
-    return 0;
-  } else {
-    printf("\n✗ Some tests failed!\n");
-    return 1;
-  }
+    test_suite_end();
+    return test_global_summary();
 }

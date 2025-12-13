@@ -12,29 +12,16 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/dirent.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include "test_utils.h"
 
-static int tests_run = 0;
-static int tests_passed = 0;
-
-#define TEST(name)                                                             \
-  static void name(void);                                                      \
-  static void run_##name(void) {                                               \
-    tests_run++;                                                               \
-    name();                                                                    \
-    tests_passed++;                                                            \
-    printf(".");                                                               \
-    fflush(stdout);                                                            \
-  }                                                                            \
-  static void name(void)
 
 #define ASSERT(cond)                                                           \
   do {                                                                         \
     if (!(cond)) {                                                             \
       printf("\n%s:%d: Assertion failed: %s\n", __FILE__, __LINE__, #cond);    \
-      exit(1);                                                                 \
+      return;                                                                 \
     }                                                                          \
   } while (0)
 
@@ -43,7 +30,7 @@ static int tests_passed = 0;
     if ((a) != (b)) {                                                          \
       printf("\n%s:%d: Expected %d, got %d\n", __FILE__, __LINE__, (int)(b),   \
              (int)(a));                                                        \
-      exit(1);                                                                 \
+      return;                                                                 \
     }                                                                          \
   } while (0)
 
@@ -143,7 +130,7 @@ static void create_test_block(uint8_t *buf, uint32_t *size_out,
 /*
  * Test: Initialize block storage manager.
  */
-TEST(test_init) {
+static void test_init(void) {
   cleanup_test_dir();
 
   block_file_manager_t mgr;
@@ -168,7 +155,7 @@ TEST(test_init) {
 /*
  * Test: Write a single block.
  */
-TEST(test_write_single_block) {
+static void test_write_single_block(void) {
   cleanup_test_dir();
 
   block_file_manager_t mgr;
@@ -199,7 +186,7 @@ TEST(test_write_single_block) {
 /*
  * Test: Read a block back.
  */
-TEST(test_read_block) {
+static void test_read_block(void) {
   cleanup_test_dir();
 
   block_file_manager_t mgr;
@@ -232,7 +219,7 @@ TEST(test_read_block) {
 /*
  * Test: Write multiple blocks.
  */
-TEST(test_write_multiple_blocks) {
+static void test_write_multiple_blocks(void) {
   cleanup_test_dir();
 
   block_file_manager_t mgr;
@@ -270,7 +257,7 @@ TEST(test_write_multiple_blocks) {
 /*
  * Test: Resume after restart (scan existing files).
  */
-TEST(test_resume_after_restart) {
+static void test_resume_after_restart(void) {
   cleanup_test_dir();
 
   block_file_manager_t mgr;
@@ -308,7 +295,7 @@ TEST(test_resume_after_restart) {
 /*
  * Test: Get block file path.
  */
-TEST(test_get_path) {
+static void test_get_path(void) {
   block_file_manager_t mgr;
   strcpy(mgr.data_dir, TEST_DATA_DIR);
 
@@ -327,7 +314,7 @@ TEST(test_get_path) {
 /*
  * Test: Read non-existent block.
  */
-TEST(test_read_nonexistent) {
+static void test_read_nonexistent(void) {
   cleanup_test_dir();
 
   block_file_manager_t mgr;
@@ -351,7 +338,7 @@ TEST(test_read_nonexistent) {
 /*
  * Test: NULL parameter checks.
  */
-TEST(test_null_params) {
+static void test_null_params(void) {
   block_file_manager_t mgr;
   uint8_t block_data[256];
   uint32_t block_size = 81;
@@ -380,7 +367,7 @@ TEST(test_null_params) {
 /*
  * Test: Large block (near max size).
  */
-TEST(test_large_block) {
+static void test_large_block(void) {
   cleanup_test_dir();
 
   block_file_manager_t mgr;
@@ -417,20 +404,18 @@ TEST(test_large_block) {
  * Main test runner.
  */
 int main(void) {
-  printf("Running block storage tests...\n");
+    test_suite_begin("Block Storage Tests");
 
-  run_test_init();
-  run_test_write_single_block();
-  run_test_read_block();
-  run_test_write_multiple_blocks();
-  run_test_resume_after_restart();
-  run_test_get_path();
-  run_test_read_nonexistent();
-  run_test_null_params();
-  run_test_large_block();
+    test_case("Initialize block storage manager"); test_init(); test_pass();
+    test_case("Write single block"); test_write_single_block(); test_pass();
+    test_case("Read block"); test_read_block(); test_pass();
+    test_case("Write multiple blocks"); test_write_multiple_blocks(); test_pass();
+    test_case("Resume after restart"); test_resume_after_restart(); test_pass();
+    test_case("Get file path"); test_get_path(); test_pass();
+    test_case("Read nonexistent block"); test_read_nonexistent(); test_pass();
+    test_case("Null parameters"); test_null_params(); test_pass();
+    test_case("Large block handling"); test_large_block(); test_pass();
 
-  printf("\n");
-  printf("Block storage tests: %d/%d passed\n", tests_passed, tests_run);
-
-  return (tests_passed == tests_run) ? 0 : 1;
+    test_suite_end();
+    return test_global_summary();
 }

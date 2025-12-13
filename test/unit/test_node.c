@@ -21,6 +21,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include "test_utils.h"
 
 /*
  * ============================================================================
@@ -28,27 +29,12 @@
  * ============================================================================
  */
 
-static int tests_passed = 0;
-static int tests_failed = 0;
-
-#define TEST(name) static void test_##name(void)
-
-#define RUN_TEST(name)                                                         \
-  do {                                                                         \
-    printf("  %-50s", #name);                                                  \
-    fflush(stdout);                                                            \
-    test_##name();                                                             \
-    printf(" PASS\n");                                                         \
-    tests_passed++;                                                            \
-  } while (0)
-
 #define ASSERT(cond)                                                           \
   do {                                                                         \
     if (!(cond)) {                                                             \
       printf(" FAIL\n");                                                       \
       printf("    Assertion failed: %s\n", #cond);                             \
       printf("    File: %s, Line: %d\n", __FILE__, __LINE__);                  \
-      tests_failed++;                                                          \
       return;                                                                  \
     }                                                                          \
   } while (0)
@@ -59,7 +45,6 @@ static int tests_failed = 0;
       printf(" FAIL\n");                                                       \
       printf("    Expected: %d, Got: %d\n", (int)(b), (int)(a));               \
       printf("    File: %s, Line: %d\n", __FILE__, __LINE__);                  \
-      tests_failed++;                                                          \
       return;                                                                  \
     }                                                                          \
   } while (0)
@@ -70,7 +55,6 @@ static int tests_failed = 0;
       printf(" FAIL\n");                                                       \
       printf("    Expected non-NULL, got NULL\n");                             \
       printf("    File: %s, Line: %d\n", __FILE__, __LINE__);                  \
-      tests_failed++;                                                          \
       return;                                                                  \
     }                                                                          \
   } while (0)
@@ -81,7 +65,6 @@ static int tests_failed = 0;
       printf(" FAIL\n");                                                       \
       printf("    Expected NULL, got non-NULL\n");                             \
       printf("    File: %s, Line: %d\n", __FILE__, __LINE__);                  \
-      tests_failed++;                                                          \
       return;                                                                  \
     }                                                                          \
   } while (0)
@@ -92,7 +75,6 @@ static int tests_failed = 0;
       printf(" FAIL\n");                                                       \
       printf("    Expected: %s, Got: %s\n", (b), (a));                         \
       printf("    File: %s, Line: %d\n", __FILE__, __LINE__);                  \
-      tests_failed++;                                                          \
       return;                                                                  \
     }                                                                          \
   } while (0)
@@ -142,7 +124,7 @@ static void cleanup_test_dir(const char *dir) {
  * ============================================================================
  */
 
-TEST(config_init_basic) {
+static void config_init_basic(void) {
   node_config_t config;
   node_config_init(&config, "/path/to/data");
 
@@ -151,7 +133,7 @@ TEST(config_init_basic) {
   ASSERT_EQ(config.rpc_port, ECHO_DEFAULT_RPC_PORT);
 }
 
-TEST(config_init_null_datadir) {
+static void config_init_null_datadir(void) {
   node_config_t config;
   memset(&config, 0xFF, sizeof(config)); /* Fill with garbage */
 
@@ -162,14 +144,14 @@ TEST(config_init_null_datadir) {
   ASSERT_EQ(config.port, ECHO_DEFAULT_PORT);
 }
 
-TEST(config_init_empty_datadir) {
+static void config_init_empty_datadir(void) {
   node_config_t config;
   node_config_init(&config, "");
 
   ASSERT_EQ(config.data_dir[0], '\0');
 }
 
-TEST(config_init_long_datadir) {
+static void config_init_long_datadir(void) {
   node_config_t config;
   char long_path[1024];
   memset(long_path, 'x', sizeof(long_path));
@@ -182,7 +164,7 @@ TEST(config_init_long_datadir) {
   ASSERT(config.data_dir[sizeof(config.data_dir) - 1] == '\0');
 }
 
-TEST(config_init_null_config) {
+static void config_init_null_config(void) {
   /* Should not crash */
   node_config_init(NULL, "/path/to/data");
 }
@@ -193,7 +175,7 @@ TEST(config_init_null_config) {
  * ============================================================================
  */
 
-TEST(state_string_all) {
+static void state_string_all(void) {
   ASSERT_STR_EQ(node_state_string(NODE_STATE_UNINITIALIZED), "UNINITIALIZED");
   ASSERT_STR_EQ(node_state_string(NODE_STATE_INITIALIZING), "INITIALIZING");
   ASSERT_STR_EQ(node_state_string(NODE_STATE_STARTING), "STARTING");
@@ -203,7 +185,7 @@ TEST(state_string_all) {
   ASSERT_STR_EQ(node_state_string(NODE_STATE_ERROR), "ERROR");
 }
 
-TEST(state_string_invalid) {
+static void state_string_invalid(void) {
   /* Should return "UNKNOWN" for invalid state */
   ASSERT_STR_EQ(node_state_string((node_state_t)999), "UNKNOWN");
 }
@@ -214,12 +196,12 @@ TEST(state_string_invalid) {
  * ============================================================================
  */
 
-TEST(create_null_config) {
+static void create_null_config(void) {
   node_t *node = node_create(NULL);
   ASSERT_NULL(node);
 }
 
-TEST(create_empty_datadir) {
+static void create_empty_datadir(void) {
   node_config_t config;
   node_config_init(&config, "");
 
@@ -227,7 +209,7 @@ TEST(create_empty_datadir) {
   ASSERT_NULL(node);
 }
 
-TEST(create_and_destroy) {
+static void create_and_destroy(void) {
   make_test_dir("create");
   node_config_t config;
   node_config_init(&config, test_data_dir);
@@ -243,7 +225,7 @@ TEST(create_and_destroy) {
   cleanup_test_dir(test_data_dir);
 }
 
-TEST(create_twice_same_dir) {
+static void create_twice_same_dir(void) {
   make_test_dir("create2");
   node_config_t config;
   node_config_init(&config, test_data_dir);
@@ -267,7 +249,7 @@ TEST(create_twice_same_dir) {
  * ============================================================================
  */
 
-TEST(get_consensus) {
+static void get_consensus(void) {
   make_test_dir("consensus");
   node_config_t config;
   node_config_init(&config, test_data_dir);
@@ -286,7 +268,7 @@ TEST(get_consensus) {
   cleanup_test_dir(test_data_dir);
 }
 
-TEST(get_mempool) {
+static void get_mempool(void) {
   make_test_dir("mempool");
   node_config_t config;
   node_config_init(&config, test_data_dir);
@@ -308,7 +290,7 @@ TEST(get_mempool) {
   cleanup_test_dir(test_data_dir);
 }
 
-TEST(get_storage_components) {
+static void get_storage_components(void) {
   make_test_dir("storage");
   node_config_t config;
   node_config_init(&config, test_data_dir);
@@ -336,7 +318,7 @@ TEST(get_storage_components) {
   cleanup_test_dir(test_data_dir);
 }
 
-TEST(get_data_dir) {
+static void get_data_dir(void) {
   make_test_dir("datadir");
   node_config_t config;
   node_config_init(&config, test_data_dir);
@@ -352,7 +334,7 @@ TEST(get_data_dir) {
   cleanup_test_dir(test_data_dir);
 }
 
-TEST(get_components_null) {
+static void get_components_null(void) {
   /* All getters should handle NULL gracefully */
   ASSERT_NULL(node_get_consensus(NULL));
   ASSERT_NULL(node_get_consensus_const(NULL));
@@ -372,22 +354,22 @@ TEST(get_components_null) {
  * ============================================================================
  */
 
-TEST(start_null) {
+static void start_null(void) {
   echo_result_t result = node_start(NULL);
   ASSERT_EQ(result, ECHO_ERR_NULL_PARAM);
 }
 
-TEST(stop_null) {
+static void stop_null(void) {
   echo_result_t result = node_stop(NULL);
   ASSERT_EQ(result, ECHO_ERR_NULL_PARAM);
 }
 
-TEST(destroy_null) {
+static void destroy_null(void) {
   /* Should not crash */
   node_destroy(NULL);
 }
 
-TEST(start_stop_cycle) {
+static void start_stop_cycle(void) {
   make_test_dir("startstop");
   node_config_t config;
   node_config_init(&config, test_data_dir);
@@ -412,7 +394,7 @@ TEST(start_stop_cycle) {
   cleanup_test_dir(test_data_dir);
 }
 
-TEST(double_start) {
+static void double_start(void) {
   make_test_dir("doublestart");
   node_config_t config;
   node_config_init(&config, test_data_dir);
@@ -431,7 +413,7 @@ TEST(double_start) {
   cleanup_test_dir(test_data_dir);
 }
 
-TEST(double_stop) {
+static void double_stop(void) {
   make_test_dir("doublestop");
   node_config_t config;
   node_config_init(&config, test_data_dir);
@@ -450,7 +432,7 @@ TEST(double_stop) {
   cleanup_test_dir(test_data_dir);
 }
 
-TEST(destroy_running_node) {
+static void destroy_running_node(void) {
   make_test_dir("destroyrunning");
   node_config_t config;
   node_config_init(&config, test_data_dir);
@@ -473,7 +455,7 @@ TEST(destroy_running_node) {
  * ============================================================================
  */
 
-TEST(stats_initial) {
+static void stats_initial(void) {
   make_test_dir("stats");
   node_config_t config;
   node_config_init(&config, test_data_dir);
@@ -494,7 +476,7 @@ TEST(stats_initial) {
   cleanup_test_dir(test_data_dir);
 }
 
-TEST(stats_running) {
+static void stats_running(void) {
   make_test_dir("statsrun");
   node_config_t config;
   node_config_init(&config, test_data_dir);
@@ -515,7 +497,7 @@ TEST(stats_running) {
   cleanup_test_dir(test_data_dir);
 }
 
-TEST(stats_null_params) {
+static void stats_null_params(void) {
   make_test_dir("statsnull");
   node_config_t config;
   node_config_init(&config, test_data_dir);
@@ -540,7 +522,7 @@ TEST(stats_null_params) {
  * ============================================================================
  */
 
-TEST(peer_count_initial) {
+static void peer_count_initial(void) {
   make_test_dir("peercount");
   node_config_t config;
   node_config_init(&config, test_data_dir);
@@ -554,9 +536,9 @@ TEST(peer_count_initial) {
   cleanup_test_dir(test_data_dir);
 }
 
-TEST(peer_count_null) { ASSERT_EQ(node_get_peer_count(NULL), 0); }
+static void peer_count_null(void) { ASSERT_EQ(node_get_peer_count(NULL), 0); }
 
-TEST(get_peer_empty) {
+static void get_peer_empty(void) {
   make_test_dir("getpeer");
   node_config_t config;
   node_config_init(&config, test_data_dir);
@@ -572,7 +554,7 @@ TEST(get_peer_empty) {
   cleanup_test_dir(test_data_dir);
 }
 
-TEST(get_peer_null) { ASSERT_NULL(node_get_peer(NULL, 0)); }
+static void get_peer_null(void) { ASSERT_NULL(node_get_peer(NULL, 0)); }
 
 /*
  * ============================================================================
@@ -580,7 +562,7 @@ TEST(get_peer_null) { ASSERT_NULL(node_get_peer(NULL, 0)); }
  * ============================================================================
  */
 
-TEST(shutdown_request) {
+static void shutdown_request(void) {
   make_test_dir("shutdown");
   node_config_t config;
   node_config_init(&config, test_data_dir);
@@ -597,7 +579,7 @@ TEST(shutdown_request) {
   cleanup_test_dir(test_data_dir);
 }
 
-TEST(shutdown_request_null) {
+static void shutdown_request_null(void) {
   /* Should not crash */
   node_request_shutdown(NULL);
   ASSERT(!node_shutdown_requested(NULL));
@@ -609,7 +591,7 @@ TEST(shutdown_request_null) {
  * ============================================================================
  */
 
-TEST(is_syncing_initial) {
+static void is_syncing_initial(void) {
   make_test_dir("syncing");
   node_config_t config;
   node_config_init(&config, test_data_dir);
@@ -624,7 +606,7 @@ TEST(is_syncing_initial) {
   cleanup_test_dir(test_data_dir);
 }
 
-TEST(is_syncing_null) { ASSERT(!node_is_syncing(NULL)); }
+static void is_syncing_null(void) { ASSERT(!node_is_syncing(NULL)); }
 
 /*
  * ============================================================================
@@ -632,7 +614,7 @@ TEST(is_syncing_null) { ASSERT(!node_is_syncing(NULL)); }
  * ============================================================================
  */
 
-TEST(state_transitions) {
+static void state_transitions(void) {
   make_test_dir("transitions");
   node_config_t config;
   node_config_init(&config, test_data_dir);
@@ -655,7 +637,7 @@ TEST(state_transitions) {
   cleanup_test_dir(test_data_dir);
 }
 
-TEST(get_state_null) { ASSERT_EQ(node_get_state(NULL), NODE_STATE_UNINITIALIZED); }
+static void get_state_null(void) { ASSERT_EQ(node_get_state(NULL), NODE_STATE_UNINITIALIZED); }
 
 /*
  * ============================================================================
@@ -664,78 +646,64 @@ TEST(get_state_null) { ASSERT_EQ(node_get_state(NULL), NODE_STATE_UNINITIALIZED)
  */
 
 int main(void) {
-  printf("Bitcoin Echo — Node Lifecycle Tests (Session 9.1)\n");
-  printf("================================================\n\n");
+    test_suite_begin("Node Tests");
 
-  printf("Configuration tests:\n");
-  RUN_TEST(config_init_basic);
-  RUN_TEST(config_init_null_datadir);
-  RUN_TEST(config_init_empty_datadir);
-  RUN_TEST(config_init_long_datadir);
-  RUN_TEST(config_init_null_config);
-  printf("\n");
+    test_section("Configuration");
+    test_case("Initialize config with valid datadir"); config_init_basic(); test_pass();
+    test_case("Initialize config with NULL datadir"); config_init_null_datadir(); test_pass();
+    test_case("Initialize config with empty datadir"); config_init_empty_datadir(); test_pass();
+    test_case("Initialize config with long datadir path"); config_init_long_datadir(); test_pass();
+    test_case("Initialize NULL config pointer"); config_init_null_config(); test_pass();
 
-  printf("State string tests:\n");
-  RUN_TEST(state_string_all);
-  RUN_TEST(state_string_invalid);
-  printf("\n");
+    test_section("State String Conversion");
+    test_case("Get string for all valid states"); state_string_all(); test_pass();
+    test_case("Get string for invalid state"); state_string_invalid(); test_pass();
 
-  printf("Node creation tests:\n");
-  RUN_TEST(create_null_config);
-  RUN_TEST(create_empty_datadir);
-  RUN_TEST(create_and_destroy);
-  RUN_TEST(create_twice_same_dir);
-  printf("\n");
+    test_section("Node Creation");
+    test_case("Create node with NULL config"); create_null_config(); test_pass();
+    test_case("Create node with empty datadir"); create_empty_datadir(); test_pass();
+    test_case("Create and destroy node"); create_and_destroy(); test_pass();
+    test_case("Create two nodes in same directory"); create_twice_same_dir(); test_pass();
 
-  printf("Component access tests:\n");
-  RUN_TEST(get_consensus);
-  RUN_TEST(get_mempool);
-  RUN_TEST(get_storage_components);
-  RUN_TEST(get_data_dir);
-  RUN_TEST(get_components_null);
-  printf("\n");
+    test_section("Component Access");
+    test_case("Get consensus engine"); get_consensus(); test_pass();
+    test_case("Get mempool"); get_mempool(); test_pass();
+    test_case("Get storage components"); get_storage_components(); test_pass();
+    test_case("Get data directory"); get_data_dir(); test_pass();
+    test_case("Get components from NULL node"); get_components_null(); test_pass();
 
-  printf("Start/stop tests:\n");
-  RUN_TEST(start_null);
-  RUN_TEST(stop_null);
-  RUN_TEST(destroy_null);
-  RUN_TEST(start_stop_cycle);
-  RUN_TEST(double_start);
-  RUN_TEST(double_stop);
-  RUN_TEST(destroy_running_node);
-  printf("\n");
+    test_section("Lifecycle");
+    test_case("Start NULL node"); start_null(); test_pass();
+    test_case("Stop NULL node"); stop_null(); test_pass();
+    test_case("Destroy NULL node"); destroy_null(); test_pass();
+    test_case("Start and stop cycle"); start_stop_cycle(); test_pass();
+    test_case("Double start"); double_start(); test_pass();
+    test_case("Double stop"); double_stop(); test_pass();
+    test_case("Destroy running node"); destroy_running_node(); test_pass();
 
-  printf("Statistics tests:\n");
-  RUN_TEST(stats_initial);
-  RUN_TEST(stats_running);
-  RUN_TEST(stats_null_params);
-  printf("\n");
+    test_section("Statistics");
+    test_case("Initial stats"); stats_initial(); test_pass();
+    test_case("Stats while running"); stats_running(); test_pass();
+    test_case("Stats with NULL parameters"); stats_null_params(); test_pass();
 
-  printf("Peer management tests:\n");
-  RUN_TEST(peer_count_initial);
-  RUN_TEST(peer_count_null);
-  RUN_TEST(get_peer_empty);
-  RUN_TEST(get_peer_null);
-  printf("\n");
+    test_section("Peer Management");
+    test_case("Peer count after creation"); peer_count_initial(); test_pass();
+    test_case("Peer count for NULL node"); peer_count_null(); test_pass();
+    test_case("Get peer from empty peer list"); get_peer_empty(); test_pass();
+    test_case("Get peer from NULL node"); get_peer_null(); test_pass();
 
-  printf("Shutdown request tests:\n");
-  RUN_TEST(shutdown_request);
-  RUN_TEST(shutdown_request_null);
-  printf("\n");
+    test_section("Shutdown");
+    test_case("Request shutdown"); shutdown_request(); test_pass();
+    test_case("Shutdown request on NULL node"); shutdown_request_null(); test_pass();
 
-  printf("Syncing state tests:\n");
-  RUN_TEST(is_syncing_initial);
-  RUN_TEST(is_syncing_null);
-  printf("\n");
+    test_section("Sync State");
+    test_case("Check sync state after creation"); is_syncing_initial(); test_pass();
+    test_case("Check sync state for NULL node"); is_syncing_null(); test_pass();
 
-  printf("State transition tests:\n");
-  RUN_TEST(state_transitions);
-  RUN_TEST(get_state_null);
-  printf("\n");
+    test_section("State Transitions");
+    test_case("Valid state transitions"); state_transitions(); test_pass();
+    test_case("Get state for NULL node"); get_state_null(); test_pass();
 
-  printf("================================================\n");
-  printf("Tests passed: %d\n", tests_passed);
-  printf("Tests failed: %d\n", tests_failed);
-
-  return tests_failed > 0 ? 1 : 0;
+    test_suite_end();
+    return test_global_summary();
 }

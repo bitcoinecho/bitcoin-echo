@@ -9,13 +9,10 @@
  * Build once. Build right. Stop.
  */
 
+#include <stdint.h>
 #include <stdio.h>
-#include <string.h>
 #include "sha256.h"
-
-/* Number of test cases */
-static int tests_run = 0;
-static int tests_passed = 0;
+#include "test_utils.h"
 
 /*
  * Compare two byte arrays and return 1 if equal, 0 otherwise.
@@ -32,82 +29,54 @@ static int bytes_equal(const uint8_t *a, const uint8_t *b, size_t len)
 }
 
 /*
- * Print a byte array as hex.
- */
-static void print_hex(const uint8_t *data, size_t len)
-{
-    size_t i;
-    for (i = 0; i < len; i++) {
-        printf("%02x", data[i]);
-    }
-}
-
-/*
  * Run a single SHA-256 test.
  */
-static void test_sha256(const char *name,
-                        const uint8_t *input, size_t input_len,
-                        const uint8_t expected[32])
+static void run_sha256_test(const char *name,
+                            const uint8_t *input, size_t input_len,
+                            const uint8_t expected[32])
 {
     uint8_t result[32];
 
-    tests_run++;
-
     sha256(input, input_len, result);
 
+    test_case(name);
     if (bytes_equal(result, expected, 32)) {
-        tests_passed++;
-        printf("  [PASS] %s\n", name);
+        test_pass();
     } else {
-        printf("  [FAIL] %s\n", name);
-        printf("    Expected: ");
-        print_hex(expected, 32);
-        printf("\n");
-        printf("    Got:      ");
-        print_hex(result, 32);
-        printf("\n");
+        test_fail_bytes("hash mismatch", expected, result, 32);
     }
 }
 
 /*
  * Run a single SHA-256d test.
  */
-static void test_sha256d(const char *name,
-                         const uint8_t *input, size_t input_len,
-                         const uint8_t expected[32])
+static void run_sha256d_test(const char *name,
+                             const uint8_t *input, size_t input_len,
+                             const uint8_t expected[32])
 {
     uint8_t result[32];
 
-    tests_run++;
-
     sha256d(input, input_len, result);
 
+    test_case(name);
     if (bytes_equal(result, expected, 32)) {
-        tests_passed++;
-        printf("  [PASS] %s\n", name);
+        test_pass();
     } else {
-        printf("  [FAIL] %s\n", name);
-        printf("    Expected: ");
-        print_hex(expected, 32);
-        printf("\n");
-        printf("    Got:      ");
-        print_hex(result, 32);
-        printf("\n");
+        test_fail_bytes("hash mismatch", expected, result, 32);
     }
 }
 
 /*
  * Test streaming interface produces same result as one-shot.
  */
-static void test_streaming(const char *name,
-                           const uint8_t *input, size_t input_len)
+static void run_streaming_test(const char *name,
+                               const uint8_t *input, size_t input_len)
 {
     uint8_t oneshot[32];
     uint8_t streaming[32];
     sha256_ctx_t ctx;
     size_t i;
-
-    tests_run++;
+    char test_name[256];
 
     /* One-shot */
     sha256(input, input_len, oneshot);
@@ -119,24 +88,18 @@ static void test_streaming(const char *name,
     }
     sha256_final(&ctx, streaming);
 
+    snprintf(test_name, sizeof(test_name), "%s (streaming)", name);
+    test_case(test_name);
     if (bytes_equal(oneshot, streaming, 32)) {
-        tests_passed++;
-        printf("  [PASS] %s (streaming)\n", name);
+        test_pass();
     } else {
-        printf("  [FAIL] %s (streaming)\n", name);
-        printf("    One-shot:  ");
-        print_hex(oneshot, 32);
-        printf("\n");
-        printf("    Streaming: ");
-        print_hex(streaming, 32);
-        printf("\n");
+        test_fail_bytes("streaming mismatch", oneshot, streaming, 32);
     }
 }
 
 int main(void)
 {
-    printf("SHA-256 Test Suite\n");
-    printf("==================\n\n");
+    test_suite_begin("SHA-256 Test Suite");
 
     /*
      * NIST FIPS 180-4 Example: "abc"
@@ -149,8 +112,8 @@ int main(void)
             0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c,
             0xb4, 0x10, 0xff, 0x61, 0xf2, 0x00, 0x15, 0xad
         };
-        test_sha256("NIST abc", input, 3, expected);
-        test_streaming("NIST abc", input, 3);
+        run_sha256_test("NIST abc", input, 3, expected);
+        run_streaming_test("NIST abc", input, 3);
     }
 
     /*
@@ -164,7 +127,7 @@ int main(void)
             0x27, 0xae, 0x41, 0xe4, 0x64, 0x9b, 0x93, 0x4c,
             0xa4, 0x95, 0x99, 0x1b, 0x78, 0x52, 0xb8, 0x55
         };
-        test_sha256("Empty string", input, 0, expected);
+        run_sha256_test("Empty string", input, 0, expected);
     }
 
     /*
@@ -179,8 +142,8 @@ int main(void)
             0xa3, 0x3c, 0xe4, 0x59, 0x64, 0xff, 0x21, 0x67,
             0xf6, 0xec, 0xed, 0xd4, 0x19, 0xdb, 0x06, 0xc1
         };
-        test_sha256("NIST 448 bits", input, 56, expected);
-        test_streaming("NIST 448 bits", input, 56);
+        run_sha256_test("NIST 448 bits", input, 56, expected);
+        run_streaming_test("NIST 448 bits", input, 56);
     }
 
     /*
@@ -198,8 +161,8 @@ int main(void)
             0x0b, 0x24, 0x9b, 0x11, 0xe8, 0xf0, 0x7a, 0x51,
             0xaf, 0xac, 0x45, 0x03, 0x7a, 0xfe, 0xe9, 0xd1
         };
-        test_sha256("NIST 896 bits", input, 112, expected);
-        test_streaming("NIST 896 bits", input, 112);
+        run_sha256_test("NIST 896 bits", input, 112, expected);
+        run_streaming_test("NIST 896 bits", input, 112);
     }
 
     /*
@@ -214,7 +177,7 @@ int main(void)
             0x03, 0x81, 0x53, 0x45, 0x45, 0xf5, 0x5c, 0xf4,
             0x3e, 0x41, 0x98, 0x3f, 0x5d, 0x4c, 0x94, 0x56
         };
-        test_sha256d("SHA256d empty", input, 0, expected);
+        run_sha256d_test("SHA256d empty", input, 0, expected);
     }
 
     /*
@@ -246,11 +209,10 @@ int main(void)
             0x93, 0x1e, 0x83, 0x65, 0xe1, 0x5a, 0x08, 0x9c,
             0x68, 0xd6, 0x19, 0x00, 0x00, 0x00, 0x00, 0x00
         };
-        test_sha256d("Bitcoin Genesis Block", genesis_header, 80, expected);
+        run_sha256d_test("Bitcoin Genesis Block", genesis_header, 80, expected);
     }
 
-    printf("\n");
-    printf("Results: %d/%d tests passed\n", tests_passed, tests_run);
+    test_suite_end();
 
-    return (tests_passed == tests_run) ? 0 : 1;
+    return test_global_summary();
 }

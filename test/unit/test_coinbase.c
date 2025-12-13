@@ -11,6 +11,7 @@
  * Build once. Build right. Stop.
  */
 
+#include "test_utils.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -19,8 +20,6 @@
 #include "tx.h"
 #include "merkle.h"
 
-static int tests_run = 0;
-static int tests_passed = 0;
 
 /*
  * ============================================================================
@@ -32,13 +31,13 @@ static void test_subsidy_genesis(void)
 {
     satoshi_t subsidy;
 
-    tests_run++;
 
     subsidy = coinbase_subsidy(0);
 
     if (subsidy == 5000000000LL) {
-        tests_passed++;
-        printf("  [PASS] Genesis subsidy = 50 BTC\n");
+        test_pass();
+        test_case("Genesis subsidy = 50 BTC");
+        test_pass();
     } else {
         printf("  [FAIL] Genesis subsidy: got %lld, expected 5000000000\n",
                (long long)subsidy);
@@ -49,7 +48,6 @@ static void test_subsidy_first_halving(void)
 {
     satoshi_t subsidy_before, subsidy_after;
 
-    tests_run++;
 
     /* Block 209,999 is last block with 50 BTC subsidy */
     subsidy_before = coinbase_subsidy(209999);
@@ -57,8 +55,9 @@ static void test_subsidy_first_halving(void)
     subsidy_after = coinbase_subsidy(210000);
 
     if (subsidy_before == 5000000000LL && subsidy_after == 2500000000LL) {
-        tests_passed++;
-        printf("  [PASS] First halving at block 210,000 (50 -> 25 BTC)\n");
+        test_pass();
+        test_case("First halving at block 210,000 (50 -> 25 BTC)");
+        test_pass();
     } else {
         printf("  [FAIL] First halving: before=%lld, after=%lld\n",
                (long long)subsidy_before, (long long)subsidy_after);
@@ -69,13 +68,13 @@ static void test_subsidy_second_halving(void)
 {
     satoshi_t subsidy;
 
-    tests_run++;
 
     subsidy = coinbase_subsidy(420000);
 
     if (subsidy == 1250000000LL) {
-        tests_passed++;
-        printf("  [PASS] Second halving at block 420,000 (12.5 BTC)\n");
+        test_pass();
+        test_case("Second halving at block 420,000 (12.5 BTC)");
+        test_pass();
     } else {
         printf("  [FAIL] Second halving: got %lld, expected 1250000000\n",
                (long long)subsidy);
@@ -86,13 +85,13 @@ static void test_subsidy_third_halving(void)
 {
     satoshi_t subsidy;
 
-    tests_run++;
 
     subsidy = coinbase_subsidy(630000);
 
     if (subsidy == 625000000LL) {
-        tests_passed++;
-        printf("  [PASS] Third halving at block 630,000 (6.25 BTC)\n");
+        test_pass();
+        test_case("Third halving at block 630,000 (6.25 BTC)");
+        test_pass();
     } else {
         printf("  [FAIL] Third halving: got %lld, expected 625000000\n",
                (long long)subsidy);
@@ -103,13 +102,13 @@ static void test_subsidy_fourth_halving(void)
 {
     satoshi_t subsidy;
 
-    tests_run++;
 
     subsidy = coinbase_subsidy(840000);
 
     if (subsidy == 312500000LL) {
-        tests_passed++;
-        printf("  [PASS] Fourth halving at block 840,000 (3.125 BTC)\n");
+        test_pass();
+        test_case("Fourth halving at block 840,000 (3.125 BTC)");
+        test_pass();
     } else {
         printf("  [FAIL] Fourth halving: got %lld, expected 312500000\n",
                (long long)subsidy);
@@ -120,14 +119,13 @@ static void test_subsidy_after_many_halvings(void)
 {
     satoshi_t subsidy;
 
-    tests_run++;
 
     /* After 10 halvings: 50 / 1024 = ~0.0488 BTC = 4,882,812.5 satoshis */
     /* But integer division: 5000000000 >> 10 = 4882812 */
     subsidy = coinbase_subsidy(210000 * 10);
 
     if (subsidy == 4882812LL) {
-        tests_passed++;
+        test_pass();
         printf("  [PASS] After 10 halvings: %lld satoshis\n", (long long)subsidy);
     } else {
         printf("  [FAIL] After 10 halvings: got %lld\n", (long long)subsidy);
@@ -138,14 +136,14 @@ static void test_subsidy_zero_after_64_halvings(void)
 {
     satoshi_t subsidy;
 
-    tests_run++;
 
     /* After 64 halvings, subsidy should be 0 */
     subsidy = coinbase_subsidy(210000 * 64);
 
     if (subsidy == 0) {
-        tests_passed++;
-        printf("  [PASS] Subsidy is 0 after 64 halvings\n");
+        test_pass();
+        test_case("Subsidy is 0 after 64 halvings");
+        test_pass();
     } else {
         printf("  [FAIL] Subsidy after 64 halvings: got %lld, expected 0\n",
                (long long)subsidy);
@@ -168,7 +166,6 @@ static void test_subsidy_total_supply(void)
     satoshi_t subsidy;
     int halvings = 0;
 
-    tests_run++;
 
     while ((subsidy = coinbase_subsidy(height)) > 0 && halvings < 100) {
         /* Each halving period has 210,000 blocks */
@@ -180,14 +177,15 @@ static void test_subsidy_total_supply(void)
     /* Should be exactly 2,100,000,000,000,000 satoshis */
     if (total == 2099999997690000LL) {
         /* Note: slightly less than 21M due to integer division rounding */
-        tests_passed++;
+        test_pass();
         printf("  [PASS] Total supply: %lld satoshis (20,999,999.97690000 BTC)\n",
                (long long)total);
     } else {
         printf("  [INFO] Total supply: %lld satoshis\n", (long long)total);
         /* Still pass - the exact value depends on rounding */
-        tests_passed++;
-        printf("  [PASS] Total supply calculation completed\n");
+        test_pass();
+        test_case("Total supply calculation completed");
+        test_pass();
     }
 }
 
@@ -204,13 +202,13 @@ static void test_height_parse_op0(void)
     uint32_t height;
     echo_result_t result;
 
-    tests_run++;
 
     result = coinbase_parse_height(script, sizeof(script), &height);
 
     if (result == ECHO_OK && height == 0) {
-        tests_passed++;
-        printf("  [PASS] Parse height 0 from OP_0\n");
+        test_pass();
+        test_case("Parse height 0 from OP_0");
+        test_pass();
     } else {
         printf("  [FAIL] Parse OP_0: result=%d, height=%u\n", result, height);
     }
@@ -223,7 +221,6 @@ static void test_height_parse_op1_through_op16(void)
     int success = 1;
     int i;
 
-    tests_run++;
 
     for (i = 1; i <= 16; i++) {
         uint8_t script[] = { (uint8_t)(0x50 + i) };  /* OP_1 = 0x51, etc. */
@@ -237,10 +234,12 @@ static void test_height_parse_op1_through_op16(void)
     }
 
     if (success) {
-        tests_passed++;
-        printf("  [PASS] Parse heights 1-16 from OP_1 through OP_16\n");
+        test_pass();
+        test_case("Parse heights 1-16 from OP_1 through OP_16");
+        test_pass();
     } else {
-        printf("  [FAIL] Some OP_N parsing failed\n");
+        test_case("Some OP_N parsing failed");
+        test_fail("Some OP_N parsing failed");
     }
 }
 
@@ -251,13 +250,13 @@ static void test_height_parse_one_byte(void)
     uint32_t height;
     echo_result_t result;
 
-    tests_run++;
 
     result = coinbase_parse_height(script, sizeof(script), &height);
 
     if (result == ECHO_OK && height == 100) {
-        tests_passed++;
-        printf("  [PASS] Parse height 100 (1-byte push)\n");
+        test_pass();
+        test_case("Parse height 100 (1-byte push)");
+        test_pass();
     } else {
         printf("  [FAIL] Parse height 100: result=%d, height=%u\n", result, height);
     }
@@ -270,13 +269,13 @@ static void test_height_parse_two_bytes(void)
     uint32_t height;
     echo_result_t result;
 
-    tests_run++;
 
     result = coinbase_parse_height(script, sizeof(script), &height);
 
     if (result == ECHO_OK && height == 500) {
-        tests_passed++;
-        printf("  [PASS] Parse height 500 (2-byte push)\n");
+        test_pass();
+        test_case("Parse height 500 (2-byte push)");
+        test_pass();
     } else {
         printf("  [FAIL] Parse height 500: result=%d, height=%u\n", result, height);
     }
@@ -289,13 +288,13 @@ static void test_height_parse_three_bytes(void)
     uint32_t height;
     echo_result_t result;
 
-    tests_run++;
 
     result = coinbase_parse_height(script, sizeof(script), &height);
 
     if (result == ECHO_OK && height == 100000) {
-        tests_passed++;
-        printf("  [PASS] Parse height 100,000 (3-byte push)\n");
+        test_pass();
+        test_case("Parse height 100,000 (3-byte push)");
+        test_pass();
     } else {
         printf("  [FAIL] Parse height 100000: result=%d, height=%u\n", result, height);
     }
@@ -308,13 +307,13 @@ static void test_height_parse_four_bytes(void)
     uint32_t height;
     echo_result_t result;
 
-    tests_run++;
 
     result = coinbase_parse_height(script, sizeof(script), &height);
 
     if (result == ECHO_OK && height == 16777216) {
-        tests_passed++;
-        printf("  [PASS] Parse height 16,777,216 (4-byte push)\n");
+        test_pass();
+        test_case("Parse height 16,777,216 (4-byte push)");
+        test_pass();
     } else {
         printf("  [FAIL] Parse height 16777216: result=%d, height=%u\n", result, height);
     }
@@ -328,13 +327,13 @@ static void test_height_parse_bip34_activation(void)
     uint32_t height;
     echo_result_t result;
 
-    tests_run++;
 
     result = coinbase_parse_height(script, sizeof(script), &height);
 
     if (result == ECHO_OK && height == 227931) {
-        tests_passed++;
-        printf("  [PASS] Parse BIP-34 activation height 227,931\n");
+        test_pass();
+        test_case("Parse BIP-34 activation height 227,931");
+        test_pass();
     } else {
         printf("  [FAIL] Parse height 227931: result=%d, height=%u\n", result, height);
     }
@@ -345,13 +344,13 @@ static void test_height_parse_empty_script(void)
     uint32_t height;
     echo_result_t result;
 
-    tests_run++;
 
     result = coinbase_parse_height(NULL, 0, &height);
 
     if (result == ECHO_ERR_NULL_PARAM || result == ECHO_ERR_INVALID_FORMAT) {
-        tests_passed++;
-        printf("  [PASS] Empty script rejected\n");
+        test_pass();
+        test_case("Empty script rejected");
+        test_pass();
     } else {
         printf("  [FAIL] Empty script: result=%d\n", result);
     }
@@ -364,13 +363,13 @@ static void test_height_parse_truncated(void)
     uint32_t height;
     echo_result_t result;
 
-    tests_run++;
 
     result = coinbase_parse_height(script, sizeof(script), &height);
 
     if (result == ECHO_ERR_INVALID_FORMAT) {
-        tests_passed++;
-        printf("  [PASS] Truncated script rejected\n");
+        test_pass();
+        test_case("Truncated script rejected");
+        test_pass();
     } else {
         printf("  [FAIL] Truncated script: result=%d, height=%u\n", result, height);
     }
@@ -478,18 +477,19 @@ static void test_coinbase_valid_subsidy(void)
     block_validation_error_t error = BLOCK_VALID;
     satoshi_t subsidy;
 
-    tests_run++;
 
     subsidy = coinbase_subsidy(500000);
     coinbase = create_test_coinbase(500000, subsidy);
     if (!coinbase) {
-        printf("  [FAIL] Could not create test coinbase\n");
+        test_case("Could not create test coinbase");
+        test_fail("Could not create test coinbase");
         return;
     }
 
     if (coinbase_validate(coinbase, 500000, subsidy, &error)) {
-        tests_passed++;
-        printf("  [PASS] Valid coinbase with exact subsidy\n");
+        test_pass();
+        test_case("Valid coinbase with exact subsidy");
+        test_pass();
     } else {
         printf("  [FAIL] Valid coinbase rejected: %s\n",
                block_validation_error_str(error));
@@ -504,25 +504,27 @@ static void test_coinbase_excess_subsidy(void)
     block_validation_error_t error = BLOCK_VALID;
     satoshi_t subsidy;
 
-    tests_run++;
 
     subsidy = coinbase_subsidy(500000);
     coinbase = create_test_coinbase(500000, subsidy + 1);  /* 1 satoshi too much */
     if (!coinbase) {
-        printf("  [FAIL] Could not create test coinbase\n");
+        test_case("Could not create test coinbase");
+        test_fail("Could not create test coinbase");
         return;
     }
 
     if (!coinbase_validate(coinbase, 500000, subsidy, &error)) {
         if (error == BLOCK_ERR_COINBASE_SUBSIDY) {
-            tests_passed++;
-            printf("  [PASS] Excess subsidy rejected\n");
+            test_pass();
+            test_case("Excess subsidy rejected");
+        test_pass();
         } else {
             printf("  [FAIL] Wrong error for excess subsidy: %s\n",
                    block_validation_error_str(error));
         }
     } else {
-        printf("  [FAIL] Excess subsidy accepted\n");
+        test_case("Excess subsidy accepted");
+        test_fail("Excess subsidy accepted");
     }
 
     free_test_coinbase(coinbase);
@@ -535,19 +537,20 @@ static void test_coinbase_with_fees(void)
     satoshi_t subsidy;
     satoshi_t fees = 100000;  /* 0.001 BTC in fees */
 
-    tests_run++;
 
     subsidy = coinbase_subsidy(500000);
     coinbase = create_test_coinbase(500000, subsidy + fees);
     if (!coinbase) {
-        printf("  [FAIL] Could not create test coinbase\n");
+        test_case("Could not create test coinbase");
+        test_fail("Could not create test coinbase");
         return;
     }
 
     /* max_allowed includes fees */
     if (coinbase_validate(coinbase, 500000, subsidy + fees, &error)) {
-        tests_passed++;
-        printf("  [PASS] Coinbase with fees accepted\n");
+        test_pass();
+        test_case("Coinbase with fees accepted");
+        test_pass();
     } else {
         printf("  [FAIL] Coinbase with fees rejected: %s\n",
                block_validation_error_str(error));
@@ -561,26 +564,28 @@ static void test_coinbase_height_mismatch(void)
     tx_t *coinbase;
     block_validation_error_t error = BLOCK_VALID;
 
-    tests_run++;
 
     /* Create coinbase for height 500000 but validate at height 500001 */
     coinbase = create_test_coinbase(500000, coinbase_subsidy(500000));
     if (!coinbase) {
-        printf("  [FAIL] Could not create test coinbase\n");
+        test_case("Could not create test coinbase");
+        test_fail("Could not create test coinbase");
         return;
     }
 
     /* BIP-34 should catch the mismatch */
     if (!coinbase_validate(coinbase, 500001, coinbase_subsidy(500001), &error)) {
         if (error == BLOCK_ERR_COINBASE_HEIGHT) {
-            tests_passed++;
-            printf("  [PASS] Height mismatch rejected\n");
+            test_pass();
+            test_case("Height mismatch rejected");
+        test_pass();
         } else {
             printf("  [FAIL] Wrong error for height mismatch: %s\n",
                    block_validation_error_str(error));
         }
     } else {
-        printf("  [FAIL] Height mismatch accepted\n");
+        test_case("Height mismatch accepted");
+        test_fail("Height mismatch accepted");
     }
 
     free_test_coinbase(coinbase);
@@ -591,19 +596,20 @@ static void test_coinbase_before_bip34(void)
     tx_t *coinbase;
     block_validation_error_t error = BLOCK_VALID;
 
-    tests_run++;
 
     /* Before BIP-34, height encoding not enforced */
     coinbase = create_test_coinbase(100, coinbase_subsidy(100));
     if (!coinbase) {
-        printf("  [FAIL] Could not create test coinbase\n");
+        test_case("Could not create test coinbase");
+        test_fail("Could not create test coinbase");
         return;
     }
 
     /* Validate at different height - should pass since before BIP-34 */
     if (coinbase_validate(coinbase, 200, coinbase_subsidy(200), &error)) {
-        tests_passed++;
-        printf("  [PASS] Pre-BIP34 height mismatch allowed\n");
+        test_pass();
+        test_case("Pre-BIP34 height mismatch allowed");
+        test_pass();
     } else {
         printf("  [FAIL] Pre-BIP34 height mismatch rejected: %s\n",
                block_validation_error_str(error));
@@ -620,66 +626,71 @@ static void test_coinbase_before_bip34(void)
 
 static void test_maturity_immature(void)
 {
-    tests_run++;
 
     /* Coinbase at height 100, current height 150 (only 50 confirmations) */
     if (!coinbase_is_mature(100, 150)) {
-        tests_passed++;
-        printf("  [PASS] Immature coinbase (50 confs) rejected\n");
+        test_pass();
+        test_case("Immature coinbase (50 confs) rejected");
+        test_pass();
     } else {
-        printf("  [FAIL] Immature coinbase accepted\n");
+        test_case("Immature coinbase accepted");
+        test_fail("Immature coinbase accepted");
     }
 }
 
 static void test_maturity_at_boundary(void)
 {
-    tests_run++;
 
     /* Coinbase at height 100, current height 199 (99 confirmations) */
     if (!coinbase_is_mature(100, 199)) {
-        tests_passed++;
-        printf("  [PASS] Immature coinbase (99 confs) rejected\n");
+        test_pass();
+        test_case("Immature coinbase (99 confs) rejected");
+        test_pass();
     } else {
-        printf("  [FAIL] Immature coinbase (99 confs) accepted\n");
+        test_case("Immature coinbase (99 confs) accepted");
+        test_fail("Immature coinbase (99 confs) accepted");
     }
 }
 
 static void test_maturity_exactly_100(void)
 {
-    tests_run++;
 
     /* Coinbase at height 100, current height 200 (exactly 100 confirmations) */
     if (coinbase_is_mature(100, 200)) {
-        tests_passed++;
-        printf("  [PASS] Mature coinbase (100 confs) accepted\n");
+        test_pass();
+        test_case("Mature coinbase (100 confs) accepted");
+        test_pass();
     } else {
-        printf("  [FAIL] Mature coinbase (100 confs) rejected\n");
+        test_case("Mature coinbase (100 confs) rejected");
+        test_fail("Mature coinbase (100 confs) rejected");
     }
 }
 
 static void test_maturity_genesis(void)
 {
-    tests_run++;
 
     /* Genesis coinbase at height 0, current height 100 */
     if (coinbase_is_mature(0, 100)) {
-        tests_passed++;
-        printf("  [PASS] Genesis coinbase mature at height 100\n");
+        test_pass();
+        test_case("Genesis coinbase mature at height 100");
+        test_pass();
     } else {
-        printf("  [FAIL] Genesis coinbase immature at height 100\n");
+        test_case("Genesis coinbase immature at height 100");
+        test_fail("Genesis coinbase immature at height 100");
     }
 }
 
 static void test_maturity_same_block(void)
 {
-    tests_run++;
 
     /* Can't spend in same block */
     if (!coinbase_is_mature(100, 100)) {
-        tests_passed++;
-        printf("  [PASS] Cannot spend coinbase in same block\n");
+        test_pass();
+        test_case("Cannot spend coinbase in same block");
+        test_pass();
     } else {
-        printf("  [FAIL] Same-block coinbase spend allowed\n");
+        test_case("Same-block coinbase spend allowed");
+        test_fail("Same-block coinbase spend allowed");
     }
 }
 
@@ -691,17 +702,18 @@ static void test_maturity_same_block(void)
 
 static void test_witness_commitment_prefix(void)
 {
-    tests_run++;
 
     /* Verify the magic prefix is aa21a9ed */
     if (WITNESS_COMMITMENT_PREFIX[0] == 0xaa &&
         WITNESS_COMMITMENT_PREFIX[1] == 0x21 &&
         WITNESS_COMMITMENT_PREFIX[2] == 0xa9 &&
         WITNESS_COMMITMENT_PREFIX[3] == 0xed) {
-        tests_passed++;
-        printf("  [PASS] Witness commitment prefix is aa21a9ed\n");
+        test_pass();
+        test_case("Witness commitment prefix is aa21a9ed");
+        test_pass();
     } else {
-        printf("  [FAIL] Witness commitment prefix incorrect\n");
+        test_case("Witness commitment prefix incorrect");
+        test_fail("Witness commitment prefix incorrect");
     }
 }
 
@@ -711,19 +723,20 @@ static void test_find_witness_commitment_none(void)
     hash256_t commitment;
     echo_result_t result;
 
-    tests_run++;
 
     coinbase = create_test_coinbase(500000, coinbase_subsidy(500000));
     if (!coinbase) {
-        printf("  [FAIL] Could not create test coinbase\n");
+        test_case("Could not create test coinbase");
+        test_fail("Could not create test coinbase");
         return;
     }
 
     result = coinbase_find_witness_commitment(coinbase, &commitment);
 
     if (result == ECHO_ERR_NOT_FOUND) {
-        tests_passed++;
-        printf("  [PASS] No witness commitment found in regular coinbase\n");
+        test_pass();
+        test_case("No witness commitment found in regular coinbase");
+        test_pass();
     } else {
         printf("  [FAIL] Expected NOT_FOUND, got %d\n", result);
     }
@@ -738,11 +751,11 @@ static void test_find_witness_commitment_present(void)
     echo_result_t result;
     uint8_t *witness_output;
 
-    tests_run++;
 
     coinbase = create_test_coinbase(500000, coinbase_subsidy(500000));
     if (!coinbase) {
-        printf("  [FAIL] Could not create test coinbase\n");
+        test_case("Could not create test coinbase");
+        test_fail("Could not create test coinbase");
         return;
     }
 
@@ -776,10 +789,12 @@ static void test_find_witness_commitment_present(void)
             }
         }
         if (correct) {
-            tests_passed++;
-            printf("  [PASS] Found witness commitment in coinbase\n");
+            test_pass();
+            test_case("Found witness commitment in coinbase");
+        test_pass();
         } else {
-            printf("  [FAIL] Commitment data incorrect\n");
+            test_case("Commitment data incorrect");
+        test_fail("Commitment data incorrect");
         }
     } else {
         printf("  [FAIL] Expected OK, got %d\n", result);
@@ -797,11 +812,11 @@ static void test_find_witness_commitment_present(void)
 
 int main(void)
 {
-    printf("Bitcoin Echo — Coinbase Validation Tests\n");
-    printf("=========================================\n\n");
+    test_suite_begin("Coinbase Tests");
+    
 
     /* Subsidy Tests */
-    printf("Block subsidy tests:\n");
+    test_section("Block subsidy tests");
     test_subsidy_genesis();
     test_subsidy_first_halving();
     test_subsidy_second_halving();
@@ -810,10 +825,9 @@ int main(void)
     test_subsidy_after_many_halvings();
     test_subsidy_zero_after_64_halvings();
     test_subsidy_total_supply();
-    printf("\n");
 
     /* BIP-34 Height Parsing Tests */
-    printf("BIP-34 height parsing tests:\n");
+    test_section("BIP-34 height parsing tests");
     test_height_parse_op0();
     test_height_parse_op1_through_op16();
     test_height_parse_one_byte();
@@ -823,36 +837,30 @@ int main(void)
     test_height_parse_bip34_activation();
     test_height_parse_empty_script();
     test_height_parse_truncated();
-    printf("\n");
 
     /* Coinbase Validation Tests */
-    printf("Coinbase validation tests:\n");
+    test_section("Coinbase validation tests");
     test_coinbase_valid_subsidy();
     test_coinbase_excess_subsidy();
     test_coinbase_with_fees();
     test_coinbase_height_mismatch();
     test_coinbase_before_bip34();
-    printf("\n");
 
     /* Maturity Tests */
-    printf("Coinbase maturity tests:\n");
+    test_section("Coinbase maturity tests");
     test_maturity_immature();
     test_maturity_at_boundary();
     test_maturity_exactly_100();
     test_maturity_genesis();
     test_maturity_same_block();
-    printf("\n");
 
     /* Witness Commitment Tests */
-    printf("Witness commitment tests:\n");
+    test_section("Witness commitment tests");
     test_witness_commitment_prefix();
     test_find_witness_commitment_none();
     test_find_witness_commitment_present();
-    printf("\n");
 
     /* Summary */
-    printf("=========================================\n");
-    printf("Tests: %d/%d passed\n", tests_passed, tests_run);
-
-    return (tests_passed == tests_run) ? 0 : 1;
+    test_suite_end();
+    return test_global_summary();
 }

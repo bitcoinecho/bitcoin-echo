@@ -11,14 +11,13 @@
  */
 
 #include <stdio.h>
+#include "test_utils.h"
 #include <stdlib.h>
 #include <string.h>
 #include "script.h"
 #include "sha256.h"
 #include "ripemd160.h"
 
-static int tests_run = 0;
-static int tests_passed = 0;
 
 /*
  * Test: script_is_push_only
@@ -26,7 +25,6 @@ static int tests_passed = 0;
 static void test_push_only(const char *name, const uint8_t *script, size_t len,
                             echo_bool_t expected)
 {
-    tests_run++;
     echo_bool_t result = script_is_push_only(script, len);
 
     if (result != expected) {
@@ -36,8 +34,9 @@ static void test_push_only(const char *name, const uint8_t *script, size_t len,
         return;
     }
 
-    tests_passed++;
-    printf("  [PASS] %s\n", name);
+    test_pass();
+    test_case(name);
+        test_pass();
 }
 
 /*
@@ -46,7 +45,6 @@ static void test_push_only(const char *name, const uint8_t *script, size_t len,
 static void test_is_p2sh(const char *name, const uint8_t *script, size_t len,
                           echo_bool_t expected)
 {
-    tests_run++;
     echo_bool_t result = script_is_p2sh(script, len, NULL);
 
     if (result != expected) {
@@ -56,8 +54,9 @@ static void test_is_p2sh(const char *name, const uint8_t *script, size_t len,
         return;
     }
 
-    tests_passed++;
-    printf("  [PASS] %s\n", name);
+    test_pass();
+    test_case(name);
+        test_pass();
 }
 
 /*
@@ -68,7 +67,6 @@ static void test_p2sh_simple(const char *name,
                               const uint8_t *redeem_script, size_t redeem_len,
                               echo_bool_t should_succeed)
 {
-    tests_run++;
     script_context_t ctx;
     script_context_init(&ctx, SCRIPT_VERIFY_P2SH);
 
@@ -88,14 +86,16 @@ static void test_p2sh_simple(const char *name,
         }
     } else {
         if (res == ECHO_OK) {
-            printf("  [FAIL] %s (expected failure, got success)\n", name);
+            test_case(name);
+        test_fail(name);
             script_context_free(&ctx);
             return;
         }
     }
 
-    tests_passed++;
-    printf("  [PASS] %s\n", name);
+    test_pass();
+    test_case(name);
+        test_pass();
     script_context_free(&ctx);
 }
 
@@ -104,7 +104,6 @@ static void test_p2sh_simple(const char *name,
  */
 static void test_p2sh_hash_mismatch(void)
 {
-    tests_run++;
     script_context_t ctx;
     script_context_init(&ctx, SCRIPT_VERIFY_P2SH);
 
@@ -124,7 +123,8 @@ static void test_p2sh_hash_mismatch(void)
                                             wrong_hash, NULL, 0);
 
     if (res == ECHO_OK) {
-        printf("  [FAIL] P2SH hash mismatch (expected failure)\n");
+        test_case("P2SH hash mismatch (expected failure)");
+        test_fail("P2SH hash mismatch (expected failure)");
         script_context_free(&ctx);
         return;
     }
@@ -136,8 +136,9 @@ static void test_p2sh_hash_mismatch(void)
         return;
     }
 
-    tests_passed++;
-    printf("  [PASS] P2SH hash mismatch detected\n");
+    test_pass();
+    test_case("P2SH hash mismatch detected");
+        test_pass();
     script_context_free(&ctx);
 }
 
@@ -146,7 +147,6 @@ static void test_p2sh_hash_mismatch(void)
  */
 static void test_p2sh_non_push_only(void)
 {
-    tests_run++;
     script_context_t ctx;
     script_context_init(&ctx, SCRIPT_VERIFY_P2SH);
 
@@ -166,7 +166,8 @@ static void test_p2sh_non_push_only(void)
                                             script_hash, NULL, 0);
 
     if (res == ECHO_OK) {
-        printf("  [FAIL] Non-push-only scriptSig (expected failure)\n");
+        test_case("Non-push-only scriptSig (expected failure)");
+        test_fail("Non-push-only scriptSig (expected failure)");
         script_context_free(&ctx);
         return;
     }
@@ -178,22 +179,22 @@ static void test_p2sh_non_push_only(void)
         return;
     }
 
-    tests_passed++;
-    printf("  [PASS] Non-push-only scriptSig rejected\n");
+    test_pass();
+    test_case("Non-push-only scriptSig rejected");
+        test_pass();
     script_context_free(&ctx);
 }
 
 int main(void)
 {
-    printf("Bitcoin Echo — P2SH Evaluation Tests\n");
-    printf("====================================\n\n");
+    test_suite_begin("P2SH Evaluation Tests");
 
     /*
      * ==========================================
      * PUSH-ONLY SCRIPT TESTS
      * ==========================================
      */
-    printf("Push-only script tests:\n");
+    test_section("Push-only script tests");
     {
         /* Empty script is push-only */
         test_push_only("Empty script", NULL, 0, ECHO_TRUE);
@@ -243,14 +244,13 @@ int main(void)
         uint8_t push_then_add[] = {OP_1, OP_2, OP_ADD};
         test_push_only("Push then ADD", push_then_add, sizeof(push_then_add), ECHO_FALSE);
     }
-    printf("\n");
 
     /*
      * ==========================================
      * P2SH DETECTION TESTS
      * ==========================================
      */
-    printf("P2SH detection tests:\n");
+    test_section("P2SH detection tests");
     {
         /* Valid P2SH pattern: OP_HASH160 <20 bytes> OP_EQUAL */
         uint8_t p2sh[] = {
@@ -289,14 +289,13 @@ int main(void)
         };
         test_is_p2sh("P2PKH is not P2SH", p2pkh, sizeof(p2pkh), ECHO_FALSE);
     }
-    printf("\n");
 
     /*
      * ==========================================
      * P2SH VERIFICATION TESTS
      * ==========================================
      */
-    printf("P2SH verification tests:\n");
+    test_section("P2SH verification tests");
     {
         /*
          * Test: Simple redeem script OP_1
@@ -378,15 +377,12 @@ int main(void)
         /* Test non-push-only rejection */
         test_p2sh_non_push_only();
     }
-    printf("\n");
 
     /*
      * ==========================================
      * SUMMARY
      * ==========================================
      */
-    printf("====================================\n");
-    printf("Tests: %d/%d passed\n", tests_passed, tests_run);
-
-    return (tests_passed == tests_run) ? 0 : 1;
+    test_suite_end();
+    return test_global_summary();
 }

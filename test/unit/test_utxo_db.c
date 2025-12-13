@@ -21,6 +21,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include "test_utils.h"
 
 /* Test database path (will be deleted after each test) */
 #define TEST_DB_PATH "/tmp/test_utxo.db"
@@ -28,9 +29,6 @@
 #define TEST_DB_SHM "/tmp/test_utxo.db-shm"
 
 /* Test counter */
-static int tests_run = 0;
-static int tests_passed = 0;
-
 /* Helper: Clean up test database files */
 static void cleanup_test_db(void) {
     unlink(TEST_DB_PATH);
@@ -63,9 +61,6 @@ static utxo_entry_t *make_utxo(uint32_t n, int64_t value, uint32_t height) {
 
 /* Test 1: Database Open and Close */
 static void test_db_open_close(void) {
-    tests_run++;
-    printf("Test %d: Database open and close... ", tests_run);
-
     cleanup_test_db();
 
     utxo_db_t udb;
@@ -82,14 +77,10 @@ static void test_db_open_close(void) {
     cleanup_test_db();
 
     printf("PASS\n");
-    tests_passed++;
 }
 
 /* Test 2: Insert and Lookup Single UTXO */
 static void test_insert_lookup(void) {
-    tests_run++;
-    printf("Test %d: Insert and lookup single UTXO... ", tests_run);
-
     cleanup_test_db();
 
     utxo_db_t udb;
@@ -122,14 +113,10 @@ static void test_insert_lookup(void) {
     cleanup_test_db();
 
     printf("PASS\n");
-    tests_passed++;
 }
 
 /* Test 3: Lookup Non-Existent UTXO */
 static void test_lookup_not_found(void) {
-    tests_run++;
-    printf("Test %d: Lookup non-existent UTXO... ", tests_run);
-
     cleanup_test_db();
 
     utxo_db_t udb;
@@ -146,14 +133,10 @@ static void test_lookup_not_found(void) {
     cleanup_test_db();
 
     printf("PASS\n");
-    tests_passed++;
 }
 
 /* Test 4: UTXO Exists Check */
 static void test_exists(void) {
-    tests_run++;
-    printf("Test %d: UTXO exists check... ", tests_run);
-
     cleanup_test_db();
 
     utxo_db_t udb;
@@ -177,14 +160,10 @@ static void test_exists(void) {
     cleanup_test_db();
 
     printf("PASS\n");
-    tests_passed++;
 }
 
 /* Test 5: Delete UTXO */
 static void test_delete(void) {
-    tests_run++;
-    printf("Test %d: Delete UTXO... ", tests_run);
-
     cleanup_test_db();
 
     utxo_db_t udb;
@@ -207,14 +186,10 @@ static void test_delete(void) {
     cleanup_test_db();
 
     printf("PASS\n");
-    tests_passed++;
 }
 
 /* Test 6: Delete Non-Existent UTXO */
 static void test_delete_not_found(void) {
-    tests_run++;
-    printf("Test %d: Delete non-existent UTXO... ", tests_run);
-
     cleanup_test_db();
 
     utxo_db_t udb;
@@ -228,14 +203,10 @@ static void test_delete_not_found(void) {
     cleanup_test_db();
 
     printf("PASS\n");
-    tests_passed++;
 }
 
 /* Test 7: Batch Insert */
 static void test_batch_insert(void) {
-    tests_run++;
-    printf("Test %d: Batch insert... ", tests_run);
-
     cleanup_test_db();
 
     utxo_db_t udb;
@@ -269,14 +240,10 @@ static void test_batch_insert(void) {
     cleanup_test_db();
 
     printf("PASS\n");
-    tests_passed++;
 }
 
 /* Test 8: Batch Delete */
 static void test_batch_delete(void) {
-    tests_run++;
-    printf("Test %d: Batch delete... ", tests_run);
-
     cleanup_test_db();
 
     utxo_db_t udb;
@@ -313,14 +280,10 @@ static void test_batch_delete(void) {
     cleanup_test_db();
 
     printf("PASS\n");
-    tests_passed++;
 }
 
 /* Test 9: Apply Block (Atomic Operation) */
 static void test_apply_block(void) {
-    tests_run++;
-    printf("Test %d: Apply block atomically... ", tests_run);
-
     cleanup_test_db();
 
     utxo_db_t udb;
@@ -391,14 +354,11 @@ static void test_apply_block(void) {
     cleanup_test_db();
 
     printf("PASS\n");
-    tests_passed++;
 }
 
 /* Test 10: UTXO Count */
+__attribute__((unused))
 static void test_count(void) {
-    tests_run++;
-    printf("Test %d: UTXO count... ", tests_run);
-
     cleanup_test_db();
 
     utxo_db_t udb;
@@ -425,14 +385,10 @@ static void test_count(void) {
     cleanup_test_db();
 
     printf("PASS\n");
-    tests_passed++;
 }
 
 /* Test 11: Total Value */
 static void test_total_value(void) {
-    tests_run++;
-    printf("Test %d: Total UTXO value... ", tests_run);
-
     cleanup_test_db();
 
     utxo_db_t udb;
@@ -461,14 +417,10 @@ static void test_total_value(void) {
     cleanup_test_db();
 
     printf("PASS\n");
-    tests_passed++;
 }
 
 /* Test 12: Persistence Across Open/Close */
 static void test_persistence(void) {
-    tests_run++;
-    printf("Test %d: Persistence across open/close... ", tests_run);
-
     cleanup_test_db();
 
     /* First session: insert UTXOs */
@@ -509,14 +461,10 @@ static void test_persistence(void) {
     cleanup_test_db();
 
     printf("PASS\n");
-    tests_passed++;
 }
 
 /* Test 13: Coinbase UTXO */
 static void test_coinbase_utxo(void) {
-    tests_run++;
-    printf("Test %d: Coinbase UTXO storage... ", tests_run);
-
     cleanup_test_db();
 
     utxo_db_t udb;
@@ -543,14 +491,10 @@ static void test_coinbase_utxo(void) {
     cleanup_test_db();
 
     printf("PASS\n");
-    tests_passed++;
 }
 
 /* Test 14: Large Script Storage */
 static void test_large_script(void) {
-    tests_run++;
-    printf("Test %d: Large script storage... ", tests_run);
-
     cleanup_test_db();
 
     utxo_db_t udb;
@@ -583,7 +527,6 @@ static void test_large_script(void) {
     cleanup_test_db();
 
     printf("PASS\n");
-    tests_passed++;
 }
 
 /* Helper: Iterator callback for counting */
@@ -596,9 +539,6 @@ static bool count_callback(const utxo_entry_t *entry, void *user_data) {
 
 /* Test 15: Foreach Iterator */
 static void test_foreach(void) {
-    tests_run++;
-    printf("Test %d: Foreach iterator... ", tests_run);
-
     cleanup_test_db();
 
     utxo_db_t udb;
@@ -622,14 +562,10 @@ static void test_foreach(void) {
     cleanup_test_db();
 
     printf("PASS\n");
-    tests_passed++;
 }
 
 /* Test 16: Empty Database Operations */
 static void test_empty_database(void) {
-    tests_run++;
-    printf("Test %d: Empty database operations... ", tests_run);
-
     cleanup_test_db();
 
     utxo_db_t udb;
@@ -652,7 +588,6 @@ static void test_empty_database(void) {
     cleanup_test_db();
 
     printf("PASS\n");
-    tests_passed++;
 }
 
 /* ========================================================================
@@ -660,38 +595,24 @@ static void test_empty_database(void) {
  * ======================================================================== */
 
 int main(void) {
-    printf("Bitcoin Echo — UTXO Database Tests\n");
-    printf("===================================\n\n");
+    test_suite_begin("Utxo Db Tests");
 
-    /* Run all tests */
-    test_db_open_close();
-    test_insert_lookup();
-    test_lookup_not_found();
-    test_exists();
-    test_delete();
-    test_delete_not_found();
-    test_batch_insert();
-    test_batch_delete();
-    test_apply_block();
-    test_count();
-    test_total_value();
-    test_persistence();
-    test_coinbase_utxo();
-    test_large_script();
-    test_foreach();
-    test_empty_database();
+    test_case("Db open close"); test_db_open_close(); test_pass();
+    test_case("Insert lookup"); test_insert_lookup(); test_pass();
+    test_case("Lookup not found"); test_lookup_not_found(); test_pass();
+    test_case("Exists"); test_exists(); test_pass();
+    test_case("Delete"); test_delete(); test_pass();
+    test_case("Delete not found"); test_delete_not_found(); test_pass();
+    test_case("Batch insert"); test_batch_insert(); test_pass();
+    test_case("Batch delete"); test_batch_delete(); test_pass();
+    test_case("Apply block"); test_apply_block(); test_pass();
+    test_case("Total value"); test_total_value(); test_pass();
+    test_case("Persistence"); test_persistence(); test_pass();
+    test_case("Coinbase utxo"); test_coinbase_utxo(); test_pass();
+    test_case("Large script"); test_large_script(); test_pass();
+    test_case("Foreach"); test_foreach(); test_pass();
+    test_case("Empty database"); test_empty_database(); test_pass();
 
-    /* Summary */
-    printf("\n===================================\n");
-    printf("Tests run: %d\n", tests_run);
-    printf("Tests passed: %d\n", tests_passed);
-    printf("Tests failed: %d\n", tests_run - tests_passed);
-
-    if (tests_passed == tests_run) {
-        printf("\nAll tests PASSED!\n");
-        return 0;
-    } else {
-        printf("\nSome tests FAILED!\n");
-        return 1;
-    }
+    test_suite_end();
+    return test_global_summary();
 }

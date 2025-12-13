@@ -14,8 +14,7 @@
 #include "sha256.h"
 #include "ripemd160.h"
 
-static int tests_run = 0;
-static int tests_passed = 0;
+#include "test_utils.h"
 
 /*
  * Helper: Execute a script and check result.
@@ -24,11 +23,11 @@ static void test_script(const char *name, const uint8_t *script, size_t len,
                         echo_bool_t should_succeed, script_num_t expected_top)
 {
     script_context_t ctx;
-    tests_run++;
 
     echo_result_t res = script_context_init(&ctx, SCRIPT_VERIFY_NONE);
     if (res != ECHO_OK) {
-        printf("  [FAIL] %s (context init failed)\n", name);
+        test_case(name);
+        test_fail(name);
         return;
     }
 
@@ -62,16 +61,19 @@ static void test_script(const char *name, const uint8_t *script, size_t len,
             return;
         }
 
-        tests_passed++;
-        printf("  [PASS] %s\n", name);
+        test_pass();
+        test_case(name);
+        test_pass();
     } else {
         if (res == ECHO_OK) {
-            printf("  [FAIL] %s (expected failure, got success)\n", name);
+            test_case(name);
+        test_fail(name);
             script_context_free(&ctx);
             return;
         }
-        tests_passed++;
-        printf("  [PASS] %s\n", name);
+        test_pass();
+        test_case(name);
+        test_pass();
     }
 
     script_context_free(&ctx);
@@ -84,7 +86,6 @@ static void test_script_stack_size(const char *name, const uint8_t *script,
                                     size_t len, size_t expected_size)
 {
     script_context_t ctx;
-    tests_run++;
 
     script_context_init(&ctx, SCRIPT_VERIFY_NONE);
     echo_result_t res = script_execute(&ctx, script, len);
@@ -103,8 +104,9 @@ static void test_script_stack_size(const char *name, const uint8_t *script,
         return;
     }
 
-    tests_passed++;
-    printf("  [PASS] %s\n", name);
+    test_pass();
+    test_case(name);
+        test_pass();
     script_context_free(&ctx);
 }
 
@@ -115,13 +117,13 @@ static void test_script_error(const char *name, const uint8_t *script,
                                size_t len, script_error_t expected_error)
 {
     script_context_t ctx;
-    tests_run++;
 
     script_context_init(&ctx, SCRIPT_VERIFY_NONE);
     echo_result_t res = script_execute(&ctx, script, len);
 
     if (res == ECHO_OK) {
-        printf("  [FAIL] %s (expected failure, got success)\n", name);
+        test_case(name);
+        test_fail(name);
         script_context_free(&ctx);
         return;
     }
@@ -134,8 +136,9 @@ static void test_script_error(const char *name, const uint8_t *script,
         return;
     }
 
-    tests_passed++;
-    printf("  [PASS] %s\n", name);
+    test_pass();
+    test_case(name);
+        test_pass();
     script_context_free(&ctx);
 }
 
@@ -146,7 +149,6 @@ static void test_script_bytes(const char *name, const uint8_t *script, size_t le
                                const uint8_t *expected, size_t expected_len)
 {
     script_context_t ctx;
-    tests_run++;
 
     script_context_init(&ctx, SCRIPT_VERIFY_NONE);
     echo_result_t res = script_execute(&ctx, script, len);
@@ -159,7 +161,8 @@ static void test_script_bytes(const char *name, const uint8_t *script, size_t le
     }
 
     if (stack_empty(&ctx.stack)) {
-        printf("  [FAIL] %s (stack empty)\n", name);
+        test_case(name);
+        test_fail(name);
         script_context_free(&ctx);
         return;
     }
@@ -175,13 +178,15 @@ static void test_script_bytes(const char *name, const uint8_t *script, size_t le
     }
 
     if (memcmp(top->data, expected, expected_len) != 0) {
-        printf("  [FAIL] %s (bytes mismatch)\n", name);
+        test_case(name);
+        test_fail(name);
         script_context_free(&ctx);
         return;
     }
 
-    tests_passed++;
-    printf("  [PASS] %s\n", name);
+    test_pass();
+    test_case(name);
+        test_pass();
     script_context_free(&ctx);
 }
 
@@ -193,7 +198,6 @@ static void test_script_flags(const char *name, const uint8_t *script, size_t le
                                script_error_t expected_error)
 {
     script_context_t ctx;
-    tests_run++;
 
     script_context_init(&ctx, flags);
     echo_result_t res = script_execute(&ctx, script, len);
@@ -207,7 +211,8 @@ static void test_script_flags(const char *name, const uint8_t *script, size_t le
         }
     } else {
         if (res == ECHO_OK) {
-            printf("  [FAIL] %s (expected failure, got success)\n", name);
+            test_case(name);
+        test_fail(name);
             script_context_free(&ctx);
             return;
         }
@@ -220,22 +225,22 @@ static void test_script_flags(const char *name, const uint8_t *script, size_t le
         }
     }
 
-    tests_passed++;
-    printf("  [PASS] %s\n", name);
+    test_pass();
+    test_case(name);
+        test_pass();
     script_context_free(&ctx);
 }
 
 int main(void)
 {
-    printf("Bitcoin Echo — Script Opcode Execution Tests\n");
-    printf("=============================================\n\n");
+    test_suite_begin("Script Opcode Execution Tests");
 
     /*
      * ==========================================
      * PUSH OPCODES
      * ==========================================
      */
-    printf("Push opcode tests:\n");
+    test_section("Push opcode tests");
     {
         /* OP_0 pushes empty (which is 0) */
         uint8_t op0[] = {OP_0};
@@ -263,14 +268,13 @@ int main(void)
         uint8_t push2[] = {0x02, 0x00, 0x01};  /* Push 2 bytes: 0x0100 = 256 */
         test_script("Push 2 bytes (256)", push2, sizeof(push2), ECHO_TRUE, 256);
     }
-    printf("\n");
 
     /*
      * ==========================================
      * STACK OPCODES
      * ==========================================
      */
-    printf("Stack opcode tests:\n");
+    test_section("Stack opcode tests");
     {
         /* OP_DUP: Duplicate top */
         uint8_t dup[] = {OP_5, OP_DUP, OP_ADD};  /* 5 DUP ADD -> 10 */
@@ -316,14 +320,13 @@ int main(void)
         uint8_t ifdup_false[] = {OP_0, OP_IFDUP, OP_DEPTH};
         test_script("OP_IFDUP (false)", ifdup_false, sizeof(ifdup_false), ECHO_TRUE, 1);
     }
-    printf("\n");
 
     /*
      * ==========================================
      * ALTSTACK OPCODES
      * ==========================================
      */
-    printf("Altstack opcode tests:\n");
+    test_section("Altstack opcode tests");
     {
         /* OP_TOALTSTACK and OP_FROMALTSTACK */
         uint8_t alt[] = {OP_5, OP_TOALTSTACK, OP_3, OP_FROMALTSTACK, OP_ADD};
@@ -334,14 +337,13 @@ int main(void)
         test_script_error("FROMALTSTACK empty", alt_empty, sizeof(alt_empty),
                           SCRIPT_ERR_INVALID_ALTSTACK_OPERATION);
     }
-    printf("\n");
 
     /*
      * ==========================================
      * ARITHMETIC OPCODES
      * ==========================================
      */
-    printf("Arithmetic opcode tests:\n");
+    test_section("Arithmetic opcode tests");
     {
         /* OP_ADD */
         uint8_t add[] = {OP_3, OP_5, OP_ADD};
@@ -387,14 +389,13 @@ int main(void)
         uint8_t within_false[] = {OP_7, OP_3, OP_7, OP_WITHIN};  /* 3 <= 7 < 7 is false */
         test_script("OP_WITHIN (7 not in [3,7))", within_false, sizeof(within_false), ECHO_TRUE, 0);
     }
-    printf("\n");
 
     /*
      * ==========================================
      * LOGIC OPCODES
      * ==========================================
      */
-    printf("Logic opcode tests:\n");
+    test_section("Logic opcode tests");
     {
         /* OP_NOT */
         uint8_t not_zero[] = {OP_0, OP_NOT};
@@ -424,14 +425,13 @@ int main(void)
         uint8_t or_ff[] = {OP_0, OP_0, OP_BOOLOR};
         test_script("OP_BOOLOR (0,0 -> 0)", or_ff, sizeof(or_ff), ECHO_TRUE, 0);
     }
-    printf("\n");
 
     /*
      * ==========================================
      * NUMERIC COMPARISON OPCODES
      * ==========================================
      */
-    printf("Numeric comparison opcode tests:\n");
+    test_section("Numeric comparison opcode tests");
     {
         /* OP_NUMEQUAL */
         uint8_t eq_true[] = {OP_5, OP_5, OP_NUMEQUAL};
@@ -463,14 +463,13 @@ int main(void)
         uint8_t gte[] = {OP_5, OP_3, OP_GREATERTHANOREQUAL};
         test_script("OP_GREATERTHANOREQUAL (5>=3)", gte, sizeof(gte), ECHO_TRUE, 1);
     }
-    printf("\n");
 
     /*
      * ==========================================
      * BYTE COMPARISON OPCODES
      * ==========================================
      */
-    printf("Byte comparison opcode tests:\n");
+    test_section("Byte comparison opcode tests");
     {
         /* OP_EQUAL */
         uint8_t equal_true[] = {0x02, 0xab, 0xcd, 0x02, 0xab, 0xcd, OP_EQUAL};
@@ -488,14 +487,13 @@ int main(void)
         test_script_error("OP_EQUALVERIFY failure", eqv_fail, sizeof(eqv_fail),
                           SCRIPT_ERR_EQUALVERIFY);
     }
-    printf("\n");
 
     /*
      * ==========================================
      * FLOW CONTROL OPCODES
      * ==========================================
      */
-    printf("Flow control opcode tests:\n");
+    test_section("Flow control opcode tests");
     {
         /* OP_IF true branch */
         uint8_t if_true[] = {OP_1, OP_IF, OP_5, OP_ELSE, OP_3, OP_ENDIF};
@@ -544,14 +542,13 @@ int main(void)
         uint8_t nop[] = {OP_5, OP_NOP, OP_NOP};
         test_script("OP_NOP", nop, sizeof(nop), ECHO_TRUE, 5);
     }
-    printf("\n");
 
     /*
      * ==========================================
      * SPLICE OPCODES
      * ==========================================
      */
-    printf("Splice opcode tests:\n");
+    test_section("Splice opcode tests");
     {
         /* OP_SIZE */
         uint8_t size[] = {0x03, 0xaa, 0xbb, 0xcc, OP_SIZE};  /* Push 3 bytes, SIZE -> 3 */
@@ -561,14 +558,13 @@ int main(void)
         uint8_t size_empty[] = {OP_0, OP_SIZE};  /* Empty element has size 0 */
         test_script("OP_SIZE (empty)", size_empty, sizeof(size_empty), ECHO_TRUE, 0);
     }
-    printf("\n");
 
     /*
      * ==========================================
      * ERROR HANDLING
      * ==========================================
      */
-    printf("Error handling tests:\n");
+    test_section("Error handling tests");
     {
         /* Stack underflow */
         uint8_t underflow[] = {OP_ADD};
@@ -580,14 +576,13 @@ int main(void)
         test_script_error("Disabled opcode", disabled, sizeof(disabled),
                           SCRIPT_ERR_DISABLED_OPCODE);
     }
-    printf("\n");
 
     /*
      * ==========================================
      * COMBINED SCRIPT TESTS
      * ==========================================
      */
-    printf("Combined script tests:\n");
+    test_section("Combined script tests");
     {
         /* Simple addition with verify */
         uint8_t add_verify[] = {OP_2, OP_3, OP_ADD, OP_5, OP_NUMEQUAL};
@@ -613,14 +608,13 @@ int main(void)
         uint8_t stack_check[] = {OP_1, OP_2, OP_3, OP_2DROP};
         test_script_stack_size("2DROP leaves 1 element", stack_check, sizeof(stack_check), 1);
     }
-    printf("\n");
 
     /*
      * ==========================================
      * CRYPTO OPCODES (Session 4.4)
      * ==========================================
      */
-    printf("Crypto opcode tests:\n");
+    test_section("Crypto opcode tests");
     {
         /*
          * OP_RIPEMD160: RIPEMD-160 hash
@@ -784,15 +778,12 @@ int main(void)
         uint8_t sha1[] = {OP_0, OP_SHA1};
         test_script("OP_SHA1 empty", sha1, sizeof(sha1), ECHO_TRUE, 0);  /* Stack has 20-byte hash */
     }
-    printf("\n");
 
     /*
      * ==========================================
      * SUMMARY
      * ==========================================
      */
-    printf("=============================================\n");
-    printf("Tests: %d/%d passed\n", tests_passed, tests_run);
-
-    return (tests_passed == tests_run) ? 0 : 1;
+    test_suite_end();
+    return test_global_summary();
 }

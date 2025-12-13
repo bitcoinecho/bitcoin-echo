@@ -14,24 +14,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include "test_utils.h"
 
-static int tests_run = 0;
-static int tests_passed = 0;
-
-#define TEST(name) static void name(void)
-#define RUN_TEST(name) do { \
-    printf("  %s...", #name); \
-    fflush(stdout); \
-    name(); \
-    tests_run++; \
-    tests_passed++; \
-    printf(" ✓\n"); \
-} while (0)
 
 #define ASSERT(cond) do { \
     if (!(cond)) { \
         printf("\n    Assertion failed: %s\n", #cond); \
-        exit(1); \
+        return; \
     } \
 } while (0)
 
@@ -50,7 +39,7 @@ static void cleanup_test_db(void)
  * Database Lifecycle Tests
  * ======================================================================== */
 
-TEST(test_db_open_close)
+static void test_db_open_close(void)
 {
     db_t db;
 
@@ -73,7 +62,7 @@ TEST(test_db_open_close)
     cleanup_test_db();
 }
 
-TEST(test_db_exec_create_table)
+static void test_db_exec_create_table(void)
 {
     db_t db;
 
@@ -94,7 +83,7 @@ TEST(test_db_exec_create_table)
     cleanup_test_db();
 }
 
-TEST(test_db_exec_insert)
+static void test_db_exec_insert(void)
 {
     db_t db;
 
@@ -125,7 +114,7 @@ TEST(test_db_exec_insert)
  * Transaction Tests
  * ======================================================================== */
 
-TEST(test_db_transaction_commit)
+static void test_db_transaction_commit(void)
 {
     db_t db;
 
@@ -159,7 +148,7 @@ TEST(test_db_transaction_commit)
     cleanup_test_db();
 }
 
-TEST(test_db_transaction_rollback)
+static void test_db_transaction_rollback(void)
 {
     db_t db;
 
@@ -189,7 +178,7 @@ TEST(test_db_transaction_rollback)
     cleanup_test_db();
 }
 
-TEST(test_db_close_commits_transaction)
+static void test_db_close_commits_transaction(void)
 {
     db_t db;
 
@@ -221,7 +210,7 @@ TEST(test_db_close_commits_transaction)
  * Prepared Statement Tests
  * ======================================================================== */
 
-TEST(test_db_prepare_finalize)
+static void test_db_prepare_finalize(void)
 {
     db_t db;
 
@@ -247,7 +236,7 @@ TEST(test_db_prepare_finalize)
     cleanup_test_db();
 }
 
-TEST(test_db_prepare_invalid_sql)
+static void test_db_prepare_invalid_sql(void)
 {
     db_t db;
 
@@ -264,7 +253,7 @@ TEST(test_db_prepare_invalid_sql)
     cleanup_test_db();
 }
 
-TEST(test_db_stmt_reset)
+static void test_db_stmt_reset(void)
 {
     db_t db;
 
@@ -300,7 +289,7 @@ TEST(test_db_stmt_reset)
  * Parameter Binding Tests
  * ======================================================================== */
 
-TEST(test_db_bind_int)
+static void test_db_bind_int(void)
 {
     db_t db;
 
@@ -329,7 +318,7 @@ TEST(test_db_bind_int)
     cleanup_test_db();
 }
 
-TEST(test_db_bind_int64)
+static void test_db_bind_int64(void)
 {
     db_t db;
 
@@ -359,7 +348,7 @@ TEST(test_db_bind_int64)
     cleanup_test_db();
 }
 
-TEST(test_db_bind_blob)
+static void test_db_bind_blob(void)
 {
     db_t db;
 
@@ -396,7 +385,7 @@ TEST(test_db_bind_blob)
     cleanup_test_db();
 }
 
-TEST(test_db_bind_text)
+static void test_db_bind_text(void)
 {
     db_t db;
 
@@ -430,7 +419,7 @@ TEST(test_db_bind_text)
     cleanup_test_db();
 }
 
-TEST(test_db_bind_multiple_parameters)
+static void test_db_bind_multiple_parameters(void)
 {
     db_t db;
 
@@ -467,7 +456,7 @@ TEST(test_db_bind_multiple_parameters)
  * Result Retrieval Tests
  * ======================================================================== */
 
-TEST(test_db_step_multiple_rows)
+static void test_db_step_multiple_rows(void)
 {
     db_t db;
 
@@ -503,7 +492,7 @@ TEST(test_db_step_multiple_rows)
     cleanup_test_db();
 }
 
-TEST(test_db_column_types)
+static void test_db_column_types(void)
 {
     db_t db;
 
@@ -549,7 +538,7 @@ TEST(test_db_column_types)
  * Utility Function Tests
  * ======================================================================== */
 
-TEST(test_db_last_insert_rowid)
+static void test_db_last_insert_rowid(void)
 {
     db_t db;
 
@@ -572,7 +561,7 @@ TEST(test_db_last_insert_rowid)
     cleanup_test_db();
 }
 
-TEST(test_db_changes)
+static void test_db_changes(void)
 {
     db_t db;
 
@@ -596,7 +585,7 @@ TEST(test_db_changes)
     cleanup_test_db();
 }
 
-TEST(test_db_errmsg)
+static void test_db_errmsg(void)
 {
     db_t db;
 
@@ -621,7 +610,7 @@ TEST(test_db_errmsg)
  * WAL Mode Tests
  * ======================================================================== */
 
-TEST(test_db_wal_mode_enabled)
+static void test_db_wal_mode_enabled(void)
 {
     db_t db;
 
@@ -646,7 +635,7 @@ TEST(test_db_wal_mode_enabled)
  * Integration Test: UTXO-like Table
  * ======================================================================== */
 
-TEST(test_db_utxo_like_table)
+static void test_db_utxo_like_table(void)
 {
     db_t db;
 
@@ -720,51 +709,46 @@ TEST(test_db_utxo_like_table)
  * Main
  * ======================================================================== */
 
-int main(void)
-{
-    printf("\nRunning Database Integration Tests:\n\n");
+int main(void) {
+    test_suite_begin("Database Integration Tests");
 
-    /* Database Lifecycle Tests */
-    RUN_TEST(test_db_open_close);
-    RUN_TEST(test_db_exec_create_table);
-    RUN_TEST(test_db_exec_insert);
+    test_section("Database Lifecycle");
+    test_case("Open and close database"); test_db_open_close(); test_pass();
+    test_case("Execute CREATE TABLE"); test_db_exec_create_table(); test_pass();
+    test_case("Execute INSERT"); test_db_exec_insert(); test_pass();
 
-    /* Transaction Tests */
-    RUN_TEST(test_db_transaction_commit);
-    RUN_TEST(test_db_transaction_rollback);
-    RUN_TEST(test_db_close_commits_transaction);
+    test_section("Transactions");
+    test_case("Commit transaction"); test_db_transaction_commit(); test_pass();
+    test_case("Rollback transaction"); test_db_transaction_rollback(); test_pass();
+    test_case("Close commits transaction"); test_db_close_commits_transaction(); test_pass();
 
-    /* Prepared Statement Tests */
-    RUN_TEST(test_db_prepare_finalize);
-    RUN_TEST(test_db_prepare_invalid_sql);
-    RUN_TEST(test_db_stmt_reset);
+    test_section("Prepared Statements");
+    test_case("Prepare and finalize statement"); test_db_prepare_finalize(); test_pass();
+    test_case("Reject invalid SQL"); test_db_prepare_invalid_sql(); test_pass();
+    test_case("Reset statement"); test_db_stmt_reset(); test_pass();
 
-    /* Parameter Binding Tests */
-    RUN_TEST(test_db_bind_int);
-    RUN_TEST(test_db_bind_int64);
-    RUN_TEST(test_db_bind_blob);
-    RUN_TEST(test_db_bind_text);
-    RUN_TEST(test_db_bind_multiple_parameters);
+    test_section("Parameter Binding");
+    test_case("Bind integer"); test_db_bind_int(); test_pass();
+    test_case("Bind int64"); test_db_bind_int64(); test_pass();
+    test_case("Bind blob"); test_db_bind_blob(); test_pass();
+    test_case("Bind text"); test_db_bind_text(); test_pass();
+    test_case("Bind multiple parameters"); test_db_bind_multiple_parameters(); test_pass();
 
-    /* Result Retrieval Tests */
-    RUN_TEST(test_db_step_multiple_rows);
-    RUN_TEST(test_db_column_types);
+    test_section("Result Retrieval");
+    test_case("Step through multiple rows"); test_db_step_multiple_rows(); test_pass();
+    test_case("Retrieve different column types"); test_db_column_types(); test_pass();
 
-    /* Utility Function Tests */
-    RUN_TEST(test_db_last_insert_rowid);
-    RUN_TEST(test_db_changes);
-    RUN_TEST(test_db_errmsg);
+    test_section("Utility Functions");
+    test_case("Get last insert rowid"); test_db_last_insert_rowid(); test_pass();
+    test_case("Get change count"); test_db_changes(); test_pass();
+    test_case("Get error message"); test_db_errmsg(); test_pass();
 
-    /* WAL Mode Tests */
-    RUN_TEST(test_db_wal_mode_enabled);
+    test_section("WAL Mode");
+    test_case("WAL mode enabled by default"); test_db_wal_mode_enabled(); test_pass();
 
-    /* Integration Test */
-    RUN_TEST(test_db_utxo_like_table);
+    test_section("Integration");
+    test_case("UTXO-like table operations"); test_db_utxo_like_table(); test_pass();
 
-    printf("\n");
-    printf("========================================\n");
-    printf("Database Integration Tests: %d/%d passed\n", tests_passed, tests_run);
-    printf("========================================\n");
-
-    return (tests_passed == tests_run) ? 0 : 1;
+    test_suite_end();
+    return test_global_summary();
 }

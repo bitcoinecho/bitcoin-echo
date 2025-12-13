@@ -10,11 +10,10 @@
 
 #include "sig_verify.h"
 #include "secp256k1.h"
+#include "test_utils.h"
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-
-static int tests_run = 0;
-static int tests_passed = 0;
 
 /*
  * Helper: convert hex string to bytes
@@ -40,38 +39,35 @@ static int hex_to_bytes(uint8_t *out, const char *hex, size_t len)
 
 static void test_sig_type_known_ecdsa(void)
 {
-    tests_run++;
+    test_case("SIG_ECDSA is known");
 
     if (sig_type_known(SIG_ECDSA)) {
-        tests_passed++;
-        printf("  [PASS] SIG_ECDSA is known\n");
+        test_pass();
     } else {
-        printf("  [FAIL] SIG_ECDSA is known\n");
+        test_fail("SIG_ECDSA not recognized");
     }
 }
 
 static void test_sig_type_known_schnorr(void)
 {
-    tests_run++;
+    test_case("SIG_SCHNORR is known");
 
     if (sig_type_known(SIG_SCHNORR)) {
-        tests_passed++;
-        printf("  [PASS] SIG_SCHNORR is known\n");
+        test_pass();
     } else {
-        printf("  [FAIL] SIG_SCHNORR is known\n");
+        test_fail("SIG_SCHNORR not recognized");
     }
 }
 
 static void test_sig_type_unknown(void)
 {
-    tests_run++;
+    test_case("Unknown type rejected");
 
     /* Use an invalid enum value */
     if (!sig_type_known((sig_type_t)999)) {
-        tests_passed++;
-        printf("  [PASS] Unknown type rejected\n");
+        test_pass();
     } else {
-        printf("  [FAIL] Unknown type rejected\n");
+        test_fail("Invalid signature type accepted");
     }
 }
 
@@ -106,8 +102,6 @@ static void test_sig_verify_ecdsa_valid(void)
         0x59, 0xf2, 0x81, 0x5b, 0x16, 0xf8, 0x17, 0x99
     };
 
-    tests_run++;
-
     /* Public key = G (compressed) */
     hex_to_bytes(pubkey,
         "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
@@ -118,11 +112,11 @@ static void test_sig_verify_ecdsa_valid(void)
         "0000000000000000000000000000000000000000000000000000000000000001",
         32);
 
+    test_case("ECDSA valid signature via sig_verify");
     if (sig_verify(SIG_ECDSA, sig, sizeof(sig), hash, pubkey, 33)) {
-        tests_passed++;
-        printf("  [PASS] ECDSA valid signature via sig_verify\n");
+        test_pass();
     } else {
-        printf("  [FAIL] ECDSA valid signature via sig_verify\n");
+        test_fail("Valid ECDSA signature rejected");
     }
 }
 
@@ -144,8 +138,6 @@ static void test_sig_verify_ecdsa_wrong_hash(void)
         0x59, 0xf2, 0x81, 0x5b, 0x16, 0xf8, 0x17, 0x99
     };
 
-    tests_run++;
-
     hex_to_bytes(pubkey,
         "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
         33);
@@ -155,11 +147,11 @@ static void test_sig_verify_ecdsa_wrong_hash(void)
         "0000000000000000000000000000000000000000000000000000000000000002",
         32);
 
+    test_case("ECDSA reject wrong hash");
     if (!sig_verify(SIG_ECDSA, sig, sizeof(sig), hash, pubkey, 33)) {
-        tests_passed++;
-        printf("  [PASS] ECDSA reject wrong hash\n");
+        test_pass();
     } else {
-        printf("  [FAIL] ECDSA reject wrong hash\n");
+        test_fail("ECDSA accepted signature with wrong hash");
     }
 }
 
@@ -169,8 +161,6 @@ static void test_sig_verify_ecdsa_invalid_sig_len(void)
     uint8_t hash[32];
     uint8_t sig[4] = {0x30, 0x02, 0x02, 0x00};  /* Too short */
 
-    tests_run++;
-
     hex_to_bytes(pubkey,
         "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
         33);
@@ -178,11 +168,11 @@ static void test_sig_verify_ecdsa_invalid_sig_len(void)
         "0000000000000000000000000000000000000000000000000000000000000001",
         32);
 
+    test_case("ECDSA reject invalid sig length");
     if (!sig_verify(SIG_ECDSA, sig, sizeof(sig), hash, pubkey, 33)) {
-        tests_passed++;
-        printf("  [PASS] ECDSA reject invalid sig length\n");
+        test_pass();
     } else {
-        printf("  [FAIL] ECDSA reject invalid sig length\n");
+        test_fail("ECDSA accepted invalid signature length");
     }
 }
 
@@ -204,18 +194,16 @@ static void test_sig_verify_ecdsa_invalid_pubkey_len(void)
         0x59, 0xf2, 0x81, 0x5b, 0x16, 0xf8, 0x17, 0x99
     };
 
-    tests_run++;
-
     memset(pubkey, 0, 32);
     hex_to_bytes(hash,
         "0000000000000000000000000000000000000000000000000000000000000001",
         32);
 
+    test_case("ECDSA reject invalid pubkey length");
     if (!sig_verify(SIG_ECDSA, sig, sizeof(sig), hash, pubkey, 32)) {
-        tests_passed++;
-        printf("  [PASS] ECDSA reject invalid pubkey length\n");
+        test_pass();
     } else {
-        printf("  [FAIL] ECDSA reject invalid pubkey length\n");
+        test_fail("ECDSA accepted invalid pubkey length");
     }
 }
 
@@ -230,8 +218,6 @@ static void test_sig_verify_schnorr_valid(void)
 {
     uint8_t pubkey[32], hash[32], sig[64];
 
-    tests_run++;
-
     hex_to_bytes(pubkey,
         "f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9", 32);
     hex_to_bytes(hash,
@@ -240,19 +226,17 @@ static void test_sig_verify_schnorr_valid(void)
         "e907831f80848d1069a5371b402410364bdf1c5f8307b0084c55f1ce2dca8215"
         "25f66a4a85ea8b71e482a74f382d2ce5ebeee8fdb2172f477df4900d310536c0", 64);
 
+    test_case("Schnorr valid signature via sig_verify");
     if (sig_verify(SIG_SCHNORR, sig, 64, hash, pubkey, 32)) {
-        tests_passed++;
-        printf("  [PASS] Schnorr valid signature via sig_verify\n");
+        test_pass();
     } else {
-        printf("  [FAIL] Schnorr valid signature via sig_verify\n");
+        test_fail("Valid Schnorr signature rejected");
     }
 }
 
 static void test_sig_verify_schnorr_wrong_hash(void)
 {
     uint8_t pubkey[32], hash[32], sig[64];
-
-    tests_run++;
 
     hex_to_bytes(pubkey,
         "f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9", 32);
@@ -263,11 +247,11 @@ static void test_sig_verify_schnorr_wrong_hash(void)
         "e907831f80848d1069a5371b402410364bdf1c5f8307b0084c55f1ce2dca8215"
         "25f66a4a85ea8b71e482a74f382d2ce5ebeee8fdb2172f477df4900d310536c0", 64);
 
+    test_case("Schnorr reject wrong hash");
     if (!sig_verify(SIG_SCHNORR, sig, 64, hash, pubkey, 32)) {
-        tests_passed++;
-        printf("  [PASS] Schnorr reject wrong hash\n");
+        test_pass();
     } else {
-        printf("  [FAIL] Schnorr reject wrong hash\n");
+        test_fail("Schnorr accepted signature with wrong hash");
     }
 }
 
@@ -275,19 +259,17 @@ static void test_sig_verify_schnorr_invalid_sig_len(void)
 {
     uint8_t pubkey[32], hash[32], sig[32];  /* Wrong length */
 
-    tests_run++;
-
     hex_to_bytes(pubkey,
         "f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9", 32);
     hex_to_bytes(hash,
         "0000000000000000000000000000000000000000000000000000000000000000", 32);
     memset(sig, 0, 32);
 
+    test_case("Schnorr reject invalid sig length");
     if (!sig_verify(SIG_SCHNORR, sig, 32, hash, pubkey, 32)) {
-        tests_passed++;
-        printf("  [PASS] Schnorr reject invalid sig length\n");
+        test_pass();
     } else {
-        printf("  [FAIL] Schnorr reject invalid sig length\n");
+        test_fail("Schnorr accepted invalid signature length");
     }
 }
 
@@ -295,19 +277,17 @@ static void test_sig_verify_schnorr_invalid_pubkey_len(void)
 {
     uint8_t pubkey[33], hash[32], sig[64];  /* Wrong pubkey length */
 
-    tests_run++;
-
     hex_to_bytes(pubkey,
         "02f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9", 33);
     hex_to_bytes(hash,
         "0000000000000000000000000000000000000000000000000000000000000000", 32);
     memset(sig, 0, 64);
 
+    test_case("Schnorr reject invalid pubkey length");
     if (!sig_verify(SIG_SCHNORR, sig, 64, hash, pubkey, 33)) {
-        tests_passed++;
-        printf("  [PASS] Schnorr reject invalid pubkey length\n");
+        test_pass();
     } else {
-        printf("  [FAIL] Schnorr reject invalid pubkey length\n");
+        test_fail("Schnorr accepted invalid pubkey length");
     }
 }
 
@@ -321,17 +301,15 @@ static void test_sig_verify_unknown_type(void)
 {
     uint8_t pubkey[33], hash[32], sig[64];
 
-    tests_run++;
-
     memset(pubkey, 0, 33);
     memset(hash, 0, 32);
     memset(sig, 0, 64);
 
+    test_case("Reject unknown signature type");
     if (!sig_verify((sig_type_t)999, sig, 64, hash, pubkey, 33)) {
-        tests_passed++;
-        printf("  [PASS] Reject unknown signature type\n");
+        test_pass();
     } else {
-        printf("  [FAIL] Reject unknown signature type\n");
+        test_fail("Unknown signature type accepted");
     }
 }
 
@@ -345,7 +323,6 @@ static void test_sig_verify_null_inputs(void)
 {
     uint8_t data[64];
 
-    tests_run++;
     memset(data, 0, 64);
 
     /* All NULL combinations should fail */
@@ -354,11 +331,11 @@ static void test_sig_verify_null_inputs(void)
     if (sig_verify(SIG_ECDSA, data, 64, NULL, data, 33)) failed = 1;
     if (sig_verify(SIG_ECDSA, data, 64, data, NULL, 33)) failed = 1;
 
+    test_case("Reject NULL inputs");
     if (!failed) {
-        tests_passed++;
-        printf("  [PASS] Reject NULL inputs\n");
+        test_pass();
     } else {
-        printf("  [FAIL] Reject NULL inputs\n");
+        test_fail("NULL inputs accepted");
     }
 }
 
@@ -370,32 +347,29 @@ static void test_sig_verify_null_inputs(void)
 
 int main(void)
 {
-    printf("Bitcoin Echo — Signature Verification Interface Tests\n");
-    printf("======================================================\n\n");
+    test_suite_begin("Signature Verification Interface Tests");
 
-    printf("sig_type_known:\n");
+    test_section("sig_type_known");
     test_sig_type_known_ecdsa();
     test_sig_type_known_schnorr();
     test_sig_type_unknown();
 
-    printf("\nECDSA via sig_verify:\n");
+    test_section("ECDSA via sig_verify");
     test_sig_verify_ecdsa_valid();
     test_sig_verify_ecdsa_wrong_hash();
     test_sig_verify_ecdsa_invalid_sig_len();
     test_sig_verify_ecdsa_invalid_pubkey_len();
 
-    printf("\nSchnorr via sig_verify:\n");
+    test_section("Schnorr via sig_verify");
     test_sig_verify_schnorr_valid();
     test_sig_verify_schnorr_wrong_hash();
     test_sig_verify_schnorr_invalid_sig_len();
     test_sig_verify_schnorr_invalid_pubkey_len();
 
-    printf("\nEdge cases:\n");
+    test_section("Edge cases");
     test_sig_verify_unknown_type();
     test_sig_verify_null_inputs();
 
-    printf("\n");
-    printf("Results: %d/%d tests passed\n", tests_passed, tests_run);
-
-    return (tests_passed == tests_run) ? 0 : 1;
+    test_suite_end();
+    return test_global_summary();
 }

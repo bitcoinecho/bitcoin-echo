@@ -11,9 +11,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include "tx.h"
-
-static int tests_run = 0;
-static int tests_passed = 0;
+#include "test_utils.h"
 
 /*
  * Convert hex string to bytes.
@@ -63,16 +61,16 @@ static void test_tx_parse(const char *name, const char *hex,
     size_t consumed;
     echo_result_t result;
 
-    tests_run++;
-
     data_len = hex_to_bytes(hex, data, sizeof(data));
     if (data_len == 0) {
-        printf("  [FAIL] %s (invalid hex)\n", name);
+        test_case(name);
+        test_fail("invalid hex");
         return;
     }
 
     result = tx_parse(data, data_len, &tx, &consumed);
 
+    test_case(name);
     if (result == ECHO_OK &&
         tx.version == expected_version &&
         tx.input_count == expected_inputs &&
@@ -81,10 +79,9 @@ static void test_tx_parse(const char *name, const char *hex,
         tx.has_witness == expected_witness &&
         consumed == data_len)
     {
-        tests_passed++;
-        printf("  [PASS] %s\n", name);
+        test_pass();
     } else {
-        printf("  [FAIL] %s\n", name);
+        test_fail(name);
         printf("    Result: %d, Consumed: %zu/%zu\n", result, consumed, data_len);
         if (result == ECHO_OK) {
             printf("    Version: %d (expected %d)\n", tx.version, expected_version);
@@ -110,32 +107,35 @@ static void test_roundtrip(const char *name, const char *hex)
     size_t written;
     echo_result_t result;
 
-    tests_run++;
-
     data_len = hex_to_bytes(hex, data, sizeof(data));
     if (data_len == 0) {
-        printf("  [FAIL] %s (invalid hex)\n", name);
+        test_case(name);
+        test_fail("invalid hex");
         return;
     }
 
     result = tx_parse(data, data_len, &tx, NULL);
     if (result != ECHO_OK) {
-        printf("  [FAIL] %s (parse failed: %d)\n", name, result);
+        test_case(name);
+        test_fail("parse failed");
+        printf("    Result: %d\n", result);
         return;
     }
 
     result = tx_serialize(&tx, ECHO_TRUE, serialized, sizeof(serialized), &written);
     if (result != ECHO_OK) {
-        printf("  [FAIL] %s (serialize failed: %d)\n", name, result);
+        test_case(name);
+        test_fail("serialize failed");
+        printf("    Result: %d\n", result);
         tx_free(&tx);
         return;
     }
 
+    test_case(name);
     if (written == data_len && bytes_equal(data, serialized, data_len)) {
-        tests_passed++;
-        printf("  [PASS] %s\n", name);
+        test_pass();
     } else {
-        printf("  [FAIL] %s\n", name);
+        test_fail(name);
         printf("    Original length: %zu\n", data_len);
         printf("    Serialized length: %zu\n", written);
         if (written != data_len) {
@@ -160,27 +160,28 @@ static void test_coinbase(const char *name, const char *hex,
     echo_result_t result;
     echo_bool_t is_coinbase;
 
-    tests_run++;
-
     data_len = hex_to_bytes(hex, data, sizeof(data));
     if (data_len == 0) {
-        printf("  [FAIL] %s (invalid hex)\n", name);
+        test_case(name);
+        test_fail("invalid hex");
         return;
     }
 
     result = tx_parse(data, data_len, &tx, NULL);
     if (result != ECHO_OK) {
-        printf("  [FAIL] %s (parse failed: %d)\n", name, result);
+        test_case(name);
+        test_fail("parse failed");
+        printf("    Result: %d\n", result);
         return;
     }
 
     is_coinbase = tx_is_coinbase(&tx);
 
+    test_case(name);
     if (is_coinbase == expected_coinbase) {
-        tests_passed++;
-        printf("  [PASS] %s\n", name);
+        test_pass();
     } else {
-        printf("  [FAIL] %s\n", name);
+        test_fail(name);
         printf("    Expected coinbase: %d, got: %d\n", expected_coinbase, is_coinbase);
     }
 
@@ -199,28 +200,29 @@ static void test_weight(const char *name, const char *hex,
     echo_result_t result;
     size_t weight, vsize;
 
-    tests_run++;
-
     data_len = hex_to_bytes(hex, data, sizeof(data));
     if (data_len == 0) {
-        printf("  [FAIL] %s (invalid hex)\n", name);
+        test_case(name);
+        test_fail("invalid hex");
         return;
     }
 
     result = tx_parse(data, data_len, &tx, NULL);
     if (result != ECHO_OK) {
-        printf("  [FAIL] %s (parse failed: %d)\n", name, result);
+        test_case(name);
+        test_fail("parse failed");
+        printf("    Result: %d\n", result);
         return;
     }
 
     weight = tx_weight(&tx);
     vsize = tx_vsize(&tx);
 
+    test_case(name);
     if (weight == expected_weight && vsize == expected_vsize) {
-        tests_passed++;
-        printf("  [PASS] %s\n", name);
+        test_pass();
     } else {
-        printf("  [FAIL] %s\n", name);
+        test_fail(name);
         printf("    Expected weight: %zu, got: %zu\n", expected_weight, weight);
         printf("    Expected vsize: %zu, got: %zu\n", expected_vsize, vsize);
     }
@@ -230,14 +232,13 @@ static void test_weight(const char *name, const char *hex,
 
 int main(void)
 {
-    printf("Bitcoin Echo — Transaction Tests\n");
-    printf("=================================\n\n");
+    test_suite_begin("Transaction Tests");
 
     /*
      * Test Vector 1: A legacy transaction
      * We verify parsing, serialization roundtrip, and structure validation.
      */
-    printf("Legacy transaction tests:\n");
+    test_section("Legacy transaction tests");
 
     /*
      * Simple legacy transaction: 1 input, 2 outputs
@@ -259,12 +260,11 @@ int main(void)
 
     test_coinbase("Legacy tx not coinbase", legacy_tx_hex, ECHO_FALSE);
 
-    printf("\n");
-
     /*
      * Test Vector 2: Coinbase transaction
      * Note: coinbase has null prevout (all zeros + vout=0xFFFFFFFF)
      */
+    test_section("Coinbase transaction tests");
     const char *coinbase_tx_hex =
         "01000000010000000000000000000000000000000000000000000000000000000000000000ffffffff0704"
         "ffff001d0102ffffffff0100f2052a0100000043410496b538e853519c726a2c91e61ec11600ae1390813a"
@@ -278,14 +278,12 @@ int main(void)
 
     test_roundtrip("Coinbase tx roundtrip", coinbase_tx_hex);
 
-    printf("\n");
-
     /*
      * Test Vector 3: SegWit P2WPKH transaction
      * This is a native SegWit transaction with witness data
      * txid: c586389e5e4b3acb9d6c8be1c19ae8ab2795397633176f5a6442a261bbdefc3a
      */
-    printf("SegWit transaction tests:\n");
+    test_section("SegWit transaction tests");
 
     const char *segwit_tx_hex =
         "020000000001010000000000000000000000000000000000000000000000000000000000000000ffffffff"
@@ -297,8 +295,6 @@ int main(void)
                   segwit_tx_hex, 2, 1, 2, 0, ECHO_TRUE);
 
     test_roundtrip("SegWit coinbase tx roundtrip", segwit_tx_hex);
-
-    printf("\n");
 
     /*
      * Test Vector 4: Real SegWit P2WPKH spending transaction
@@ -319,12 +315,10 @@ int main(void)
 
     test_coinbase("SegWit spend not coinbase", segwit_spend_hex, ECHO_FALSE);
 
-    printf("\n");
-
     /*
      * Test Vector 5: Transaction size and weight tests
      */
-    printf("Weight and vsize tests:\n");
+    test_section("Weight and vsize tests");
 
     /* Legacy transaction: weight = size * 4 (no witness discount) */
     /* legacy_tx_hex is 275 bytes, so weight = 1100, vsize = 275 */
@@ -336,12 +330,10 @@ int main(void)
     /* For this tx: base=110, total=219, weight = 3*110 + 219 = 549, vsize = 138 */
     test_weight("SegWit tx weight", segwit_spend_hex, 561, 141);
 
-    printf("\n");
-
     /*
      * Test Vector 7: Error handling
      */
-    printf("Error handling tests:\n");
+    test_section("Error handling tests");
 
     /* Truncated transaction */
     {
@@ -349,12 +341,12 @@ int main(void)
         tx_t tx;
         echo_result_t result = tx_parse(truncated, sizeof(truncated), &tx, NULL);
 
-        tests_run++;
+        test_case("Truncated tx rejected");
         if (result == ECHO_ERR_TRUNCATED) {
-            tests_passed++;
-            printf("  [PASS] Truncated tx rejected\n");
+            test_pass();
         } else {
-            printf("  [FAIL] Truncated tx not rejected (result: %d)\n", result);
+            test_fail("Truncated tx not rejected");
+            printf("    Result: %d\n", result);
         }
     }
 
@@ -363,20 +355,15 @@ int main(void)
         tx_t tx;
         echo_result_t result = tx_parse(NULL, 100, &tx, NULL);
 
-        tests_run++;
+        test_case("NULL data rejected");
         if (result == ECHO_ERR_NULL_PARAM) {
-            tests_passed++;
-            printf("  [PASS] NULL data rejected\n");
+            test_pass();
         } else {
-            printf("  [FAIL] NULL data not rejected (result: %d)\n", result);
+            test_fail("NULL data not rejected");
+            printf("    Result: %d\n", result);
         }
     }
 
-    printf("\n");
-
-    /* Summary */
-    printf("=================================\n");
-    printf("Tests: %d/%d passed\n", tests_passed, tests_run);
-
-    return (tests_passed == tests_run) ? 0 : 1;
+    test_suite_end();
+    return test_global_summary();
 }

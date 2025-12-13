@@ -20,8 +20,10 @@ jobs:
 
       - name: Build and run tests
         run: |
+          set -e
           make clean
           make test 2>&1 | tee test_output.txt
+          exit ${PIPESTATUS[0]}
 
       - name: Build main binary
         run: make all

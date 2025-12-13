@@ -19,22 +19,11 @@
 #include "tx.h"
 #include "script.h"
 #include "sha256.h"
-
-static int tests_run = 0;
-static int tests_passed = 0;
+#include "test_utils.h"
 
 #define TEST(name) do { \
     printf("  %-50s ", name); \
     tests_run++; \
-} while(0)
-
-#define PASS() do { \
-    printf("[PASS]\n"); \
-    tests_passed++; \
-} while(0)
-
-#define FAIL(msg) do { \
-    printf("[FAIL] %s\n", msg); \
 } while(0)
 
 /*
@@ -106,19 +95,19 @@ static void create_coinbase_tx(tx_t *tx)
 
 static void test_validate_null_tx(void)
 {
-    TEST("NULL transaction");
+    test_case("NULL transaction");
     tx_validate_result_t result;
     echo_result_t res = tx_validate_syntax(NULL, &result);
     if (res != ECHO_OK && result.error == TX_VALIDATE_ERR_NULL) {
-        PASS();
+        test_pass();
     } else {
-        FAIL("Expected TX_VALIDATE_ERR_NULL");
+        test_fail("Expected TX_VALIDATE_ERR_NULL");
     }
 }
 
 static void test_validate_empty_inputs(void)
 {
-    TEST("Empty inputs");
+    test_case("Empty inputs");
     tx_t tx;
     tx_init(&tx);
     tx.version = 1;
@@ -135,15 +124,15 @@ static void test_validate_empty_inputs(void)
     tx_free(&tx);
 
     if (res != ECHO_OK && result.error == TX_VALIDATE_ERR_EMPTY_INPUTS) {
-        PASS();
+        test_pass();
     } else {
-        FAIL("Expected TX_VALIDATE_ERR_EMPTY_INPUTS");
+        test_fail("Expected TX_VALIDATE_ERR_EMPTY_INPUTS");
     }
 }
 
 static void test_validate_empty_outputs(void)
 {
-    TEST("Empty outputs");
+    test_case("Empty outputs");
     tx_t tx;
     tx_init(&tx);
     tx.version = 1;
@@ -162,15 +151,15 @@ static void test_validate_empty_outputs(void)
     tx_free(&tx);
 
     if (res != ECHO_OK && result.error == TX_VALIDATE_ERR_EMPTY_OUTPUTS) {
-        PASS();
+        test_pass();
     } else {
-        FAIL("Expected TX_VALIDATE_ERR_EMPTY_OUTPUTS");
+        test_fail("Expected TX_VALIDATE_ERR_EMPTY_OUTPUTS");
     }
 }
 
 static void test_validate_minimal_valid(void)
 {
-    TEST("Minimal valid transaction");
+    test_case("Minimal valid transaction");
     tx_t tx;
     create_minimal_tx(&tx);
 
@@ -179,18 +168,18 @@ static void test_validate_minimal_valid(void)
     tx_free(&tx);
 
     if (res == ECHO_OK) {
-        PASS();
+        test_pass();
     } else {
         char buf[64];
         snprintf(buf, sizeof(buf), "Unexpected error: %s",
                  tx_validate_error_string(result.error));
-        FAIL(buf);
+        test_fail(buf);
     }
 }
 
 static void test_validate_coinbase_valid(void)
 {
-    TEST("Valid coinbase transaction");
+    test_case("Valid coinbase transaction");
     tx_t tx;
     create_coinbase_tx(&tx);
 
@@ -199,18 +188,18 @@ static void test_validate_coinbase_valid(void)
     tx_free(&tx);
 
     if (res == ECHO_OK) {
-        PASS();
+        test_pass();
     } else {
         char buf[64];
         snprintf(buf, sizeof(buf), "Unexpected error: %s",
                  tx_validate_error_string(result.error));
-        FAIL(buf);
+        test_fail(buf);
     }
 }
 
 static void test_validate_coinbase_script_too_short(void)
 {
-    TEST("Coinbase script too short");
+    test_case("Coinbase script too short");
     tx_t tx;
     create_coinbase_tx(&tx);
 
@@ -225,15 +214,15 @@ static void test_validate_coinbase_script_too_short(void)
     tx_free(&tx);
 
     if (res != ECHO_OK && result.error == TX_VALIDATE_ERR_COINBASE_SCRIPT_SIZE) {
-        PASS();
+        test_pass();
     } else {
-        FAIL("Expected TX_VALIDATE_ERR_COINBASE_SCRIPT_SIZE");
+        test_fail("Expected TX_VALIDATE_ERR_COINBASE_SCRIPT_SIZE");
     }
 }
 
 static void test_validate_coinbase_script_too_long(void)
 {
-    TEST("Coinbase script too long");
+    test_case("Coinbase script too long");
     tx_t tx;
     create_coinbase_tx(&tx);
 
@@ -247,9 +236,9 @@ static void test_validate_coinbase_script_too_long(void)
     tx_free(&tx);
 
     if (res != ECHO_OK && result.error == TX_VALIDATE_ERR_COINBASE_SCRIPT_SIZE) {
-        PASS();
+        test_pass();
     } else {
-        FAIL("Expected TX_VALIDATE_ERR_COINBASE_SCRIPT_SIZE");
+        test_fail("Expected TX_VALIDATE_ERR_COINBASE_SCRIPT_SIZE");
     }
 }
 
@@ -261,7 +250,7 @@ static void test_validate_coinbase_script_too_long(void)
 
 static void test_validate_duplicate_inputs(void)
 {
-    TEST("Duplicate inputs");
+    test_case("Duplicate inputs");
     tx_t tx;
     tx_init(&tx);
     tx.version = 1;
@@ -291,15 +280,15 @@ static void test_validate_duplicate_inputs(void)
     tx_free(&tx);
 
     if (res != ECHO_OK && result.error == TX_VALIDATE_ERR_DUPLICATE_INPUT) {
-        PASS();
+        test_pass();
     } else {
-        FAIL("Expected TX_VALIDATE_ERR_DUPLICATE_INPUT");
+        test_fail("Expected TX_VALIDATE_ERR_DUPLICATE_INPUT");
     }
 }
 
 static void test_validate_different_inputs(void)
 {
-    TEST("Different inputs (same txid, different vout)");
+    test_case("Different inputs (same txid, different vout)");
     tx_t tx;
     tx_init(&tx);
     tx.version = 1;
@@ -329,9 +318,9 @@ static void test_validate_different_inputs(void)
     tx_free(&tx);
 
     if (res == ECHO_OK) {
-        PASS();
+        test_pass();
     } else {
-        FAIL("Should allow different vouts from same txid");
+        test_fail("Should allow different vouts from same txid");
     }
 }
 
@@ -343,7 +332,7 @@ static void test_validate_different_inputs(void)
 
 static void test_validate_negative_output(void)
 {
-    TEST("Negative output value");
+    test_case("Negative output value");
     tx_t tx;
     create_minimal_tx(&tx);
     tx.outputs[0].value = -1;
@@ -353,15 +342,15 @@ static void test_validate_negative_output(void)
     tx_free(&tx);
 
     if (res != ECHO_OK && result.error == TX_VALIDATE_ERR_NEGATIVE_VALUE) {
-        PASS();
+        test_pass();
     } else {
-        FAIL("Expected TX_VALIDATE_ERR_NEGATIVE_VALUE");
+        test_fail("Expected TX_VALIDATE_ERR_NEGATIVE_VALUE");
     }
 }
 
 static void test_validate_output_too_large(void)
 {
-    TEST("Output value exceeds 21M BTC");
+    test_case("Output value exceeds 21M BTC");
     tx_t tx;
     create_minimal_tx(&tx);
     tx.outputs[0].value = ECHO_MAX_SATOSHIS + 1;
@@ -371,15 +360,15 @@ static void test_validate_output_too_large(void)
     tx_free(&tx);
 
     if (res != ECHO_OK && result.error == TX_VALIDATE_ERR_VALUE_TOO_LARGE) {
-        PASS();
+        test_pass();
     } else {
-        FAIL("Expected TX_VALIDATE_ERR_VALUE_TOO_LARGE");
+        test_fail("Expected TX_VALIDATE_ERR_VALUE_TOO_LARGE");
     }
 }
 
 static void test_validate_output_at_max(void)
 {
-    TEST("Output value at exactly 21M BTC");
+    test_case("Output value at exactly 21M BTC");
     tx_t tx;
     create_minimal_tx(&tx);
     tx.outputs[0].value = ECHO_MAX_SATOSHIS;
@@ -389,15 +378,15 @@ static void test_validate_output_at_max(void)
     tx_free(&tx);
 
     if (res == ECHO_OK) {
-        PASS();
+        test_pass();
     } else {
-        FAIL("Max satoshi value should be valid");
+        test_fail("Max satoshi value should be valid");
     }
 }
 
 static void test_validate_total_overflow(void)
 {
-    TEST("Total output value overflow");
+    test_case("Total output value overflow");
     tx_t tx;
     tx_init(&tx);
     tx.version = 1;
@@ -428,9 +417,9 @@ static void test_validate_total_overflow(void)
     tx_free(&tx);
 
     if (res != ECHO_OK && result.error == TX_VALIDATE_ERR_TOTAL_OVERFLOW) {
-        PASS();
+        test_pass();
     } else {
-        FAIL("Expected TX_VALIDATE_ERR_TOTAL_OVERFLOW");
+        test_fail("Expected TX_VALIDATE_ERR_TOTAL_OVERFLOW");
     }
 }
 
@@ -442,7 +431,7 @@ static void test_validate_total_overflow(void)
 
 static void test_locktime_zero_always_valid(void)
 {
-    TEST("Locktime 0 always valid");
+    test_case("Locktime 0 always valid");
     tx_t tx;
     create_minimal_tx(&tx);
     tx.locktime = 0;
@@ -452,15 +441,15 @@ static void test_locktime_zero_always_valid(void)
     tx_free(&tx);
 
     if (satisfied) {
-        PASS();
+        test_pass();
     } else {
-        FAIL("Locktime 0 should always be satisfied");
+        test_fail("Locktime 0 should always be satisfied");
     }
 }
 
 static void test_locktime_block_height_not_reached(void)
 {
-    TEST("Locktime block height not reached");
+    test_case("Locktime block height not reached");
     tx_t tx;
     create_minimal_tx(&tx);
     tx.locktime = 100;
@@ -470,15 +459,15 @@ static void test_locktime_block_height_not_reached(void)
     tx_free(&tx);
 
     if (!satisfied) {
-        PASS();
+        test_pass();
     } else {
-        FAIL("Should fail - block height not reached");
+        test_fail("Should fail - block height not reached");
     }
 }
 
 static void test_locktime_block_height_reached(void)
 {
-    TEST("Locktime block height reached");
+    test_case("Locktime block height reached");
     tx_t tx;
     create_minimal_tx(&tx);
     tx.locktime = 100;
@@ -488,15 +477,15 @@ static void test_locktime_block_height_reached(void)
     tx_free(&tx);
 
     if (satisfied) {
-        PASS();
+        test_pass();
     } else {
-        FAIL("Locktime should be satisfied at exact height");
+        test_fail("Locktime should be satisfied at exact height");
     }
 }
 
 static void test_locktime_timestamp_not_reached(void)
 {
-    TEST("Locktime timestamp not reached");
+    test_case("Locktime timestamp not reached");
     tx_t tx;
     create_minimal_tx(&tx);
     tx.locktime = 500000001;  /* Above threshold = timestamp */
@@ -506,15 +495,15 @@ static void test_locktime_timestamp_not_reached(void)
     tx_free(&tx);
 
     if (!satisfied) {
-        PASS();
+        test_pass();
     } else {
-        FAIL("Should fail - timestamp not reached");
+        test_fail("Should fail - timestamp not reached");
     }
 }
 
 static void test_locktime_timestamp_reached(void)
 {
-    TEST("Locktime timestamp reached");
+    test_case("Locktime timestamp reached");
     tx_t tx;
     create_minimal_tx(&tx);
     tx.locktime = 500000001;
@@ -524,15 +513,15 @@ static void test_locktime_timestamp_reached(void)
     tx_free(&tx);
 
     if (satisfied) {
-        PASS();
+        test_pass();
     } else {
-        FAIL("Locktime should be satisfied");
+        test_fail("Locktime should be satisfied");
     }
 }
 
 static void test_locktime_all_final_sequences(void)
 {
-    TEST("All final sequences bypass locktime");
+    test_case("All final sequences bypass locktime");
     tx_t tx;
     create_minimal_tx(&tx);
     tx.locktime = 1000000;  /* Far future */
@@ -542,9 +531,9 @@ static void test_locktime_all_final_sequences(void)
     tx_free(&tx);
 
     if (satisfied) {
-        PASS();
+        test_pass();
     } else {
-        FAIL("Final sequences should bypass locktime");
+        test_fail("Final sequences should bypass locktime");
     }
 }
 
@@ -556,7 +545,7 @@ static void test_locktime_all_final_sequences(void)
 
 static void test_sequence_disabled(void)
 {
-    TEST("Relative locktime disabled flag");
+    test_case("Relative locktime disabled flag");
     tx_t tx;
     create_minimal_tx(&tx);
     tx.version = 2;
@@ -566,15 +555,15 @@ static void test_sequence_disabled(void)
     tx_free(&tx);
 
     if (satisfied) {
-        PASS();
+        test_pass();
     } else {
-        FAIL("Disabled flag should always satisfy");
+        test_fail("Disabled flag should always satisfy");
     }
 }
 
 static void test_sequence_blocks_not_reached(void)
 {
-    TEST("Relative locktime blocks not reached");
+    test_case("Relative locktime blocks not reached");
     tx_t tx;
     create_minimal_tx(&tx);
     tx.version = 2;
@@ -585,15 +574,15 @@ static void test_sequence_blocks_not_reached(void)
     tx_free(&tx);
 
     if (!satisfied) {
-        PASS();
+        test_pass();
     } else {
-        FAIL("Should fail - not enough blocks");
+        test_fail("Should fail - not enough blocks");
     }
 }
 
 static void test_sequence_blocks_reached(void)
 {
-    TEST("Relative locktime blocks reached");
+    test_case("Relative locktime blocks reached");
     tx_t tx;
     create_minimal_tx(&tx);
     tx.version = 2;
@@ -604,15 +593,15 @@ static void test_sequence_blocks_reached(void)
     tx_free(&tx);
 
     if (satisfied) {
-        PASS();
+        test_pass();
     } else {
-        FAIL("Should pass - 10 blocks elapsed");
+        test_fail("Should pass - 10 blocks elapsed");
     }
 }
 
 static void test_sequence_time_not_reached(void)
 {
-    TEST("Relative locktime time not reached");
+    test_case("Relative locktime time not reached");
     tx_t tx;
     create_minimal_tx(&tx);
     tx.version = 2;
@@ -624,15 +613,15 @@ static void test_sequence_time_not_reached(void)
     tx_free(&tx);
 
     if (!satisfied) {
-        PASS();
+        test_pass();
     } else {
-        FAIL("Should fail - not enough time");
+        test_fail("Should fail - not enough time");
     }
 }
 
 static void test_sequence_time_reached(void)
 {
-    TEST("Relative locktime time reached");
+    test_case("Relative locktime time reached");
     tx_t tx;
     create_minimal_tx(&tx);
     tx.version = 2;
@@ -644,15 +633,15 @@ static void test_sequence_time_reached(void)
     tx_free(&tx);
 
     if (satisfied) {
-        PASS();
+        test_pass();
     } else {
-        FAIL("Should pass - enough time elapsed");
+        test_fail("Should pass - enough time elapsed");
     }
 }
 
 static void test_sequence_version_1_ignores(void)
 {
-    TEST("Version 1 ignores BIP-68");
+    test_case("Version 1 ignores BIP-68");
     tx_t tx;
     create_minimal_tx(&tx);
     tx.version = 1;  /* Version 1 */
@@ -663,9 +652,9 @@ static void test_sequence_version_1_ignores(void)
     tx_free(&tx);
 
     if (satisfied) {
-        PASS();
+        test_pass();
     } else {
-        FAIL("Version 1 should ignore BIP-68");
+        test_fail("Version 1 should ignore BIP-68");
     }
 }
 
@@ -677,7 +666,7 @@ static void test_sequence_version_1_ignores(void)
 
 static void test_compute_fee_valid(void)
 {
-    TEST("Compute fee - valid transaction");
+    test_case("Compute fee - valid transaction");
     tx_t tx;
     create_minimal_tx(&tx);
     tx.outputs[0].value = 40 * ECHO_SATOSHIS_PER_BTC;
@@ -695,15 +684,15 @@ static void test_compute_fee_valid(void)
     tx_free(&tx);
 
     if (res == ECHO_OK && fee == 10 * ECHO_SATOSHIS_PER_BTC) {
-        PASS();
+        test_pass();
     } else {
-        FAIL("Expected 10 BTC fee");
+        test_fail("Expected 10 BTC fee");
     }
 }
 
 static void test_compute_fee_coinbase(void)
 {
-    TEST("Compute fee - coinbase");
+    test_case("Compute fee - coinbase");
     tx_t tx;
     create_coinbase_tx(&tx);
 
@@ -712,9 +701,9 @@ static void test_compute_fee_coinbase(void)
     tx_free(&tx);
 
     if (res == ECHO_OK && fee == 0) {
-        PASS();
+        test_pass();
     } else {
-        FAIL("Coinbase fee should be 0");
+        test_fail("Coinbase fee should be 0");
     }
 }
 
@@ -726,7 +715,7 @@ static void test_compute_fee_coinbase(void)
 
 static void test_error_strings(void)
 {
-    TEST("Error string coverage");
+    test_case("Error string coverage");
     int all_valid = 1;
 
     /* Check a few key error strings */
@@ -743,9 +732,9 @@ static void test_error_strings(void)
     }
 
     if (all_valid) {
-        PASS();
+        test_pass();
     } else {
-        FAIL("Error string mismatch");
+        test_fail("Error string mismatch");
     }
 }
 
@@ -757,7 +746,7 @@ static void test_error_strings(void)
 
 static void test_full_validation_insufficient_funds(void)
 {
-    TEST("Full validation - insufficient funds");
+    test_case("Full validation - insufficient funds");
     tx_t tx;
     create_minimal_tx(&tx);
     tx.outputs[0].value = 60 * ECHO_SATOSHIS_PER_BTC;  /* More than input */
@@ -785,18 +774,18 @@ static void test_full_validation_insufficient_funds(void)
     tx_free(&tx);
 
     if (res != ECHO_OK && result.error == TX_VALIDATE_ERR_INSUFFICIENT_FUNDS) {
-        PASS();
+        test_pass();
     } else {
         char buf[64];
         snprintf(buf, sizeof(buf), "Expected INSUFFICIENT_FUNDS, got %s",
                  tx_validate_error_string(result.error));
-        FAIL(buf);
+        test_fail(buf);
     }
 }
 
 static void test_full_validation_success(void)
 {
-    TEST("Full validation - success");
+    test_case("Full validation - success");
     tx_t tx;
     create_minimal_tx(&tx);
     tx.outputs[0].value = 49 * ECHO_SATOSHIS_PER_BTC;
@@ -824,12 +813,12 @@ static void test_full_validation_success(void)
     tx_free(&tx);
 
     if (res == ECHO_OK) {
-        PASS();
+        test_pass();
     } else {
         char buf[64];
         snprintf(buf, sizeof(buf), "Unexpected error: %s",
                  tx_validate_error_string(result.error));
-        FAIL(buf);
+        test_fail(buf);
     }
 }
 
@@ -841,10 +830,9 @@ static void test_full_validation_success(void)
 
 int main(void)
 {
-    printf("Bitcoin Echo — Transaction Validation Tests\n");
-    printf("============================================\n\n");
+    test_suite_begin("Transaction Validation Tests");
 
-    printf("Syntactic Validation:\n");
+    test_section("Syntactic Validation");
     test_validate_null_tx();
     test_validate_empty_inputs();
     test_validate_empty_outputs();
@@ -853,17 +841,17 @@ int main(void)
     test_validate_coinbase_script_too_short();
     test_validate_coinbase_script_too_long();
 
-    printf("\nDuplicate Input Detection:\n");
+    test_section("Duplicate Input Detection");
     test_validate_duplicate_inputs();
     test_validate_different_inputs();
 
-    printf("\nValue Validation:\n");
+    test_section("Value Validation");
     test_validate_negative_output();
     test_validate_output_too_large();
     test_validate_output_at_max();
     test_validate_total_overflow();
 
-    printf("\nLocktime Validation:\n");
+    test_section("Locktime Validation");
     test_locktime_zero_always_valid();
     test_locktime_block_height_not_reached();
     test_locktime_block_height_reached();
@@ -871,7 +859,7 @@ int main(void)
     test_locktime_timestamp_reached();
     test_locktime_all_final_sequences();
 
-    printf("\nRelative Locktime (BIP-68):\n");
+    test_section("Relative Locktime (BIP-68)");
     test_sequence_disabled();
     test_sequence_blocks_not_reached();
     test_sequence_blocks_reached();
@@ -879,19 +867,17 @@ int main(void)
     test_sequence_time_reached();
     test_sequence_version_1_ignores();
 
-    printf("\nFee Computation:\n");
+    test_section("Fee Computation");
     test_compute_fee_valid();
     test_compute_fee_coinbase();
 
-    printf("\nError Strings:\n");
+    test_section("Error Strings");
     test_error_strings();
 
-    printf("\nFull Validation:\n");
+    test_section("Full Validation");
     test_full_validation_insufficient_funds();
     test_full_validation_success();
 
-    printf("\n============================================\n");
-    printf("Results: %d/%d tests passed\n", tests_passed, tests_run);
-
-    return (tests_passed == tests_run) ? 0 : 1;
+    test_suite_end();
+    return test_global_summary();
 }

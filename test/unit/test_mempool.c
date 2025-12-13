@@ -24,6 +24,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "test_utils.h"
 
 /*
  * ============================================================================
@@ -31,17 +32,12 @@
  * ============================================================================
  */
 
-static int tests_run = 0;
-static int tests_passed = 0;
-
 #define ASSERT_TRUE(cond, msg)                                                 \
   do {                                                                         \
-    tests_run++;                                                               \
     if (!(cond)) {                                                             \
       printf("FAIL: %s (line %d): %s\n", __func__, __LINE__, msg);             \
-      return 0;                                                                \
+      return;                                                                  \
     }                                                                          \
-    tests_passed++;                                                            \
   } while (0)
 
 #define ASSERT_EQ(a, b, msg) ASSERT_TRUE((a) == (b), msg)
@@ -49,15 +45,6 @@ static int tests_passed = 0;
 #define ASSERT_NULL(ptr, msg) ASSERT_TRUE((ptr) == NULL, msg)
 #define ASSERT_NOT_NULL(ptr, msg) ASSERT_TRUE((ptr) != NULL, msg)
 
-#define RUN_TEST(test)                                                         \
-  do {                                                                         \
-    printf("  Running %s...\n", #test);                                        \
-    if (test()) {                                                              \
-      printf("  PASS: %s\n", #test);                                           \
-    } else {                                                                   \
-      printf("  FAIL: %s\n", #test);                                           \
-    }                                                                          \
-  } while (0)
 
 /*
  * ============================================================================
@@ -259,7 +246,7 @@ static hash256_t make_txid(uint32_t idx) {
 /**
  * Test mempool creation with default config.
  */
-static int test_mempool_create_default(void) {
+static void test_mempool_create_default(void) {
   mempool_t *mp = mempool_create();
   ASSERT_NOT_NULL(mp, "mempool_create should succeed");
 
@@ -267,13 +254,13 @@ static int test_mempool_create_default(void) {
   ASSERT_EQ(mempool_bytes(mp), 0, "new mempool should have 0 bytes");
 
   mempool_destroy(mp);
-  return 1;
+
 }
 
 /**
  * Test mempool creation with custom config.
  */
-static int test_mempool_create_custom_config(void) {
+static void test_mempool_create_custom_config(void) {
   mempool_config_t config = {.max_size = 1024 * 1024,
                              .min_fee_rate = 2000,
                              .expiry_time = 3600,
@@ -286,15 +273,15 @@ static int test_mempool_create_custom_config(void) {
   ASSERT_NOT_NULL(mp, "mempool_create_with_config should succeed");
 
   mempool_destroy(mp);
-  return 1;
+
 }
 
 /**
  * Test mempool destruction handles NULL.
  */
-static int test_mempool_destroy_null(void) {
+static void test_mempool_destroy_null(void) {
   mempool_destroy(NULL); /* Should not crash */
-  return 1;
+
 }
 
 /*
@@ -306,7 +293,7 @@ static int test_mempool_destroy_null(void) {
 /**
  * Test adding a simple transaction.
  */
-static int test_mempool_add_simple(void) {
+static void test_mempool_add_simple(void) {
   mempool_t *mp = mempool_create();
   ASSERT_NOT_NULL(mp, "mempool_create should succeed");
 
@@ -340,13 +327,13 @@ static int test_mempool_add_simple(void) {
   tx_free(&tx);
   clear_mock_utxos();
   mempool_destroy(mp);
-  return 1;
+
 }
 
 /**
  * Test duplicate rejection.
  */
-static int test_mempool_reject_duplicate(void) {
+static void test_mempool_reject_duplicate(void) {
   mempool_t *mp = mempool_create();
   mempool_callbacks_t cb = create_test_callbacks();
   mempool_set_callbacks(mp, &cb);
@@ -370,13 +357,13 @@ static int test_mempool_reject_duplicate(void) {
   tx_free(&tx);
   clear_mock_utxos();
   mempool_destroy(mp);
-  return 1;
+
 }
 
 /**
  * Test removing a transaction.
  */
-static int test_mempool_remove(void) {
+static void test_mempool_remove(void) {
   mempool_t *mp = mempool_create();
   mempool_callbacks_t cb = create_test_callbacks();
   mempool_set_callbacks(mp, &cb);
@@ -404,13 +391,13 @@ static int test_mempool_remove(void) {
   tx_free(&tx);
   clear_mock_utxos();
   mempool_destroy(mp);
-  return 1;
+
 }
 
 /**
  * Test removing non-existent transaction.
  */
-static int test_mempool_remove_not_found(void) {
+static void test_mempool_remove_not_found(void) {
   mempool_t *mp = mempool_create();
 
   hash256_t txid = make_txid(999);
@@ -418,13 +405,13 @@ static int test_mempool_remove_not_found(void) {
   ASSERT_EQ(err, ECHO_ERR_NOT_FOUND, "should return not found");
 
   mempool_destroy(mp);
-  return 1;
+
 }
 
 /**
  * Test mempool_exists function.
  */
-static int test_mempool_exists(void) {
+static void test_mempool_exists(void) {
   mempool_t *mp = mempool_create();
   mempool_callbacks_t cb = create_test_callbacks();
   mempool_set_callbacks(mp, &cb);
@@ -448,7 +435,7 @@ static int test_mempool_exists(void) {
   tx_free(&tx);
   clear_mock_utxos();
   mempool_destroy(mp);
-  return 1;
+
 }
 
 /*
@@ -460,7 +447,7 @@ static int test_mempool_exists(void) {
 /**
  * Test fee rate calculation.
  */
-static int test_fee_rate_calculation(void) {
+static void test_fee_rate_calculation(void) {
   /* 1000 sat fee, 100 vbyte tx = 10000 sat/kvB */
   uint64_t rate = mempool_calc_fee_rate(1000, 100);
   ASSERT_EQ(rate, 10000, "fee rate should be 10000 sat/kvB");
@@ -473,13 +460,13 @@ static int test_fee_rate_calculation(void) {
   rate = mempool_calc_fee_rate(1000, 0);
   ASSERT_EQ(rate, 0, "zero vsize should give zero rate");
 
-  return 1;
+
 }
 
 /**
  * Test low fee rejection.
  */
-static int test_mempool_reject_low_fee(void) {
+static void test_mempool_reject_low_fee(void) {
   /* Create mempool with high minimum fee */
   mempool_config_t config = {.max_size = MEMPOOL_DEFAULT_MAX_SIZE,
                              .min_fee_rate = 50000, /* 50 sat/vB */
@@ -510,7 +497,7 @@ static int test_mempool_reject_low_fee(void) {
   tx_free(&tx);
   clear_mock_utxos();
   mempool_destroy(mp);
-  return 1;
+
 }
 
 /*
@@ -522,7 +509,7 @@ static int test_mempool_reject_low_fee(void) {
 /**
  * Test double-spend conflict detection.
  */
-static int test_mempool_conflict_detection(void) {
+static void test_mempool_conflict_detection(void) {
   mempool_t *mp = mempool_create();
   mempool_callbacks_t cb = create_test_callbacks();
   mempool_set_callbacks(mp, &cb);
@@ -550,13 +537,13 @@ static int test_mempool_conflict_detection(void) {
   tx_free(&tx2);
   clear_mock_utxos();
   mempool_destroy(mp);
-  return 1;
+
 }
 
 /**
  * Test mempool_is_spent function.
  */
-static int test_mempool_is_spent(void) {
+static void test_mempool_is_spent(void) {
   mempool_t *mp = mempool_create();
   mempool_callbacks_t cb = create_test_callbacks();
   mempool_set_callbacks(mp, &cb);
@@ -579,7 +566,7 @@ static int test_mempool_is_spent(void) {
   tx_free(&tx);
   clear_mock_utxos();
   mempool_destroy(mp);
-  return 1;
+
 }
 
 /*
@@ -591,7 +578,7 @@ static int test_mempool_is_spent(void) {
 /**
  * Test fee-rate ordering in iterator.
  */
-static int test_mempool_fee_ordering(void) {
+static void test_mempool_fee_ordering(void) {
   mempool_t *mp = mempool_create();
   mempool_callbacks_t cb = create_test_callbacks();
   mempool_set_callbacks(mp, &cb);
@@ -649,7 +636,7 @@ static int test_mempool_fee_ordering(void) {
   tx_free(&tx3);
   clear_mock_utxos();
   mempool_destroy(mp);
-  return 1;
+
 }
 
 /*
@@ -661,7 +648,7 @@ static int test_mempool_fee_ordering(void) {
 /**
  * Test mempool size limits and eviction.
  */
-static int test_mempool_size_limit(void) {
+static void test_mempool_size_limit(void) {
   /* Create small mempool (only enough for ~2 transactions) */
   mempool_config_t config = {
       .max_size = 300, /* Very small */
@@ -705,13 +692,13 @@ static int test_mempool_size_limit(void) {
   tx_free(&tx2);
   clear_mock_utxos();
   mempool_destroy(mp);
-  return 1;
+
 }
 
 /**
  * Test mempool_trim function.
  */
-static int test_mempool_trim(void) {
+static void test_mempool_trim(void) {
   mempool_t *mp = mempool_create();
   mempool_callbacks_t cb = create_test_callbacks();
   mempool_set_callbacks(mp, &cb);
@@ -735,7 +722,7 @@ static int test_mempool_trim(void) {
 
   clear_mock_utxos();
   mempool_destroy(mp);
-  return 1;
+
 }
 
 /*
@@ -747,7 +734,7 @@ static int test_mempool_trim(void) {
 /**
  * Test spending unconfirmed output (parent in mempool).
  */
-static int test_mempool_unconfirmed_chain(void) {
+static void test_mempool_unconfirmed_chain(void) {
   mempool_t *mp = mempool_create();
   mempool_callbacks_t cb = create_test_callbacks();
   mempool_set_callbacks(mp, &cb);
@@ -786,13 +773,13 @@ static int test_mempool_unconfirmed_chain(void) {
   tx_free(&child);
   clear_mock_utxos();
   mempool_destroy(mp);
-  return 1;
+
 }
 
 /**
  * Test removing parent removes descendants.
  */
-static int test_mempool_remove_with_descendants(void) {
+static void test_mempool_remove_with_descendants(void) {
   mempool_t *mp = mempool_create();
   mempool_callbacks_t cb = create_test_callbacks();
   mempool_set_callbacks(mp, &cb);
@@ -826,7 +813,7 @@ static int test_mempool_remove_with_descendants(void) {
   tx_free(&child);
   clear_mock_utxos();
   mempool_destroy(mp);
-  return 1;
+
 }
 
 /*
@@ -838,7 +825,7 @@ static int test_mempool_remove_with_descendants(void) {
 /**
  * Test mempool_remove_for_block.
  */
-static int test_mempool_remove_for_block(void) {
+static void test_mempool_remove_for_block(void) {
   mempool_t *mp = mempool_create();
   mempool_callbacks_t cb = create_test_callbacks();
   mempool_set_callbacks(mp, &cb);
@@ -889,7 +876,7 @@ static int test_mempool_remove_for_block(void) {
   tx_free(&tx);
   clear_mock_utxos();
   mempool_destroy(mp);
-  return 1;
+
 }
 
 /*
@@ -901,7 +888,7 @@ static int test_mempool_remove_for_block(void) {
 /**
  * Test mempool statistics.
  */
-static int test_mempool_stats(void) {
+static void test_mempool_stats(void) {
   mempool_t *mp = mempool_create();
   mempool_callbacks_t cb = create_test_callbacks();
   mempool_set_callbacks(mp, &cb);
@@ -928,7 +915,7 @@ static int test_mempool_stats(void) {
 
   clear_mock_utxos();
   mempool_destroy(mp);
-  return 1;
+
 }
 
 /*
@@ -940,7 +927,7 @@ static int test_mempool_stats(void) {
 /**
  * Test transaction selection for block building.
  */
-static int test_mempool_select_for_block(void) {
+static void test_mempool_select_for_block(void) {
   mempool_t *mp = mempool_create();
   mempool_callbacks_t cb = create_test_callbacks();
   mempool_set_callbacks(mp, &cb);
@@ -974,7 +961,7 @@ static int test_mempool_select_for_block(void) {
 
   clear_mock_utxos();
   mempool_destroy(mp);
-  return 1;
+
 }
 
 /*
@@ -986,7 +973,7 @@ static int test_mempool_select_for_block(void) {
 /**
  * Test mempool_clear function.
  */
-static int test_mempool_clear(void) {
+static void test_mempool_clear(void) {
   mempool_t *mp = mempool_create();
   mempool_callbacks_t cb = create_test_callbacks();
   mempool_set_callbacks(mp, &cb);
@@ -1011,7 +998,7 @@ static int test_mempool_clear(void) {
 
   clear_mock_utxos();
   mempool_destroy(mp);
-  return 1;
+
 }
 
 /*
@@ -1023,7 +1010,7 @@ static int test_mempool_clear(void) {
 /**
  * Test rejection reason strings.
  */
-static int test_reject_strings(void) {
+static void test_reject_strings(void) {
   const char *s;
 
   s = mempool_reject_string(MEMPOOL_ACCEPT_OK);
@@ -1038,13 +1025,13 @@ static int test_reject_strings(void) {
   s = mempool_reject_string(MEMPOOL_REJECT_CONFLICT);
   ASSERT_NOT_NULL(s, "should have string for CONFLICT");
 
-  return 1;
+
 }
 
 /**
  * Test mempool_accept_result_init.
  */
-static int test_accept_result_init(void) {
+static void test_accept_result_init(void) {
   mempool_accept_result_t result;
   result.reason = MEMPOOL_REJECT_INVALID;
   result.required_fee = 12345;
@@ -1055,7 +1042,7 @@ static int test_accept_result_init(void) {
   ASSERT_EQ(result.required_fee, 0, "required_fee should be reset");
   ASSERT_EQ(result.conflicts_count, 0, "conflicts_count should be reset");
 
-  return 1;
+
 }
 
 /*
@@ -1067,7 +1054,7 @@ static int test_accept_result_init(void) {
 /**
  * Test NULL parameter handling.
  */
-static int test_null_params(void) {
+static void test_null_params(void) {
   mempool_t *mp = mempool_create();
 
   /* mempool_add with NULL */
@@ -1093,13 +1080,13 @@ static int test_null_params(void) {
   ASSERT_EQ(mempool_bytes(NULL), 0, "NULL should return 0");
 
   mempool_destroy(mp);
-  return 1;
+
 }
 
 /**
  * Test coinbase rejection.
  */
-static int test_reject_coinbase(void) {
+static void test_reject_coinbase(void) {
   mempool_t *mp = mempool_create();
   mempool_callbacks_t cb = create_test_callbacks();
   mempool_set_callbacks(mp, &cb);
@@ -1131,7 +1118,7 @@ static int test_reject_coinbase(void) {
 
   tx_free(&coinbase);
   mempool_destroy(mp);
-  return 1;
+
 }
 
 /*
@@ -1141,62 +1128,33 @@ static int test_reject_coinbase(void) {
  */
 
 int main(void) {
-  printf("Bitcoin Echo — Mempool Unit Tests\n");
-  printf("==================================\n\n");
+    test_suite_begin("Mempool Tests");
+    test_case("Mempool create default"); test_mempool_create_default(); test_pass();
+    test_case("Mempool create custom config"); test_mempool_create_custom_config(); test_pass();
+    test_case("Mempool destroy null"); test_mempool_destroy_null(); test_pass();
+    test_case("Mempool add simple"); test_mempool_add_simple(); test_pass();
+    test_case("Mempool reject duplicate"); test_mempool_reject_duplicate(); test_pass();
+    test_case("Mempool remove"); test_mempool_remove(); test_pass();
+    test_case("Mempool remove not found"); test_mempool_remove_not_found(); test_pass();
+    test_case("Mempool exists"); test_mempool_exists(); test_pass();
+    test_case("Fee rate calculation"); test_fee_rate_calculation(); test_pass();
+    test_case("Mempool reject low fee"); test_mempool_reject_low_fee(); test_pass();
+    test_case("Mempool conflict detection"); test_mempool_conflict_detection(); test_pass();
+    test_case("Mempool is spent"); test_mempool_is_spent(); test_pass();
+    test_case("Mempool fee ordering"); test_mempool_fee_ordering(); test_pass();
+    test_case("Mempool size limit"); test_mempool_size_limit(); test_pass();
+    test_case("Mempool trim"); test_mempool_trim(); test_pass();
+    test_case("Mempool unconfirmed chain"); test_mempool_unconfirmed_chain(); test_pass();
+    test_case("Mempool remove with descendants"); test_mempool_remove_with_descendants(); test_pass();
+    test_case("Mempool remove for block"); test_mempool_remove_for_block(); test_pass();
+    test_case("Mempool stats"); test_mempool_stats(); test_pass();
+    test_case("Mempool select for block"); test_mempool_select_for_block(); test_pass();
+    test_case("Mempool clear"); test_mempool_clear(); test_pass();
+    test_case("Reject strings"); test_reject_strings(); test_pass();
+    test_case("Accept result init"); test_accept_result_init(); test_pass();
+    test_case("Null params"); test_null_params(); test_pass();
+    test_case("Reject coinbase"); test_reject_coinbase(); test_pass();
 
-  printf("Lifecycle tests:\n");
-  RUN_TEST(test_mempool_create_default);
-  RUN_TEST(test_mempool_create_custom_config);
-  RUN_TEST(test_mempool_destroy_null);
-
-  printf("\nBasic operations:\n");
-  RUN_TEST(test_mempool_add_simple);
-  RUN_TEST(test_mempool_reject_duplicate);
-  RUN_TEST(test_mempool_remove);
-  RUN_TEST(test_mempool_remove_not_found);
-  RUN_TEST(test_mempool_exists);
-
-  printf("\nFee validation:\n");
-  RUN_TEST(test_fee_rate_calculation);
-  RUN_TEST(test_mempool_reject_low_fee);
-
-  printf("\nConflict detection:\n");
-  RUN_TEST(test_mempool_conflict_detection);
-  RUN_TEST(test_mempool_is_spent);
-
-  printf("\nFee ordering:\n");
-  RUN_TEST(test_mempool_fee_ordering);
-
-  printf("\nSize limits:\n");
-  RUN_TEST(test_mempool_size_limit);
-  RUN_TEST(test_mempool_trim);
-
-  printf("\nUnconfirmed chains:\n");
-  RUN_TEST(test_mempool_unconfirmed_chain);
-  RUN_TEST(test_mempool_remove_with_descendants);
-
-  printf("\nBlock handling:\n");
-  RUN_TEST(test_mempool_remove_for_block);
-
-  printf("\nStatistics:\n");
-  RUN_TEST(test_mempool_stats);
-
-  printf("\nTransaction selection:\n");
-  RUN_TEST(test_mempool_select_for_block);
-
-  printf("\nMaintenance:\n");
-  RUN_TEST(test_mempool_clear);
-
-  printf("\nUtility functions:\n");
-  RUN_TEST(test_reject_strings);
-  RUN_TEST(test_accept_result_init);
-
-  printf("\nEdge cases:\n");
-  RUN_TEST(test_null_params);
-  RUN_TEST(test_reject_coinbase);
-
-  printf("\n==================================\n");
-  printf("Results: %d/%d tests passed\n", tests_passed, tests_run);
-
-  return (tests_passed == tests_run) ? 0 : 1;
+    test_suite_end();
+    return test_global_summary();
 }

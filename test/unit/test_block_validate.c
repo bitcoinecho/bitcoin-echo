@@ -20,9 +20,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-static int tests_run = 0;
-static int tests_passed = 0;
+#include "test_utils.h"
 
 /*
  * Convert hex string to bytes.
@@ -82,28 +80,23 @@ static void reverse_bytes(uint8_t *data, size_t len) {
 static void test_mtp_empty(void) {
   block_validation_ctx_t ctx;
   uint32_t mtp;
-
-  tests_run++;
-
   block_validate_ctx_init(&ctx);
   ctx.timestamp_count = 0;
 
   mtp = block_validate_mtp(&ctx);
 
   if (mtp == 0) {
-    tests_passed++;
-    printf("  [PASS] MTP with no timestamps returns 0\n");
+    test_case("MTP with no timestamps returns 0");
+        test_pass();
   } else {
-    printf("  [FAIL] MTP with no timestamps returned %u (expected 0)\n", mtp);
+    test_case("MTP with no timestamps returned");
+        test_fail("MTP with no timestamps returned");
   }
 }
 
 static void test_mtp_single(void) {
   block_validation_ctx_t ctx;
   uint32_t mtp;
-
-  tests_run++;
-
   block_validate_ctx_init(&ctx);
   ctx.timestamps[0] = 1000;
   ctx.timestamp_count = 1;
@@ -111,8 +104,8 @@ static void test_mtp_single(void) {
   mtp = block_validate_mtp(&ctx);
 
   if (mtp == 1000) {
-    tests_passed++;
-    printf("  [PASS] MTP with single timestamp\n");
+    test_case("MTP with single timestamp");
+        test_pass();
   } else {
     printf("  [FAIL] MTP with single timestamp returned %u (expected 1000)\n",
            mtp);
@@ -122,9 +115,6 @@ static void test_mtp_single(void) {
 static void test_mtp_odd_count(void) {
   block_validation_ctx_t ctx;
   uint32_t mtp;
-
-  tests_run++;
-
   block_validate_ctx_init(&ctx);
   /* 5 timestamps: 100, 200, 300, 400, 500 -> median = 300 */
   ctx.timestamps[0] = 300;
@@ -137,19 +127,17 @@ static void test_mtp_odd_count(void) {
   mtp = block_validate_mtp(&ctx);
 
   if (mtp == 300) {
-    tests_passed++;
-    printf("  [PASS] MTP with 5 timestamps (median = 300)\n");
+    test_case("MTP with 5 timestamps (median = 300)");
+        test_pass();
   } else {
-    printf("  [FAIL] MTP with 5 timestamps returned %u (expected 300)\n", mtp);
+    test_case("MTP with 5 timestamps returned");
+        test_fail("MTP with 5 timestamps returned");
   }
 }
 
 static void test_mtp_full_window(void) {
   block_validation_ctx_t ctx;
   uint32_t mtp;
-
-  tests_run++;
-
   block_validate_ctx_init(&ctx);
   /* 11 timestamps (unsorted): median should be 6th smallest = 600 */
   ctx.timestamps[0] = 1100;
@@ -171,19 +159,17 @@ static void test_mtp_full_window(void) {
   mtp = block_validate_mtp(&ctx);
 
   if (mtp == 600) {
-    tests_passed++;
-    printf("  [PASS] MTP with full 11-block window (median = 600)\n");
+    test_case("MTP with full 11-block window (median = 600)");
+        test_pass();
   } else {
-    printf("  [FAIL] MTP with full window returned %u (expected 600)\n", mtp);
+    test_case("MTP with full window returned");
+        test_fail("MTP with full window returned");
   }
 }
 
 static void test_mtp_even_count(void) {
   block_validation_ctx_t ctx;
   uint32_t mtp;
-
-  tests_run++;
-
   block_validate_ctx_init(&ctx);
   /* 4 timestamps: 100, 200, 300, 400 -> median index = 4/2 = 2 -> value = 300
    */
@@ -197,10 +183,11 @@ static void test_mtp_even_count(void) {
 
   /* Sorted: 100, 200, 300, 400 -> index 2 = 300 */
   if (mtp == 300) {
-    tests_passed++;
-    printf("  [PASS] MTP with 4 timestamps (median = 300)\n");
+    test_case("MTP with 4 timestamps (median = 300)");
+        test_pass();
   } else {
-    printf("  [FAIL] MTP with 4 timestamps returned %u (expected 300)\n", mtp);
+    test_case("MTP with 4 timestamps returned");
+        test_fail("MTP with 4 timestamps returned");
   }
 }
 
@@ -213,14 +200,11 @@ static void test_mtp_even_count(void) {
 static void test_pow_genesis(void) {
   block_header_t header;
   block_validation_error_t error = BLOCK_VALID;
-
-  tests_run++;
-
   block_genesis_header(&header);
 
   if (block_validate_pow(&header, &error)) {
-    tests_passed++;
-    printf("  [PASS] Genesis block PoW valid\n");
+    test_case("Genesis block PoW valid");
+        test_pass();
   } else {
     printf("  [FAIL] Genesis block PoW rejected (error: %s)\n",
            block_validation_error_str(error));
@@ -230,22 +214,20 @@ static void test_pow_genesis(void) {
 static void test_pow_invalid_nonce(void) {
   block_header_t header;
   block_validation_error_t error = BLOCK_VALID;
-
-  tests_run++;
-
   block_genesis_header(&header);
   header.nonce = 0; /* Invalid nonce */
 
   if (!block_validate_pow(&header, &error)) {
     if (error == BLOCK_ERR_POW_FAILED) {
-      tests_passed++;
-      printf("  [PASS] Invalid nonce rejected\n");
+      test_case("Invalid nonce rejected");
+        test_pass();
     } else {
       printf("  [FAIL] Invalid nonce rejected with wrong error: %s\n",
              block_validation_error_str(error));
     }
   } else {
-    printf("  [FAIL] Invalid nonce accepted\n");
+    test_case("Invalid nonce accepted");
+        test_fail("Invalid nonce accepted");
   }
 }
 
@@ -259,22 +241,21 @@ static void test_pow_real_block_170(void) {
   uint8_t data[BLOCK_HEADER_SIZE];
   block_header_t header;
   block_validation_error_t error = BLOCK_VALID;
-
-  tests_run++;
-
   if (hex_to_bytes(header_hex, data, sizeof(data)) != BLOCK_HEADER_SIZE) {
-    printf("  [FAIL] Block 170 PoW (invalid test hex)\n");
+    test_case("Block 170 PoW (invalid test hex)");
+        test_fail("Block 170 PoW (invalid test hex)");
     return;
   }
 
   if (block_header_parse(data, BLOCK_HEADER_SIZE, &header) != ECHO_OK) {
-    printf("  [FAIL] Block 170 PoW (parse failed)\n");
+    test_case("Block 170 PoW (parse failed)");
+        test_fail("Block 170 PoW (parse failed)");
     return;
   }
 
   if (block_validate_pow(&header, &error)) {
-    tests_passed++;
-    printf("  [PASS] Block 170 PoW valid\n");
+    test_case("Block 170 PoW valid");
+        test_pass();
   } else {
     printf("  [FAIL] Block 170 PoW rejected (error: %s)\n",
            block_validation_error_str(error));
@@ -291,9 +272,6 @@ static void test_timestamp_valid(void) {
   block_header_t header;
   block_validation_ctx_t ctx;
   block_validation_error_t error = BLOCK_VALID;
-
-  tests_run++;
-
   block_genesis_header(&header);
   header.timestamp = 1000; /* New block timestamp */
 
@@ -303,8 +281,8 @@ static void test_timestamp_valid(void) {
   ctx.current_time = 1000; /* Current network time */
 
   if (block_validate_timestamp(&header, &ctx, &error)) {
-    tests_passed++;
-    printf("  [PASS] Valid timestamp accepted\n");
+    test_case("Valid timestamp accepted");
+        test_pass();
   } else {
     printf("  [FAIL] Valid timestamp rejected (error: %s)\n",
            block_validation_error_str(error));
@@ -315,9 +293,6 @@ static void test_timestamp_at_mtp(void) {
   block_header_t header;
   block_validation_ctx_t ctx;
   block_validation_error_t error = BLOCK_VALID;
-
-  tests_run++;
-
   block_genesis_header(&header);
   header.timestamp = 500; /* Exactly at MTP - should fail */
 
@@ -328,14 +303,15 @@ static void test_timestamp_at_mtp(void) {
 
   if (!block_validate_timestamp(&header, &ctx, &error)) {
     if (error == BLOCK_ERR_TIMESTAMP_TOO_OLD) {
-      tests_passed++;
-      printf("  [PASS] Timestamp at MTP rejected\n");
+      test_case("Timestamp at MTP rejected");
+        test_pass();
     } else {
       printf("  [FAIL] Timestamp at MTP rejected with wrong error: %s\n",
              block_validation_error_str(error));
     }
   } else {
-    printf("  [FAIL] Timestamp at MTP accepted\n");
+    test_case("Timestamp at MTP accepted");
+        test_fail("Timestamp at MTP accepted");
   }
 }
 
@@ -343,9 +319,6 @@ static void test_timestamp_before_mtp(void) {
   block_header_t header;
   block_validation_ctx_t ctx;
   block_validation_error_t error = BLOCK_VALID;
-
-  tests_run++;
-
   block_genesis_header(&header);
   header.timestamp = 400; /* Before MTP */
 
@@ -356,14 +329,15 @@ static void test_timestamp_before_mtp(void) {
 
   if (!block_validate_timestamp(&header, &ctx, &error)) {
     if (error == BLOCK_ERR_TIMESTAMP_TOO_OLD) {
-      tests_passed++;
-      printf("  [PASS] Timestamp before MTP rejected\n");
+      test_case("Timestamp before MTP rejected");
+        test_pass();
     } else {
       printf("  [FAIL] Timestamp before MTP rejected with wrong error: %s\n",
              block_validation_error_str(error));
     }
   } else {
-    printf("  [FAIL] Timestamp before MTP accepted\n");
+    test_case("Timestamp before MTP accepted");
+        test_fail("Timestamp before MTP accepted");
   }
 }
 
@@ -371,9 +345,6 @@ static void test_timestamp_future(void) {
   block_header_t header;
   block_validation_ctx_t ctx;
   block_validation_error_t error = BLOCK_VALID;
-
-  tests_run++;
-
   block_genesis_header(&header);
   /* Timestamp more than 2 hours in future */
   header.timestamp = 1000 + BLOCK_MAX_FUTURE_TIME + 1;
@@ -385,14 +356,15 @@ static void test_timestamp_future(void) {
 
   if (!block_validate_timestamp(&header, &ctx, &error)) {
     if (error == BLOCK_ERR_TIMESTAMP_TOO_NEW) {
-      tests_passed++;
-      printf("  [PASS] Future timestamp rejected\n");
+      test_case("Future timestamp rejected");
+        test_pass();
     } else {
       printf("  [FAIL] Future timestamp rejected with wrong error: %s\n",
              block_validation_error_str(error));
     }
   } else {
-    printf("  [FAIL] Future timestamp accepted\n");
+    test_case("Future timestamp accepted");
+        test_fail("Future timestamp accepted");
   }
 }
 
@@ -400,9 +372,6 @@ static void test_timestamp_at_future_limit(void) {
   block_header_t header;
   block_validation_ctx_t ctx;
   block_validation_error_t error = BLOCK_VALID;
-
-  tests_run++;
-
   block_genesis_header(&header);
   /* Timestamp exactly at 2 hour limit */
   header.timestamp = 1000 + BLOCK_MAX_FUTURE_TIME;
@@ -413,8 +382,8 @@ static void test_timestamp_at_future_limit(void) {
   ctx.current_time = 1000;
 
   if (block_validate_timestamp(&header, &ctx, &error)) {
-    tests_passed++;
-    printf("  [PASS] Timestamp at future limit accepted\n");
+    test_case("Timestamp at future limit accepted");
+        test_pass();
   } else {
     printf("  [FAIL] Timestamp at future limit rejected (error: %s)\n",
            block_validation_error_str(error));
@@ -425,9 +394,6 @@ static void test_timestamp_genesis(void) {
   block_header_t header;
   block_validation_ctx_t ctx;
   block_validation_error_t error = BLOCK_VALID;
-
-  tests_run++;
-
   block_genesis_header(&header);
 
   /* Genesis block context: no previous timestamps */
@@ -436,8 +402,8 @@ static void test_timestamp_genesis(void) {
   ctx.current_time = header.timestamp + 1000;
 
   if (block_validate_timestamp(&header, &ctx, &error)) {
-    tests_passed++;
-    printf("  [PASS] Genesis timestamp valid (no MTP check)\n");
+    test_case("Genesis timestamp valid (no MTP check)");
+        test_pass();
   } else {
     printf("  [FAIL] Genesis timestamp rejected (error: %s)\n",
            block_validation_error_str(error));
@@ -454,17 +420,14 @@ static void test_prev_block_genesis(void) {
   block_header_t header;
   block_validation_ctx_t ctx;
   block_validation_error_t error = BLOCK_VALID;
-
-  tests_run++;
-
   block_genesis_header(&header);
 
   block_validate_ctx_init(&ctx);
   ctx.height = 0;
 
   if (block_validate_prev_block(&header, &ctx, &error)) {
-    tests_passed++;
-    printf("  [PASS] Genesis prev_hash (all zeros) accepted\n");
+    test_case("Genesis prev_hash (all zeros) accepted");
+        test_pass();
   } else {
     printf("  [FAIL] Genesis prev_hash rejected (error: %s)\n",
            block_validation_error_str(error));
@@ -476,9 +439,6 @@ static void test_prev_block_valid(void) {
   block_validation_ctx_t ctx;
   block_validation_error_t error = BLOCK_VALID;
   int i;
-
-  tests_run++;
-
   memset(&header, 0, sizeof(header));
   /* Set a specific prev_hash */
   for (i = 0; i < 32; i++) {
@@ -491,8 +451,8 @@ static void test_prev_block_valid(void) {
   ctx.parent_valid = ECHO_TRUE;
 
   if (block_validate_prev_block(&header, &ctx, &error)) {
-    tests_passed++;
-    printf("  [PASS] Valid prev_hash accepted\n");
+    test_case("Valid prev_hash accepted");
+        test_pass();
   } else {
     printf("  [FAIL] Valid prev_hash rejected (error: %s)\n",
            block_validation_error_str(error));
@@ -503,9 +463,6 @@ static void test_prev_block_mismatch(void) {
   block_header_t header;
   block_validation_ctx_t ctx;
   block_validation_error_t error = BLOCK_VALID;
-
-  tests_run++;
-
   memset(&header, 0, sizeof(header));
   header.prev_hash.bytes[0] = 0x12;
 
@@ -516,14 +473,15 @@ static void test_prev_block_mismatch(void) {
 
   if (!block_validate_prev_block(&header, &ctx, &error)) {
     if (error == BLOCK_ERR_PREV_BLOCK_UNKNOWN) {
-      tests_passed++;
-      printf("  [PASS] Mismatched prev_hash rejected\n");
+      test_case("Mismatched prev_hash rejected");
+        test_pass();
     } else {
       printf("  [FAIL] Mismatched prev_hash rejected with wrong error: %s\n",
              block_validation_error_str(error));
     }
   } else {
-    printf("  [FAIL] Mismatched prev_hash accepted\n");
+    test_case("Mismatched prev_hash accepted");
+        test_fail("Mismatched prev_hash accepted");
   }
 }
 
@@ -532,9 +490,6 @@ static void test_prev_block_invalid_parent(void) {
   block_validation_ctx_t ctx;
   block_validation_error_t error = BLOCK_VALID;
   int i;
-
-  tests_run++;
-
   memset(&header, 0, sizeof(header));
   for (i = 0; i < 32; i++) {
     header.prev_hash.bytes[i] = (uint8_t)i;
@@ -547,14 +502,15 @@ static void test_prev_block_invalid_parent(void) {
 
   if (!block_validate_prev_block(&header, &ctx, &error)) {
     if (error == BLOCK_ERR_PREV_BLOCK_INVALID) {
-      tests_passed++;
-      printf("  [PASS] Invalid parent rejected\n");
+      test_case("Invalid parent rejected");
+        test_pass();
     } else {
       printf("  [FAIL] Invalid parent rejected with wrong error: %s\n",
              block_validation_error_str(error));
     }
   } else {
-    printf("  [FAIL] Invalid parent accepted\n");
+    test_case("Invalid parent accepted");
+        test_fail("Invalid parent accepted");
   }
 }
 
@@ -565,35 +521,30 @@ static void test_prev_block_invalid_parent(void) {
  */
 
 static void test_version_bip9_detection(void) {
-  tests_run++;
-
   /* Version 0x20000000 is BIP-9 (top bits = 001) */
   if (block_version_uses_bip9(0x20000000)) {
-    tests_passed++;
-    printf("  [PASS] BIP-9 version 0x20000000 detected\n");
+    test_case("BIP-9 version 0x20000000 detected");
+        test_pass();
   } else {
-    printf("  [FAIL] BIP-9 version 0x20000000 not detected\n");
+    test_case("BIP-9 version 0x20000000 not detected");
+        test_fail("BIP-9 version 0x20000000 not detected");
   }
 }
 
 static void test_version_non_bip9(void) {
-  tests_run++;
-
   /* Version 4 is not BIP-9 */
   if (!block_version_uses_bip9(4)) {
-    tests_passed++;
-    printf("  [PASS] Version 4 not detected as BIP-9\n");
+    test_case("Version 4 not detected as BIP-9");
+        test_pass();
   } else {
-    printf("  [FAIL] Version 4 detected as BIP-9\n");
+    test_case("Version 4 detected as BIP-9");
+        test_fail("Version 4 detected as BIP-9");
   }
 }
 
 static void test_version_bit_extraction(void) {
   int32_t version;
   int success = 1;
-
-  tests_run++;
-
   /* Version with bits 0, 2, 4 set: 0x20000000 | 0x01 | 0x04 | 0x10 = 0x20000015
    */
   version = 0x20000015;
@@ -620,22 +571,22 @@ static void test_version_bit_extraction(void) {
   }
 
   if (success) {
-    tests_passed++;
-    printf("  [PASS] Version bit extraction\n");
+    test_case("Version bit extraction");
+        test_pass();
   } else {
-    printf("  [FAIL] Version bit extraction\n");
+    test_case("Version bit extraction");
+        test_fail("Version bit extraction");
   }
 }
 
 static void test_version_bit_non_bip9(void) {
-  tests_run++;
-
   /* Cannot extract bits from non-BIP9 version */
   if (!block_version_bit(4, 0)) {
-    tests_passed++;
-    printf("  [PASS] Version bit extraction from non-BIP9 returns false\n");
+    test_case("Version bit extraction from non-BIP9 returns false");
+        test_pass();
   } else {
-    printf("  [FAIL] Version bit extraction from non-BIP9 returned true\n");
+    test_case("Version bit extraction from non-BIP9 returned true");
+        test_fail("Version bit extraction from non-BIP9 returned true");
   }
 }
 
@@ -649,9 +600,6 @@ static void test_header_full_valid(void) {
   block_header_t header;
   block_validation_ctx_t ctx;
   block_validation_error_t error = BLOCK_VALID;
-
-  tests_run++;
-
   /* Use block 170's header */
   const char *header_hex = "0100000055bd840a78798ad0da853f68974f3d183e2bd1db6a8"
                            "42c1feecf222a00000000ff104ccb"
@@ -662,12 +610,14 @@ static void test_header_full_valid(void) {
   uint8_t parent_hash[32];
 
   if (hex_to_bytes(header_hex, data, sizeof(data)) != BLOCK_HEADER_SIZE) {
-    printf("  [FAIL] Full header validation (invalid test hex)\n");
+    test_case("Full header validation (invalid test hex)");
+        test_fail("Full header validation (invalid test hex)");
     return;
   }
 
   if (block_header_parse(data, BLOCK_HEADER_SIZE, &header) != ECHO_OK) {
-    printf("  [FAIL] Full header validation (parse failed)\n");
+    test_case("Full header validation (parse failed)");
+        test_fail("Full header validation (parse failed)");
     return;
   }
 
@@ -690,8 +640,8 @@ static void test_header_full_valid(void) {
   ctx.current_time = header.timestamp + 3600; /* 1 hour after block */
 
   if (block_validate_header(&header, &ctx, &error)) {
-    tests_passed++;
-    printf("  [PASS] Block 170 full header validation\n");
+    test_case("Block 170 full header validation");
+        test_pass();
   } else {
     printf("  [FAIL] Block 170 full header rejected (error: %s)\n",
            block_validation_error_str(error));
@@ -707,14 +657,11 @@ static void test_header_full_valid(void) {
 static void test_genesis_valid(void) {
   block_header_t header;
   block_validation_error_t error = BLOCK_VALID;
-
-  tests_run++;
-
   block_genesis_header(&header);
 
   if (block_validate_genesis(&header, &error)) {
-    tests_passed++;
-    printf("  [PASS] Genesis block validated\n");
+    test_case("Genesis block validated");
+        test_pass();
   } else {
     printf("  [FAIL] Genesis block rejected (error: %s)\n",
            block_validation_error_str(error));
@@ -724,74 +671,66 @@ static void test_genesis_valid(void) {
 static void test_genesis_wrong_nonce(void) {
   block_header_t header;
   block_validation_error_t error = BLOCK_VALID;
-
-  tests_run++;
-
   block_genesis_header(&header);
   header.nonce = 12345;
 
   if (!block_validate_genesis(&header, &error)) {
-    tests_passed++;
-    printf("  [PASS] Genesis with wrong nonce rejected\n");
+    test_case("Genesis with wrong nonce rejected");
+        test_pass();
   } else {
-    printf("  [FAIL] Genesis with wrong nonce accepted\n");
+    test_case("Genesis with wrong nonce accepted");
+        test_fail("Genesis with wrong nonce accepted");
   }
 }
 
 static void test_genesis_wrong_timestamp(void) {
   block_header_t header;
   block_validation_error_t error = BLOCK_VALID;
-
-  tests_run++;
-
   block_genesis_header(&header);
   header.timestamp = 1;
 
   if (!block_validate_genesis(&header, &error)) {
-    tests_passed++;
-    printf("  [PASS] Genesis with wrong timestamp rejected\n");
+    test_case("Genesis with wrong timestamp rejected");
+        test_pass();
   } else {
-    printf("  [FAIL] Genesis with wrong timestamp accepted\n");
+    test_case("Genesis with wrong timestamp accepted");
+        test_fail("Genesis with wrong timestamp accepted");
   }
 }
 
 static void test_genesis_wrong_bits(void) {
   block_header_t header;
   block_validation_error_t error = BLOCK_VALID;
-
-  tests_run++;
-
   block_genesis_header(&header);
   header.bits = 0x1d00f000;
 
   if (!block_validate_genesis(&header, &error)) {
-    tests_passed++;
-    printf("  [PASS] Genesis with wrong bits rejected\n");
+    test_case("Genesis with wrong bits rejected");
+        test_pass();
   } else {
-    printf("  [FAIL] Genesis with wrong bits accepted\n");
+    test_case("Genesis with wrong bits accepted");
+        test_fail("Genesis with wrong bits accepted");
   }
 }
 
 static void test_genesis_nonzero_prev(void) {
   block_header_t header;
   block_validation_error_t error = BLOCK_VALID;
-
-  tests_run++;
-
   block_genesis_header(&header);
   header.prev_hash.bytes[0] = 0x01;
 
   if (!block_validate_genesis(&header, &error)) {
     if (error == BLOCK_ERR_PREV_BLOCK_UNKNOWN) {
-      tests_passed++;
-      printf("  [PASS] Genesis with non-zero prev_hash rejected\n");
+      test_case("Genesis with non-zero prev_hash rejected");
+        test_pass();
     } else {
       printf("  [FAIL] Genesis with non-zero prev_hash rejected with wrong "
              "error: %s\n",
              block_validation_error_str(error));
     }
   } else {
-    printf("  [FAIL] Genesis with non-zero prev_hash accepted\n");
+    test_case("Genesis with non-zero prev_hash accepted");
+        test_fail("Genesis with non-zero prev_hash accepted");
   }
 }
 
@@ -802,8 +741,6 @@ static void test_genesis_nonzero_prev(void) {
  */
 
 static void test_difficulty_retarget_height(void) {
-  tests_run++;
-
   /* Height 0 is not a retarget */
   if (difficulty_is_retarget_height(0) == ECHO_FALSE &&
       /* Height 2016 is first retarget */
@@ -814,40 +751,36 @@ static void test_difficulty_retarget_height(void) {
       difficulty_is_retarget_height(2017) == ECHO_FALSE &&
       /* Height 4032 is a retarget */
       difficulty_is_retarget_height(4032) == ECHO_TRUE) {
-    tests_passed++;
-    printf("  [PASS] Retarget height detection\n");
+    test_case("Retarget height detection");
+        test_pass();
   } else {
-    printf("  [FAIL] Retarget height detection\n");
+    test_case("Retarget height detection");
+        test_fail("Retarget height detection");
   }
 }
 
 static void test_difficulty_ctx_init(void) {
   difficulty_ctx_t ctx;
-
-  tests_run++;
-
   difficulty_ctx_init(&ctx);
 
   if (ctx.height == 0 && ctx.period_start_time == 0 &&
       ctx.period_end_time == 0 && ctx.prev_bits == DIFFICULTY_POWLIMIT_BITS) {
-    tests_passed++;
-    printf("  [PASS] Difficulty context initialization\n");
+    test_case("Difficulty context initialization");
+        test_pass();
   } else {
-    printf("  [FAIL] Difficulty context initialization\n");
+    test_case("Difficulty context initialization");
+        test_fail("Difficulty context initialization");
   }
 }
 
 static void test_difficulty_timespan_clamp_low(void) {
   uint32_t clamped;
-
-  tests_run++;
-
   /* Time span too low (less than 3.5 days = 302400 seconds) */
   clamped = difficulty_clamp_timespan(100000);
 
   if (clamped == DIFFICULTY_MIN_TIMESPAN) {
-    tests_passed++;
-    printf("  [PASS] Timespan clamp (too low)\n");
+    test_case("Timespan clamp (too low)");
+        test_pass();
   } else {
     printf("  [FAIL] Timespan clamp (too low): got %u, expected %u\n", clamped,
            DIFFICULTY_MIN_TIMESPAN);
@@ -856,15 +789,12 @@ static void test_difficulty_timespan_clamp_low(void) {
 
 static void test_difficulty_timespan_clamp_high(void) {
   uint32_t clamped;
-
-  tests_run++;
-
   /* Time span too high (more than 8 weeks = 4838400 seconds) */
   clamped = difficulty_clamp_timespan(10000000);
 
   if (clamped == DIFFICULTY_MAX_TIMESPAN) {
-    tests_passed++;
-    printf("  [PASS] Timespan clamp (too high)\n");
+    test_case("Timespan clamp (too high)");
+        test_pass();
   } else {
     printf("  [FAIL] Timespan clamp (too high): got %u, expected %u\n", clamped,
            DIFFICULTY_MAX_TIMESPAN);
@@ -873,15 +803,12 @@ static void test_difficulty_timespan_clamp_high(void) {
 
 static void test_difficulty_timespan_clamp_normal(void) {
   uint32_t clamped;
-
-  tests_run++;
-
   /* Normal time span (exactly 2 weeks) */
   clamped = difficulty_clamp_timespan(DIFFICULTY_TARGET_TIMESPAN);
 
   if (clamped == DIFFICULTY_TARGET_TIMESPAN) {
-    tests_passed++;
-    printf("  [PASS] Timespan clamp (normal)\n");
+    test_case("Timespan clamp (normal)");
+        test_pass();
   } else {
     printf("  [FAIL] Timespan clamp (normal): got %u, expected %u\n", clamped,
            DIFFICULTY_TARGET_TIMESPAN);
@@ -892,9 +819,6 @@ static void test_difficulty_no_change(void) {
   difficulty_ctx_t ctx;
   uint32_t bits;
   echo_result_t result;
-
-  tests_run++;
-
   /* At a retarget height with exactly target timespan = no change */
   difficulty_ctx_init(&ctx);
   ctx.height = 2016;
@@ -905,8 +829,8 @@ static void test_difficulty_no_change(void) {
   result = difficulty_compute_next(&ctx, &bits);
 
   if (result == ECHO_OK && bits == DIFFICULTY_POWLIMIT_BITS) {
-    tests_passed++;
-    printf("  [PASS] No difficulty change with exact target timespan\n");
+    test_case("No difficulty change with exact target timespan");
+        test_pass();
   } else {
     printf("  [FAIL] No difficulty change: result=%d, bits=0x%08x (expected "
            "0x%08x)\n",
@@ -918,9 +842,6 @@ static void test_difficulty_non_retarget(void) {
   difficulty_ctx_t ctx;
   uint32_t bits;
   echo_result_t result;
-
-  tests_run++;
-
   /* Not at a retarget height = use previous bits */
   difficulty_ctx_init(&ctx);
   ctx.height = 100;           /* Not a retarget height */
@@ -929,8 +850,8 @@ static void test_difficulty_non_retarget(void) {
   result = difficulty_compute_next(&ctx, &bits);
 
   if (result == ECHO_OK && bits == ctx.prev_bits) {
-    tests_passed++;
-    printf("  [PASS] Non-retarget uses previous bits\n");
+    test_case("Non-retarget uses previous bits");
+        test_pass();
   } else {
     printf("  [FAIL] Non-retarget: result=%d, bits=0x%08x (expected 0x%08x)\n",
            result, bits, ctx.prev_bits);
@@ -941,9 +862,6 @@ static void test_difficulty_increase(void) {
   difficulty_ctx_t ctx;
   uint32_t bits;
   echo_result_t result;
-
-  tests_run++;
-
   /*
    * Blocks mined faster than expected -> difficulty increases (target
    * decreases). If time = target_time / 2, new_target = old_target / 2.
@@ -994,10 +912,11 @@ static void test_difficulty_increase(void) {
     }
 
     if (target_decreased) {
-      tests_passed++;
-      printf("  [PASS] Difficulty increase (faster blocks)\n");
+      test_case("Difficulty increase (faster blocks)");
+        test_pass();
     } else {
-      printf("  [FAIL] Difficulty should have increased, bits=0x%08x\n", bits);
+      test_case("Difficulty should have increased, bits=0x%08x");
+        test_fail("Difficulty should have increased, bits=0x%08x");
     }
   } else {
     printf("  [FAIL] Difficulty increase: result=%d, bits=0x%08x\n", result,
@@ -1009,9 +928,6 @@ static void test_difficulty_decrease_clamped(void) {
   difficulty_ctx_t ctx;
   uint32_t bits;
   echo_result_t result;
-
-  tests_run++;
-
   /*
    * Blocks mined MUCH slower than expected.
    * Time = 10 * target_time, but clamped to 4x.
@@ -1028,10 +944,11 @@ static void test_difficulty_decrease_clamped(void) {
 
   if (result == ECHO_OK) {
     /* Verify target increased (but clamped to 4x max) */
-    tests_passed++;
-    printf("  [PASS] Difficulty decrease with clamping\n");
+    test_case("Difficulty decrease with clamping");
+        test_pass();
   } else {
-    printf("  [FAIL] Difficulty decrease: result=%d\n", result);
+    test_case("Difficulty decrease: result=");
+        test_fail("Difficulty decrease: result=");
   }
 }
 
@@ -1039,9 +956,6 @@ static void test_difficulty_powlimit_cap(void) {
   difficulty_ctx_t ctx;
   uint32_t bits;
   echo_result_t result;
-
-  tests_run++;
-
   /*
    * Even with very slow blocks, target cannot exceed powlimit.
    * Start at powlimit and try to decrease difficulty further.
@@ -1056,8 +970,8 @@ static void test_difficulty_powlimit_cap(void) {
 
   if (result == ECHO_OK && bits == DIFFICULTY_POWLIMIT_BITS) {
     /* Target was capped at powlimit */
-    tests_passed++;
-    printf("  [PASS] Difficulty capped at powlimit\n");
+    test_case("Difficulty capped at powlimit");
+        test_pass();
   } else {
     printf("  [FAIL] Powlimit cap: result=%d, bits=0x%08x (expected 0x%08x)\n",
            result, bits, DIFFICULTY_POWLIMIT_BITS);
@@ -1068,9 +982,6 @@ static void test_difficulty_validation(void) {
   block_header_t header;
   difficulty_ctx_t ctx;
   block_validation_error_t error = BLOCK_VALID;
-
-  tests_run++;
-
   /* Set up a non-retarget scenario */
   memset(&header, 0, sizeof(header));
   header.bits = 0x1b0404cb;
@@ -1080,8 +991,8 @@ static void test_difficulty_validation(void) {
   ctx.prev_bits = 0x1b0404cb; /* Same as header */
 
   if (block_validate_difficulty(&header, &ctx, &error)) {
-    tests_passed++;
-    printf("  [PASS] Difficulty validation (matching bits)\n");
+    test_case("Difficulty validation (matching bits)");
+        test_pass();
   } else {
     printf("  [FAIL] Difficulty validation: error=%s\n",
            block_validation_error_str(error));
@@ -1092,9 +1003,6 @@ static void test_difficulty_validation_mismatch(void) {
   block_header_t header;
   difficulty_ctx_t ctx;
   block_validation_error_t error = BLOCK_VALID;
-
-  tests_run++;
-
   /* Set up a mismatch */
   memset(&header, 0, sizeof(header));
   header.bits = 0x1b0404cb;
@@ -1105,14 +1013,15 @@ static void test_difficulty_validation_mismatch(void) {
 
   if (!block_validate_difficulty(&header, &ctx, &error)) {
     if (error == BLOCK_ERR_DIFFICULTY_MISMATCH) {
-      tests_passed++;
-      printf("  [PASS] Difficulty validation rejects mismatch\n");
+      test_case("Difficulty validation rejects mismatch");
+        test_pass();
     } else {
       printf("  [FAIL] Wrong error for mismatch: %s\n",
              block_validation_error_str(error));
     }
   } else {
-    printf("  [FAIL] Difficulty validation accepted mismatch\n");
+    test_case("Difficulty validation accepted mismatch");
+        test_fail("Difficulty validation accepted mismatch");
   }
 }
 
@@ -1136,9 +1045,6 @@ static void test_difficulty_first_adjustment(void) {
   difficulty_ctx_t ctx;
   uint32_t bits;
   echo_result_t result;
-
-  tests_run++;
-
   difficulty_ctx_init(&ctx);
   ctx.height = 2016;
   ctx.period_start_time = 1231006505; /* Genesis timestamp */
@@ -1162,15 +1068,16 @@ static void test_difficulty_first_adjustment(void) {
   if (result == ECHO_OK) {
     /* The result should be capped at powlimit */
     if (bits == DIFFICULTY_POWLIMIT_BITS) {
-      tests_passed++;
-      printf("  [PASS] First difficulty adjustment (capped at powlimit)\n");
+      test_case("First difficulty adjustment (capped at powlimit)");
+        test_pass();
     } else {
       /* Still pass if it's a valid lower difficulty */
-      tests_passed++;
-      printf("  [PASS] First difficulty adjustment: bits=0x%08x\n", bits);
+      test_case("First difficulty adjustment (valid lower difficulty)");
+        test_pass();
     }
   } else {
-    printf("  [FAIL] First difficulty adjustment: result=%d\n", result);
+    test_case("First difficulty adjustment: result=");
+        test_fail("First difficulty adjustment: result=");
   }
 }
 
@@ -1182,9 +1089,6 @@ static void test_difficulty_first_adjustment(void) {
 
 static void test_error_strings(void) {
   int success = 1;
-
-  tests_run++;
-
   if (strcmp(block_validation_error_str(BLOCK_VALID), "valid") != 0) {
     printf("    BLOCK_VALID string incorrect\n");
     success = 0;
@@ -1201,10 +1105,11 @@ static void test_error_strings(void) {
   }
 
   if (success) {
-    tests_passed++;
-    printf("  [PASS] Error strings correct\n");
+    test_case("Error strings correct");
+        test_pass();
   } else {
-    printf("  [FAIL] Error strings incorrect\n");
+    test_case("Error strings incorrect");
+        test_fail("Error strings incorrect");
   }
 }
 
@@ -1347,52 +1252,46 @@ static void free_regular_tx(tx_t *tx) {
 
 static void test_full_ctx_init(void) {
   full_block_ctx_t ctx;
-
-  tests_run++;
-
   full_block_ctx_init(&ctx);
 
   if (ctx.height == 0 && ctx.total_fees == 0 &&
       ctx.segwit_active == ECHO_FALSE) {
-    tests_passed++;
-    printf("  [PASS] Full block context initialization\n");
+    test_case("Full block context initialization");
+        test_pass();
   } else {
-    printf("  [FAIL] Full block context initialization\n");
+    test_case("Full block context initialization");
+        test_fail("Full block context initialization");
   }
 }
 
 static void test_result_init(void) {
   block_validation_result_t result;
-
-  tests_run++;
-
   block_validation_result_init(&result);
 
   if (result.valid == ECHO_FALSE && result.error == BLOCK_VALID &&
       result.failing_tx_index == 0 && result.error_msg == NULL) {
-    tests_passed++;
-    printf("  [PASS] Validation result initialization\n");
+    test_case("Validation result initialization");
+        test_pass();
   } else {
-    printf("  [FAIL] Validation result initialization\n");
+    test_case("Validation result initialization");
+        test_fail("Validation result initialization");
   }
 }
 
 static void test_tx_structure_empty_block(void) {
   block_t block;
   block_validation_error_t error = BLOCK_VALID;
-
-  tests_run++;
-
   memset(&block, 0, sizeof(block));
   block.tx_count = 0;
   block.txs = NULL;
 
   if (!block_validate_tx_structure(&block, &error) &&
       error == BLOCK_ERR_NO_TRANSACTIONS) {
-    tests_passed++;
-    printf("  [PASS] Empty block rejected\n");
+    test_case("Empty block rejected");
+        test_pass();
   } else {
-    printf("  [FAIL] Empty block should be rejected\n");
+    test_case("Empty block should be rejected");
+        test_fail("Empty block should be rejected");
   }
 }
 
@@ -1401,9 +1300,6 @@ static void test_tx_structure_no_coinbase(void) {
   tx_t tx;
   hash256_t prev_txid;
   block_validation_error_t error = BLOCK_VALID;
-
-  tests_run++;
-
   memset(&prev_txid, 0x11, 32);
   create_regular_tx(&tx, &prev_txid);
 
@@ -1413,10 +1309,11 @@ static void test_tx_structure_no_coinbase(void) {
 
   if (!block_validate_tx_structure(&block, &error) &&
       error == BLOCK_ERR_NO_COINBASE) {
-    tests_passed++;
-    printf("  [PASS] Block without coinbase rejected\n");
+    test_case("Block without coinbase rejected");
+        test_pass();
   } else {
-    printf("  [FAIL] Block without coinbase should be rejected\n");
+    test_case("Block without coinbase should be rejected");
+        test_fail("Block without coinbase should be rejected");
   }
 
   free_regular_tx(&tx);
@@ -1426,9 +1323,6 @@ static void test_tx_structure_valid_coinbase_only(void) {
   block_t block;
   tx_t coinbase;
   block_validation_error_t error = BLOCK_VALID;
-
-  tests_run++;
-
   create_coinbase_tx(&coinbase, 100, 5000000000LL);
 
   memset(&block, 0, sizeof(block));
@@ -1436,8 +1330,8 @@ static void test_tx_structure_valid_coinbase_only(void) {
   block.txs = &coinbase;
 
   if (block_validate_tx_structure(&block, &error)) {
-    tests_passed++;
-    printf("  [PASS] Block with only coinbase accepted\n");
+    test_case("Block with only coinbase accepted");
+        test_pass();
   } else {
     printf("  [FAIL] Block with only coinbase rejected: %s\n",
            block_validation_error_str(error));
@@ -1450,9 +1344,6 @@ static void test_tx_structure_multi_coinbase(void) {
   block_t block;
   tx_t txs[2];
   block_validation_error_t error = BLOCK_VALID;
-
-  tests_run++;
-
   create_coinbase_tx(&txs[0], 100, 5000000000LL);
   create_coinbase_tx(&txs[1], 100, 5000000000LL);
 
@@ -1462,10 +1353,11 @@ static void test_tx_structure_multi_coinbase(void) {
 
   if (!block_validate_tx_structure(&block, &error) &&
       error == BLOCK_ERR_MULTI_COINBASE) {
-    tests_passed++;
-    printf("  [PASS] Block with multiple coinbases rejected\n");
+    test_case("Block with multiple coinbases rejected");
+        test_pass();
   } else {
-    printf("  [FAIL] Block with multiple coinbases should be rejected\n");
+    test_case("Block with multiple coinbases should be rejected");
+        test_fail("Block with multiple coinbases should be rejected");
   }
 
   free_coinbase_tx(&txs[0]);
@@ -1477,9 +1369,6 @@ static void test_tx_structure_valid_with_regular_tx(void) {
   tx_t txs[2];
   hash256_t prev_txid;
   block_validation_error_t error = BLOCK_VALID;
-
-  tests_run++;
-
   create_coinbase_tx(&txs[0], 100, 5000000000LL);
   memset(&prev_txid, 0x22, 32);
   create_regular_tx(&txs[1], &prev_txid);
@@ -1489,8 +1378,8 @@ static void test_tx_structure_valid_with_regular_tx(void) {
   block.txs = txs;
 
   if (block_validate_tx_structure(&block, &error)) {
-    tests_passed++;
-    printf("  [PASS] Block with coinbase + regular tx accepted\n");
+    test_case("Block with coinbase + regular tx accepted");
+        test_pass();
   } else {
     printf("  [FAIL] Block with coinbase + regular tx rejected: %s\n",
            block_validation_error_str(error));
@@ -1505,9 +1394,6 @@ static void test_merkle_root_valid(void) {
   tx_t coinbase;
   hash256_t merkle_root;
   block_validation_error_t error = BLOCK_VALID;
-
-  tests_run++;
-
   create_coinbase_tx(&coinbase, 100, 5000000000LL);
 
   /* Compute the correct merkle root */
@@ -1519,8 +1405,8 @@ static void test_merkle_root_valid(void) {
   memcpy(block.header.merkle_root.bytes, merkle_root.bytes, 32);
 
   if (block_validate_merkle_root(&block, &error)) {
-    tests_passed++;
-    printf("  [PASS] Valid merkle root accepted\n");
+    test_case("Valid merkle root accepted");
+        test_pass();
   } else {
     printf("  [FAIL] Valid merkle root rejected: %s\n",
            block_validation_error_str(error));
@@ -1533,9 +1419,6 @@ static void test_merkle_root_invalid(void) {
   block_t block;
   tx_t coinbase;
   block_validation_error_t error = BLOCK_VALID;
-
-  tests_run++;
-
   create_coinbase_tx(&coinbase, 100, 5000000000LL);
 
   memset(&block, 0, sizeof(block));
@@ -1546,10 +1429,11 @@ static void test_merkle_root_invalid(void) {
 
   if (!block_validate_merkle_root(&block, &error) &&
       error == BLOCK_ERR_MERKLE_MISMATCH) {
-    tests_passed++;
-    printf("  [PASS] Invalid merkle root rejected\n");
+    test_case("Invalid merkle root rejected");
+        test_pass();
   } else {
-    printf("  [FAIL] Invalid merkle root should be rejected\n");
+    test_case("Invalid merkle root should be rejected");
+        test_fail("Invalid merkle root should be rejected");
   }
 
   free_coinbase_tx(&coinbase);
@@ -1560,9 +1444,6 @@ static void test_duplicate_txids_none(void) {
   tx_t txs[2];
   hash256_t prev_txid1, prev_txid2;
   size_t dup_idx;
-
-  tests_run++;
-
   create_coinbase_tx(&txs[0], 100, 5000000000LL);
   memset(&prev_txid1, 0x11, 32);
   create_regular_tx(&txs[1], &prev_txid1);
@@ -1572,10 +1453,11 @@ static void test_duplicate_txids_none(void) {
   block.txs = txs;
 
   if (!block_has_duplicate_txids(&block, &dup_idx)) {
-    tests_passed++;
-    printf("  [PASS] No duplicates detected in unique txids\n");
+    test_case("No duplicates detected in unique txids");
+        test_pass();
   } else {
-    printf("  [FAIL] False positive for duplicate txids\n");
+    test_case("False positive for duplicate txids");
+        test_fail("False positive for duplicate txids");
   }
 
   free_coinbase_tx(&txs[0]);
@@ -1588,9 +1470,6 @@ static void test_block_size_valid(void) {
   block_t block;
   tx_t coinbase;
   block_validation_error_t error = BLOCK_VALID;
-
-  tests_run++;
-
   create_coinbase_tx(&coinbase, 100, 5000000000LL);
 
   memset(&block, 0, sizeof(block));
@@ -1598,8 +1477,8 @@ static void test_block_size_valid(void) {
   block.txs = &coinbase;
 
   if (block_validate_size(&block, &error)) {
-    tests_passed++;
-    printf("  [PASS] Normal block size accepted\n");
+    test_case("Normal block size accepted");
+        test_pass();
   } else {
     printf("  [FAIL] Normal block size rejected: %s\n",
            block_validation_error_str(error));
@@ -1618,9 +1497,8 @@ static void test_block_validate_basic_valid(void) {
    * The individual component tests (tx_structure, merkle_root, size)
    * provide coverage for the non-PoW validation logic.
    */
-  tests_run++;
-  tests_passed++;
-  printf("  [PASS] Basic validation components tested individually above\n");
+  test_case("Basic validation components tested individually above");
+        test_pass();
 }
 
 static void test_full_block_validate_valid(void) {
@@ -1635,18 +1513,14 @@ static void test_full_block_validate_valid(void) {
    *
    * Integration testing with real blocks would require mainnet block data.
    */
-  tests_run++;
-  tests_passed++;
-  printf("  [PASS] Full validation components tested individually\n");
+  test_case("Full validation components tested individually");
+        test_pass();
 }
 
 static void test_full_block_validate_bad_coinbase_subsidy(void) {
   tx_t coinbase;
   block_validation_error_t error = BLOCK_VALID;
   satoshi_t max_subsidy;
-
-  tests_run++;
-
   /*
    * Test coinbase_validate directly since block_validate
    * requires valid PoW before reaching coinbase checks.
@@ -1660,8 +1534,8 @@ static void test_full_block_validate_bad_coinbase_subsidy(void) {
 
   if (!coinbase_validate(&coinbase, 0, max_subsidy, &error) &&
       error == BLOCK_ERR_COINBASE_SUBSIDY) {
-    tests_passed++;
-    printf("  [PASS] Excessive coinbase subsidy rejected\n");
+    test_case("Excessive coinbase subsidy rejected");
+        test_pass();
   } else {
     printf("  [FAIL] Excessive coinbase should be rejected, got: %s\n",
            block_validation_error_str(error));
@@ -1679,9 +1553,8 @@ static void test_full_block_validate_merkle_mismatch(void) {
    * Full block_validate would fail on PoW before reaching merkle check,
    * so we rely on the component test for coverage.
    */
-  tests_run++;
-  tests_passed++;
-  printf("  [PASS] Merkle mismatch tested in merkle_root_invalid above\n");
+  test_case("Merkle mismatch tested in merkle_root_invalid above");
+        test_pass();
 }
 
 /*
@@ -1691,67 +1564,51 @@ static void test_full_block_validate_merkle_mismatch(void) {
  */
 
 int main(void) {
-  printf("Bitcoin Echo — Block Validation Tests\n");
-  printf("=============================================\n\n");
+  test_suite_begin("Block Validation Tests");
 
-  /* MTP Tests */
-  printf("Median Time Past (MTP) tests:\n");
+  test_section("Median Time Past (MTP)");
   test_mtp_empty();
   test_mtp_single();
   test_mtp_odd_count();
   test_mtp_full_window();
   test_mtp_even_count();
-  printf("\n");
 
-  /* PoW Tests */
-  printf("Proof-of-Work tests:\n");
+  test_section("Proof-of-Work");
   test_pow_genesis();
   test_pow_invalid_nonce();
   test_pow_real_block_170();
-  printf("\n");
 
-  /* Timestamp Tests */
-  printf("Timestamp validation tests:\n");
+  test_section("Timestamp validation");
   test_timestamp_valid();
   test_timestamp_at_mtp();
   test_timestamp_before_mtp();
   test_timestamp_future();
   test_timestamp_at_future_limit();
   test_timestamp_genesis();
-  printf("\n");
 
-  /* Previous Block Tests */
-  printf("Previous block validation tests:\n");
+  test_section("Previous block validation");
   test_prev_block_genesis();
   test_prev_block_valid();
   test_prev_block_mismatch();
   test_prev_block_invalid_parent();
-  printf("\n");
 
-  /* Version Bits Tests */
-  printf("Version bits tests:\n");
+  test_section("Version bits");
   test_version_bip9_detection();
   test_version_non_bip9();
   test_version_bit_extraction();
   test_version_bit_non_bip9();
-  printf("\n");
 
-  /* Full Header Validation Tests */
-  printf("Full header validation tests:\n");
+  test_section("Full header validation");
   test_header_full_valid();
-  printf("\n");
 
-  /* Genesis Block Tests */
-  printf("Genesis block validation tests:\n");
+  test_section("Genesis block validation");
   test_genesis_valid();
   test_genesis_wrong_nonce();
   test_genesis_wrong_timestamp();
   test_genesis_wrong_bits();
   test_genesis_nonzero_prev();
-  printf("\n");
 
-  /* Difficulty Adjustment Tests */
-  printf("Difficulty adjustment tests:\n");
+  test_section("Difficulty adjustment");
   test_difficulty_retarget_height();
   test_difficulty_ctx_init();
   test_difficulty_timespan_clamp_low();
@@ -1765,15 +1622,11 @@ int main(void) {
   test_difficulty_validation();
   test_difficulty_validation_mismatch();
   test_difficulty_first_adjustment();
-  printf("\n");
 
-  /* Error String Tests */
-  printf("Error string tests:\n");
+  test_section("Error strings");
   test_error_strings();
-  printf("\n");
 
-  /* Full Block Validation Tests (Session 5.4) */
-  printf("Full block validation tests (Session 5.4):\n");
+  test_section("Full block validation (Session 5.4)");
   test_full_ctx_init();
   test_result_init();
   test_tx_structure_empty_block();
@@ -1789,11 +1642,7 @@ int main(void) {
   test_full_block_validate_valid();
   test_full_block_validate_bad_coinbase_subsidy();
   test_full_block_validate_merkle_mismatch();
-  printf("\n");
 
-  /* Summary */
-  printf("=============================================\n");
-  printf("Tests: %d/%d passed\n", tests_passed, tests_run);
-
-  return (tests_passed == tests_run) ? 0 : 1;
+  test_suite_end();
+  return test_global_summary();
 }

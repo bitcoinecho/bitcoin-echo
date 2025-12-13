@@ -7,12 +7,11 @@
  * Build once. Build right. Stop.
  */
 
+#include "serialize.h"
+#include "test_utils.h"
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#include "serialize.h"
-
-static int tests_run = 0;
-static int tests_passed = 0;
 
 /*
  * Compare two byte arrays.
@@ -47,14 +46,13 @@ static void test_varint_size(const char *name, uint64_t value,
 {
     size_t result;
 
-    tests_run++;
     result = varint_size(value);
 
+    test_case(name);
     if (result == expected_size) {
-        tests_passed++;
-        printf("  [PASS] %s\n", name);
+        test_pass();
     } else {
-        printf("  [FAIL] %s\n", name);
+        test_fail(name);
         printf("    Value: %llu\n", (unsigned long long)value);
         printf("    Expected size: %zu\n", expected_size);
         printf("    Got size: %zu\n", result);
@@ -71,25 +69,23 @@ static void test_varint_write(const char *name, uint64_t value,
     size_t written;
     echo_result_t result;
 
-    tests_run++;
-
     memset(buf, 0xAA, sizeof(buf));  /* Fill with sentinel */
     result = varint_write(buf, sizeof(buf), value, &written);
 
+    test_case(name);
     if (result == ECHO_OK && written == expected_len &&
         bytes_equal(buf, expected, expected_len)) {
-        tests_passed++;
-        printf("  [PASS] %s\n", name);
+        test_pass();
     } else {
-        printf("  [FAIL] %s\n", name);
+        test_fail(name);
         printf("    Value: %llu\n", (unsigned long long)value);
         printf("    Result: %d\n", result);
         printf("    Expected (%zu bytes): ", expected_len);
         print_hex(expected, expected_len);
-        printf("\n");
+        
         printf("    Got (%zu bytes): ", written);
         print_hex(buf, written);
-        printf("\n");
+        
     }
 }
 
@@ -104,19 +100,17 @@ static void test_varint_read(const char *name, const uint8_t *input,
     size_t consumed;
     echo_result_t result;
 
-    tests_run++;
-
     result = varint_read(input, input_len, &value, &consumed);
 
+    test_case(name);
     if (result == ECHO_OK && value == expected_value &&
         consumed == expected_consumed) {
-        tests_passed++;
-        printf("  [PASS] %s\n", name);
+        test_pass();
     } else {
-        printf("  [FAIL] %s\n", name);
+        test_fail(name);
         printf("    Input: ");
         print_hex(input, input_len);
-        printf("\n");
+        
         printf("    Result: %d\n", result);
         printf("    Expected: value=%llu, consumed=%zu\n",
                (unsigned long long)expected_value, expected_consumed);
@@ -135,25 +129,24 @@ static void test_varint_roundtrip(const char *name, uint64_t value)
     uint64_t decoded;
     echo_result_t result;
 
-    tests_run++;
+    test_case(name);
 
     result = varint_write(buf, sizeof(buf), value, &written);
     if (result != ECHO_OK) {
-        printf("  [FAIL] %s (write failed: %d)\n", name, result);
+        test_fail("write failed");
         return;
     }
 
     result = varint_read(buf, written, &decoded, &consumed);
     if (result != ECHO_OK) {
-        printf("  [FAIL] %s (read failed: %d)\n", name, result);
+        test_fail("read failed");
         return;
     }
 
     if (decoded == value && consumed == written) {
-        tests_passed++;
-        printf("  [PASS] %s\n", name);
+        test_pass();
     } else {
-        printf("  [FAIL] %s\n", name);
+        test_fail(name);
         printf("    Original: %llu\n", (unsigned long long)value);
         printf("    Decoded: %llu\n", (unsigned long long)decoded);
         printf("    Written: %zu, Consumed: %zu\n", written, consumed);
@@ -170,15 +163,13 @@ static void test_varint_error(const char *name, const uint8_t *input,
     size_t consumed;
     echo_result_t result;
 
-    tests_run++;
-
     result = varint_read(input, input_len, &value, &consumed);
 
+    test_case(name);
     if (result == expected_result) {
-        tests_passed++;
-        printf("  [PASS] %s\n", name);
+        test_pass();
     } else {
-        printf("  [FAIL] %s\n", name);
+        test_fail(name);
         printf("    Expected result: %d\n", expected_result);
         printf("    Got result: %d\n", result);
     }
@@ -195,19 +186,17 @@ static void test_varint_nonstrict(const char *name, const uint8_t *input,
     size_t consumed;
     echo_result_t result;
 
-    tests_run++;
-
     result = varint_read_nonstrict(input, input_len, &value, &consumed);
 
+    test_case(name);
     if (result == ECHO_OK && value == expected_value &&
         consumed == expected_consumed) {
-        tests_passed++;
-        printf("  [PASS] %s\n", name);
+        test_pass();
     } else {
-        printf("  [FAIL] %s\n", name);
+        test_fail(name);
         printf("    Input: ");
         print_hex(input, input_len);
-        printf("\n");
+        
         printf("    Result: %d\n", result);
         printf("    Expected: value=%llu, consumed=%zu\n",
                (unsigned long long)expected_value, expected_consumed);
@@ -218,11 +207,10 @@ static void test_varint_nonstrict(const char *name, const uint8_t *input,
 
 int main(void)
 {
-    printf("Bitcoin Echo — Serialization Tests\n");
-    printf("===================================\n\n");
+    test_suite_begin("Serialization Tests");
 
     /* Test varint_size */
-    printf("varint_size tests:\n");
+    test_section("varint_size tests");
     test_varint_size("size of 0", 0, 1);
     test_varint_size("size of 1", 1, 1);
     test_varint_size("size of 252 (max 1-byte)", 252, 1);
@@ -232,10 +220,10 @@ int main(void)
     test_varint_size("size of 4294967295 (max 5-byte)", 4294967295ULL, 5);
     test_varint_size("size of 4294967296 (min 9-byte)", 4294967296ULL, 9);
     test_varint_size("size of UINT64_MAX", UINT64_MAX, 9);
-    printf("\n");
+    
 
     /* Test varint_write - single byte values */
-    printf("varint_write tests (1-byte):\n");
+    test_section("varint_write tests");
     {
         uint8_t exp0[] = {0x00};
         uint8_t exp1[] = {0x01};
@@ -244,10 +232,10 @@ int main(void)
         test_varint_write("encode 1", 1, exp1, 1);
         test_varint_write("encode 252", 252, exp252, 1);
     }
-    printf("\n");
+    
 
     /* Test varint_write - 3-byte values */
-    printf("varint_write tests (3-byte):\n");
+    test_section("varint_write tests");
     {
         uint8_t exp253[] = {0xFD, 0xFD, 0x00};
         uint8_t exp254[] = {0xFD, 0xFE, 0x00};
@@ -260,30 +248,30 @@ int main(void)
         test_varint_write("encode 256", 256, exp256, 3);
         test_varint_write("encode 65535", 65535, exp65535, 3);
     }
-    printf("\n");
+    
 
     /* Test varint_write - 5-byte values */
-    printf("varint_write tests (5-byte):\n");
+    test_section("varint_write tests");
     {
         uint8_t exp65536[] = {0xFE, 0x00, 0x00, 0x01, 0x00};
         uint8_t exp_max32[] = {0xFE, 0xFF, 0xFF, 0xFF, 0xFF};
         test_varint_write("encode 65536", 65536, exp65536, 5);
         test_varint_write("encode 4294967295", 4294967295ULL, exp_max32, 5);
     }
-    printf("\n");
+    
 
     /* Test varint_write - 9-byte values */
-    printf("varint_write tests (9-byte):\n");
+    test_section("varint_write tests");
     {
         uint8_t exp_4G[] = {0xFF, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00};
         uint8_t exp_max[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
         test_varint_write("encode 4294967296", 4294967296ULL, exp_4G, 9);
         test_varint_write("encode UINT64_MAX", UINT64_MAX, exp_max, 9);
     }
-    printf("\n");
+    
 
     /* Test varint_read - single byte values */
-    printf("varint_read tests (1-byte):\n");
+    test_section("varint_read tests");
     {
         uint8_t in0[] = {0x00};
         uint8_t in1[] = {0x01};
@@ -292,40 +280,40 @@ int main(void)
         test_varint_read("decode 1", in1, 1, 1, 1);
         test_varint_read("decode 252", in252, 1, 252, 1);
     }
-    printf("\n");
+    
 
     /* Test varint_read - 3-byte values */
-    printf("varint_read tests (3-byte):\n");
+    test_section("varint_read tests");
     {
         uint8_t in253[] = {0xFD, 0xFD, 0x00};
         uint8_t in65535[] = {0xFD, 0xFF, 0xFF};
         test_varint_read("decode 253", in253, 3, 253, 3);
         test_varint_read("decode 65535", in65535, 3, 65535, 3);
     }
-    printf("\n");
+    
 
     /* Test varint_read - 5-byte values */
-    printf("varint_read tests (5-byte):\n");
+    test_section("varint_read tests");
     {
         uint8_t in65536[] = {0xFE, 0x00, 0x00, 0x01, 0x00};
         uint8_t in_max32[] = {0xFE, 0xFF, 0xFF, 0xFF, 0xFF};
         test_varint_read("decode 65536", in65536, 5, 65536, 5);
         test_varint_read("decode 4294967295", in_max32, 5, 4294967295ULL, 5);
     }
-    printf("\n");
+    
 
     /* Test varint_read - 9-byte values */
-    printf("varint_read tests (9-byte):\n");
+    test_section("varint_read tests");
     {
         uint8_t in_4G[] = {0xFF, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00};
         uint8_t in_max[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
         test_varint_read("decode 4294967296", in_4G, 9, 4294967296ULL, 9);
         test_varint_read("decode UINT64_MAX", in_max, 9, UINT64_MAX, 9);
     }
-    printf("\n");
+    
 
     /* Test round-trip encoding/decoding */
-    printf("Round-trip tests:\n");
+    test_section("Round-trip tests");
     test_varint_roundtrip("roundtrip 0", 0);
     test_varint_roundtrip("roundtrip 127", 127);
     test_varint_roundtrip("roundtrip 252", 252);
@@ -337,10 +325,10 @@ int main(void)
     test_varint_roundtrip("roundtrip 4294967295", 4294967295ULL);
     test_varint_roundtrip("roundtrip 4294967296", 4294967296ULL);
     test_varint_roundtrip("roundtrip UINT64_MAX", UINT64_MAX);
-    printf("\n");
+    
 
     /* Test error conditions */
-    printf("Error handling tests:\n");
+    test_section("Error handling tests");
     {
         /* Truncated input */
         uint8_t trunc_3[] = {0xFD};  /* Missing 2 bytes */
@@ -360,21 +348,17 @@ int main(void)
         test_varint_error("non-canonical 65535 as 5-byte", noncanon_32_small, 5, ECHO_ERR_INVALID_FORMAT);
         test_varint_error("non-canonical 4294967295 as 9-byte", noncanon_64_small, 9, ECHO_ERR_INVALID_FORMAT);
     }
-    printf("\n");
+    
 
     /* Test non-strict mode accepts non-canonical encoding */
-    printf("Non-strict mode tests:\n");
+    test_section("Non-strict mode tests");
     {
         uint8_t noncanon_0[] = {0xFD, 0x00, 0x00};  /* 0 encoded as 3-byte */
         uint8_t noncanon_252[] = {0xFD, 0xFC, 0x00};  /* 252 encoded as 3-byte */
         test_varint_nonstrict("non-strict 0 as 3-byte", noncanon_0, 3, 0, 3);
         test_varint_nonstrict("non-strict 252 as 3-byte", noncanon_252, 3, 252, 3);
     }
-    printf("\n");
 
-    /* Summary */
-    printf("===================================\n");
-    printf("Tests: %d/%d passed\n", tests_passed, tests_run);
-
-    return (tests_passed == tests_run) ? 0 : 1;
+    test_suite_end();
+    return test_global_summary();
 }

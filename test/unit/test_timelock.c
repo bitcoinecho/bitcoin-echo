@@ -11,10 +11,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include "script.h"
+#include "test_utils.h"
 #include "tx.h"
 
-static int tests_run = 0;
-static int tests_passed = 0;
 
 /*
  * Create a minimal transaction for testing.
@@ -42,12 +41,12 @@ static void test_cltv(const char *name, uint32_t flags,
                       const uint8_t *script, size_t script_len,
                       echo_bool_t should_succeed, script_error_t expected_error)
 {
-    tests_run++;
     script_context_t ctx;
 
     echo_result_t res = script_context_init(&ctx, flags);
     if (res != ECHO_OK) {
-        printf("  [FAIL] %s (context init failed)\n", name);
+        test_case(name);
+        test_fail(name);
         return;
     }
 
@@ -69,7 +68,8 @@ static void test_cltv(const char *name, uint32_t flags,
         }
     } else {
         if (res == ECHO_OK) {
-            printf("  [FAIL] %s (expected failure, got success)\n", name);
+            test_case(name);
+        test_fail(name);
             script_context_free(&ctx);
             tx_free(&tx);
             return;
@@ -84,8 +84,8 @@ static void test_cltv(const char *name, uint32_t flags,
         }
     }
 
-    tests_passed++;
-    printf("  [PASS] %s\n", name);
+    test_case(name);
+    test_pass();
     script_context_free(&ctx);
     tx_free(&tx);
 }
@@ -98,12 +98,12 @@ static void test_csv(const char *name, uint32_t flags,
                      const uint8_t *script, size_t script_len,
                      echo_bool_t should_succeed, script_error_t expected_error)
 {
-    tests_run++;
     script_context_t ctx;
 
     echo_result_t res = script_context_init(&ctx, flags);
     if (res != ECHO_OK) {
-        printf("  [FAIL] %s (context init failed)\n", name);
+        test_case(name);
+        test_fail(name);
         return;
     }
 
@@ -125,7 +125,8 @@ static void test_csv(const char *name, uint32_t flags,
         }
     } else {
         if (res == ECHO_OK) {
-            printf("  [FAIL] %s (expected failure, got success)\n", name);
+            test_case(name);
+        test_fail(name);
             script_context_free(&ctx);
             tx_free(&tx);
             return;
@@ -140,16 +141,15 @@ static void test_csv(const char *name, uint32_t flags,
         }
     }
 
-    tests_passed++;
-    printf("  [PASS] %s\n", name);
+    test_case(name);
+    test_pass();
     script_context_free(&ctx);
     tx_free(&tx);
 }
 
 int main(void)
 {
-    printf("Bitcoin Echo — Timelock Opcode Tests\n");
-    printf("=====================================\n\n");
+    test_suite_begin("Timelock Opcode Tests");
 
     uint32_t cltv_flags = SCRIPT_VERIFY_CHECKLOCKTIMEVERIFY;
     uint32_t csv_flags = SCRIPT_VERIFY_CHECKSEQUENCEVERIFY;
@@ -159,7 +159,7 @@ int main(void)
      * OP_CHECKLOCKTIMEVERIFY (BIP-65) TESTS
      * ==========================================
      */
-    printf("OP_CHECKLOCKTIMEVERIFY (BIP-65) tests:\n");
+    test_section("OP_CHECKLOCKTIMEVERIFY (BIP-65) tests");
     {
         /*
          * Script: <locktime> OP_CHECKLOCKTIMEVERIFY OP_DROP OP_1
@@ -324,14 +324,13 @@ int main(void)
                       SCRIPT_ERR_INVALID_STACK_OPERATION);
         }
     }
-    printf("\n");
 
     /*
      * ==========================================
      * OP_CHECKSEQUENCEVERIFY (BIP-112) TESTS
      * ==========================================
      */
-    printf("OP_CHECKSEQUENCEVERIFY (BIP-112) tests:\n");
+    test_section("OP_CHECKSEQUENCEVERIFY (BIP-112) tests");
     {
         /*
          * Test 1: Basic CSV success (block-based)
@@ -522,20 +521,18 @@ int main(void)
                      script, sizeof(script), ECHO_TRUE, SCRIPT_ERR_OK);
         }
     }
-    printf("\n");
 
     /*
      * ==========================================
      * COMBINED CLTV + CSV TESTS
      * ==========================================
      */
-    printf("Combined CLTV + CSV tests:\n");
+    test_section("Combined CLTV + CSV tests");
     {
         /*
          * Script using both CLTV and CSV
          */
         {
-            tests_run++;
             script_context_t ctx;
             uint32_t flags = SCRIPT_VERIFY_CHECKLOCKTIMEVERIFY |
                             SCRIPT_VERIFY_CHECKSEQUENCEVERIFY;
@@ -568,23 +565,21 @@ int main(void)
                 printf("  [FAIL] Combined CLTV + CSV success (error: %s)\n",
                        script_error_string(ctx.error));
             } else {
-                tests_passed++;
-                printf("  [PASS] Combined CLTV + CSV success\n");
+                test_pass();
+                test_case("Combined CLTV + CSV success");
+        test_pass();
             }
 
             script_context_free(&ctx);
             tx_free(&tx);
         }
     }
-    printf("\n");
 
     /*
      * ==========================================
      * SUMMARY
      * ==========================================
      */
-    printf("=====================================\n");
-    printf("Tests: %d/%d passed\n", tests_passed, tests_run);
-
-    return (tests_passed == tests_run) ? 0 : 1;
+    test_suite_end();
+    return test_global_summary();
 }

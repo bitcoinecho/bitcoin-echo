@@ -11,10 +11,9 @@
 #include <string.h>
 #include <stdlib.h>
 #include "merkle.h"
+#include "test_utils.h"
 #include "sha256.h"
 
-static int tests_run = 0;
-static int tests_passed = 0;
 
 /*
  * Convert hex string to bytes.
@@ -68,7 +67,6 @@ static void test_empty_tree(void)
     int is_zero;
     size_t i;
 
-    tests_run++;
 
     result = merkle_root(NULL, 0, &root);
 
@@ -81,10 +79,11 @@ static void test_empty_tree(void)
     }
 
     if (result == ECHO_OK && is_zero) {
-        tests_passed++;
-        printf("  [PASS] Empty tree returns zeros\n");
+        test_pass();
+        test_case("Empty tree returns zeros");
+        test_pass();
     } else {
-        printf("  [FAIL] Empty tree returns zeros\n");
+        test_fail("Empty tree returns zeros");
         printf("    Result: %d, Is zero: %d\n", result, is_zero);
     }
 }
@@ -98,7 +97,6 @@ static void test_single_hash(void)
     hash256_t root;
     echo_result_t result;
 
-    tests_run++;
 
     /* Use a known hash */
     hex_to_bytes("0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
@@ -109,10 +107,11 @@ static void test_single_hash(void)
     if (result == ECHO_OK &&
         memcmp(root.bytes, hashes[0].bytes, 32) == 0)
     {
-        tests_passed++;
-        printf("  [PASS] Single hash returns itself\n");
+        test_pass();
+        test_case("Single hash returns itself");
+        test_pass();
     } else {
-        printf("  [FAIL] Single hash returns itself\n");
+        test_fail("Single hash returns itself");
     }
 }
 
@@ -129,7 +128,6 @@ static void test_two_hashes(void)
     uint8_t combined[64];
     echo_result_t result;
 
-    tests_run++;
 
     /* Two simple hashes */
     memset(hashes[0].bytes, 0x11, 32);
@@ -145,10 +143,11 @@ static void test_two_hashes(void)
     if (result == ECHO_OK &&
         memcmp(root.bytes, expected.bytes, 32) == 0)
     {
-        tests_passed++;
-        printf("  [PASS] Two hashes paired correctly\n");
+        test_pass();
+        test_case("Two hashes paired correctly");
+        test_pass();
     } else {
-        printf("  [FAIL] Two hashes paired correctly\n");
+        test_fail("Two hashes paired correctly");
     }
 }
 
@@ -167,7 +166,6 @@ static void test_odd_count(void)
     uint8_t combined[64];
     echo_result_t result;
 
-    tests_run++;
 
     memset(hashes[0].bytes, 0xAA, 32);
     memset(hashes[1].bytes, 0xBB, 32);
@@ -194,10 +192,11 @@ static void test_odd_count(void)
     if (result == ECHO_OK &&
         memcmp(root.bytes, expected.bytes, 32) == 0)
     {
-        tests_passed++;
-        printf("  [PASS] Odd count duplicates last\n");
+        test_pass();
+        test_case("Odd count duplicates last");
+        test_pass();
     } else {
-        printf("  [FAIL] Odd count duplicates last\n");
+        test_fail("Odd count duplicates last");
     }
 }
 
@@ -213,7 +212,6 @@ static void test_four_hashes(void)
     echo_result_t result;
     size_t i;
 
-    tests_run++;
 
     for (i = 0; i < 4; i++) {
         memset(hashes[i].bytes, (uint8_t)(i + 1), 32);
@@ -239,10 +237,11 @@ static void test_four_hashes(void)
     if (result == ECHO_OK &&
         memcmp(root.bytes, expected.bytes, 32) == 0)
     {
-        tests_passed++;
-        printf("  [PASS] Four hashes (perfect tree)\n");
+        test_pass();
+        test_case("Four hashes (perfect tree)");
+        test_pass();
     } else {
-        printf("  [FAIL] Four hashes (perfect tree)\n");
+        test_fail("Four hashes (perfect tree)");
     }
 }
 
@@ -261,7 +260,6 @@ static void test_genesis_merkle_root(void)
     hash256_t root;
     echo_result_t result;
 
-    tests_run++;
 
     /* Genesis block's single transaction txid (already in internal byte order) */
     hex_to_bytes("3ba3edfd7a7b12b27ac72c3e67768f617fc81bc3888a51323a9fb8aa4b1e5e4a",
@@ -272,10 +270,11 @@ static void test_genesis_merkle_root(void)
     if (result == ECHO_OK &&
         memcmp(root.bytes, txid.bytes, 32) == 0)
     {
-        tests_passed++;
-        printf("  [PASS] Genesis block Merkle root\n");
+        test_pass();
+        test_case("Genesis block Merkle root");
+        test_pass();
     } else {
-        printf("  [FAIL] Genesis block Merkle root\n");
+        test_fail("Genesis block Merkle root");
     }
 }
 
@@ -296,7 +295,6 @@ static void test_block_170_merkle_root(void)
     echo_result_t result;
     char root_hex[65];
 
-    tests_run++;
 
     /* txid 1 (coinbase) in internal byte order */
     hex_to_bytes("82501c1178fa0b222c1f3d474ec726b832013f0a532b44bb620cce8624a5feb1",
@@ -314,10 +312,11 @@ static void test_block_170_merkle_root(void)
     if (result == ECHO_OK &&
         hash_equals_hex(&root, "ff104ccb05421ab93e63f8c3ce5c2c2e9dbb37de2764b3a3175c8166562cac7d"))
     {
-        tests_passed++;
-        printf("  [PASS] Block 170 Merkle root\n");
+        test_pass();
+        test_case("Block 170 Merkle root");
+        test_pass();
     } else {
-        printf("  [FAIL] Block 170 Merkle root\n");
+        test_fail("Block 170 Merkle root");
         printf("    Got: %s\n", root_hex);
     }
 }
@@ -332,17 +331,17 @@ static void test_merkle_proof_single(void)
     size_t proof_len;
     echo_result_t result;
 
-    tests_run++;
 
     memset(hashes[0].bytes, 0x42, 32);
 
     result = merkle_proof(hashes, 1, 0, proof, &proof_len, 10);
 
     if (result == ECHO_OK && proof_len == 0) {
-        tests_passed++;
-        printf("  [PASS] Merkle proof single element (no proof needed)\n");
+        test_pass();
+        test_case("Merkle proof single element (no proof needed)");
+        test_pass();
     } else {
-        printf("  [FAIL] Merkle proof single element\n");
+        test_fail("Merkle proof single element");
         printf("    Result: %d, proof_len: %zu\n", result, proof_len);
     }
 }
@@ -359,7 +358,6 @@ static void test_merkle_proof_two(void)
     echo_result_t result;
     echo_bool_t verified;
 
-    tests_run++;
 
     memset(hashes[0].bytes, 0x11, 32);
     memset(hashes[1].bytes, 0x22, 32);
@@ -367,14 +365,14 @@ static void test_merkle_proof_two(void)
     /* Compute root */
     result = merkle_root(hashes, 2, &root);
     if (result != ECHO_OK) {
-        printf("  [FAIL] Merkle proof two elements (root computation failed)\n");
+        test_fail("Merkle proof two elements (root computation failed)");
         return;
     }
 
     /* Generate proof for element 0 */
     result = merkle_proof(hashes, 2, 0, proof, &proof_len, 10);
     if (result != ECHO_OK || proof_len != 1) {
-        printf("  [FAIL] Merkle proof two elements (proof generation failed)\n");
+        test_fail("Merkle proof two elements (proof generation failed)");
         return;
     }
 
@@ -382,10 +380,11 @@ static void test_merkle_proof_two(void)
     verified = merkle_verify(&hashes[0], 0, 2, proof, proof_len, &root);
 
     if (verified == ECHO_TRUE) {
-        tests_passed++;
-        printf("  [PASS] Merkle proof two elements\n");
+        test_pass();
+        test_case("Merkle proof two elements");
+        test_pass();
     } else {
-        printf("  [FAIL] Merkle proof two elements (verification failed)\n");
+        test_fail("Merkle proof two elements (verification failed)");
     }
 }
 
@@ -402,7 +401,6 @@ static void test_merkle_proof_large(void)
     echo_bool_t verified;
     size_t i;
 
-    tests_run++;
 
     /* Create 7 hashes */
     for (i = 0; i < 7; i++) {
@@ -412,7 +410,7 @@ static void test_merkle_proof_large(void)
     /* Compute root */
     result = merkle_root(hashes, 7, &root);
     if (result != ECHO_OK) {
-        printf("  [FAIL] Merkle proof large tree (root computation failed)\n");
+        test_fail("Merkle proof large tree (root computation failed)");
         return;
     }
 
@@ -431,8 +429,9 @@ static void test_merkle_proof_large(void)
         }
     }
 
-    tests_passed++;
-    printf("  [PASS] Merkle proof large tree (7 elements, all verified)\n");
+    test_pass();
+    test_case("Merkle proof large tree (7 elements, all verified)");
+        test_pass();
 }
 
 /*
@@ -449,7 +448,6 @@ static void test_merkle_proof_invalid(void)
     echo_bool_t verified;
     size_t i;
 
-    tests_run++;
 
     for (i = 0; i < 4; i++) {
         memset(hashes[i].bytes, (uint8_t)(i + 1), 32);
@@ -461,7 +459,7 @@ static void test_merkle_proof_invalid(void)
     /* Generate proof for element 2 */
     result = merkle_proof(hashes, 4, 2, proof, &proof_len, 10);
     if (result != ECHO_OK) {
-        printf("  [FAIL] Merkle proof invalid (proof gen failed)\n");
+        test_fail("Merkle proof invalid (proof gen failed)");
         return;
     }
 
@@ -470,10 +468,11 @@ static void test_merkle_proof_invalid(void)
     verified = merkle_verify(&fake_leaf, 2, 4, proof, proof_len, &root);
 
     if (verified == ECHO_FALSE) {
-        tests_passed++;
-        printf("  [PASS] Merkle proof rejects invalid leaf\n");
+        test_pass();
+        test_case("Merkle proof rejects invalid leaf");
+        test_pass();
     } else {
-        printf("  [FAIL] Merkle proof accepted invalid leaf\n");
+        test_fail("Merkle proof accepted invalid leaf");
     }
 }
 
@@ -489,7 +488,6 @@ static void test_witness_commitment(void)
     uint8_t combined[64];
     echo_result_t result;
 
-    tests_run++;
 
     memset(witness_root.bytes, 0x11, 32);
     memset(witness_nonce.bytes, 0x22, 32);
@@ -504,10 +502,11 @@ static void test_witness_commitment(void)
     if (result == ECHO_OK &&
         memcmp(commitment.bytes, expected.bytes, 32) == 0)
     {
-        tests_passed++;
-        printf("  [PASS] Witness commitment\n");
+        test_pass();
+        test_case("Witness commitment");
+        test_pass();
     } else {
-        printf("  [FAIL] Witness commitment\n");
+        test_fail("Witness commitment");
     }
 }
 
@@ -521,7 +520,6 @@ static void test_null_params(void)
     echo_result_t result;
     int all_passed = 1;
 
-    tests_run++;
 
     memset(hashes[0].bytes, 0, 32);
     memset(hashes[1].bytes, 0, 32);
@@ -548,10 +546,11 @@ static void test_null_params(void)
     }
 
     if (all_passed) {
-        tests_passed++;
-        printf("  [PASS] NULL parameter handling\n");
+        test_pass();
+        test_case("NULL parameter handling");
+        test_pass();
     } else {
-        printf("  [FAIL] NULL parameter handling\n");
+        test_fail("NULL parameter handling");
     }
 }
 
@@ -565,15 +564,15 @@ static void test_proof_out_of_range(void)
     size_t proof_len;
     echo_result_t result;
 
-    tests_run++;
 
     memset(hashes, 0, sizeof(hashes));
 
     result = merkle_proof(hashes, 3, 5, proof, &proof_len, 10);
 
     if (result == ECHO_ERR_OUT_OF_RANGE) {
-        tests_passed++;
-        printf("  [PASS] Proof index out of range rejected\n");
+        test_pass();
+        test_case("Proof index out of range rejected");
+        test_pass();
     } else {
         printf("  [FAIL] Proof index out of range not rejected (result: %d)\n", result);
     }
@@ -592,7 +591,6 @@ static void test_large_tree(void)
     echo_bool_t verified;
     size_t i;
 
-    tests_run++;
 
     /* Create 16 unique hashes */
     for (i = 0; i < 16; i++) {
@@ -602,14 +600,14 @@ static void test_large_tree(void)
     /* Compute root */
     result = merkle_root(hashes, 16, &root);
     if (result != ECHO_OK) {
-        printf("  [FAIL] Large tree (16 elements) - root failed\n");
+        test_fail("Large tree (16 elements) - root failed");
         return;
     }
 
     /* Verify proof for element 7 (middle-ish) */
     result = merkle_proof(hashes, 16, 7, proof, &proof_len, 10);
     if (result != ECHO_OK) {
-        printf("  [FAIL] Large tree - proof gen failed\n");
+        test_fail("Large tree - proof gen failed");
         return;
     }
 
@@ -622,56 +620,43 @@ static void test_large_tree(void)
     verified = merkle_verify(&hashes[7], 7, 16, proof, proof_len, &root);
 
     if (verified == ECHO_TRUE) {
-        tests_passed++;
-        printf("  [PASS] Large tree (16 elements)\n");
+        test_pass();
+        test_case("Large tree (16 elements)");
+        test_pass();
     } else {
-        printf("  [FAIL] Large tree - verification failed\n");
+        test_fail("Large tree - verification failed");
     }
 }
 
 int main(void)
 {
-    printf("Bitcoin Echo — Merkle Tree Tests\n");
-    printf("=================================\n\n");
+    test_suite_begin("Merkle Tree Tests");
 
-    printf("Basic Merkle tree tests:\n");
+    test_section("Basic Merkle tree tests");
     test_empty_tree();
     test_single_hash();
     test_two_hashes();
     test_odd_count();
     test_four_hashes();
 
-    printf("\n");
-
-    printf("Real Bitcoin block tests:\n");
+    test_section("Real Bitcoin block tests");
     test_genesis_merkle_root();
     test_block_170_merkle_root();
 
-    printf("\n");
-
-    printf("Merkle proof tests:\n");
+    test_section("Merkle proof tests");
     test_merkle_proof_single();
     test_merkle_proof_two();
     test_merkle_proof_large();
     test_merkle_proof_invalid();
     test_large_tree();
 
-    printf("\n");
-
-    printf("Witness commitment tests:\n");
+    test_section("Witness commitment tests");
     test_witness_commitment();
 
-    printf("\n");
-
-    printf("Error handling tests:\n");
+    test_section("Error handling tests");
     test_null_params();
     test_proof_out_of_range();
 
-    printf("\n");
-
-    /* Summary */
-    printf("=================================\n");
-    printf("Tests: %d/%d passed\n", tests_passed, tests_run);
-
-    return (tests_passed == tests_run) ? 0 : 1;
+    test_suite_end();
+    return test_global_summary();
 }

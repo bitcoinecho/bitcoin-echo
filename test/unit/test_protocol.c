@@ -7,25 +7,11 @@
 #include <stdio.h>
 #include <string.h>
 #include <assert.h>
+#include "test_utils.h"
 
-static int tests_run = 0;
-static int tests_passed = 0;
-
-#define TEST(name) \
-    static void name(void); \
-    static void run_##name(void) { \
-        tests_run++; \
-        name(); \
-        tests_passed++; \
-        printf("."); \
-        fflush(stdout); \
-    } \
-    static void name(void)
-
-#define RUN_TEST(name) run_##name()
 
 /* Test command parsing */
-TEST(test_msg_parse_command_valid) {
+static void test_msg_parse_command_valid(void) {
     /* Test all valid commands */
     assert(msg_parse_command("version") == MSG_VERSION);
     assert(msg_parse_command("verack") == MSG_VERACK);
@@ -48,21 +34,21 @@ TEST(test_msg_parse_command_valid) {
     assert(msg_parse_command("wtxidrelay") == MSG_WTXIDRELAY);
 }
 
-TEST(test_msg_parse_command_invalid) {
+static void test_msg_parse_command_invalid(void) {
     /* Test unknown commands */
     assert(msg_parse_command("unknown") == MSG_UNKNOWN);
     assert(msg_parse_command("xyz") == MSG_UNKNOWN);
     assert(msg_parse_command("") == MSG_UNKNOWN);
 }
 
-TEST(test_msg_parse_command_no_null) {
+static void test_msg_parse_command_no_null(void) {
     /* Command without null terminator should be rejected */
     char no_null[COMMAND_LEN];
     memset(no_null, 'x', COMMAND_LEN);
     assert(msg_parse_command(no_null) == MSG_UNKNOWN);
 }
 
-TEST(test_msg_parse_command_padded) {
+static void test_msg_parse_command_padded(void) {
     /* Command with null padding (standard wire format) */
     char padded[COMMAND_LEN];
     memset(padded, 0, COMMAND_LEN);
@@ -71,7 +57,7 @@ TEST(test_msg_parse_command_padded) {
 }
 
 /* Test command string retrieval */
-TEST(test_msg_command_string) {
+static void test_msg_command_string(void) {
     assert(strcmp(msg_command_string(MSG_VERSION), "version") == 0);
     assert(strcmp(msg_command_string(MSG_VERACK), "verack") == 0);
     assert(strcmp(msg_command_string(MSG_PING), "ping") == 0);
@@ -93,14 +79,14 @@ TEST(test_msg_command_string) {
     assert(strcmp(msg_command_string(MSG_WTXIDRELAY), "wtxidrelay") == 0);
 }
 
-TEST(test_msg_command_string_unknown) {
+static void test_msg_command_string_unknown(void) {
     /* Unknown type should return NULL */
     assert(msg_command_string(MSG_UNKNOWN) == NULL);
     assert(msg_command_string((msg_type_t)999) == NULL);
 }
 
 /* Test checksum computation */
-TEST(test_msg_checksum_empty) {
+static void test_msg_checksum_empty(void) {
     /* Empty payload */
     uint32_t checksum = msg_checksum(NULL, 0);
 
@@ -112,7 +98,7 @@ TEST(test_msg_checksum_empty) {
     assert(checksum == 0xe2e0f65d);
 }
 
-TEST(test_msg_checksum_known) {
+static void test_msg_checksum_known(void) {
     /* Known payload: "hello" */
     uint8_t payload[] = "hello";
     uint32_t checksum = msg_checksum(payload, 5);
@@ -125,14 +111,14 @@ TEST(test_msg_checksum_known) {
     assert(checksum == 0xdfc99595);
 }
 
-TEST(test_msg_checksum_verack) {
+static void test_msg_checksum_verack(void) {
     /* Verack message has empty payload, same as empty test */
     uint32_t checksum = msg_checksum(NULL, 0);
     assert(checksum == 0xe2e0f65d);
 }
 
 /* Test header validation */
-TEST(test_msg_header_valid_mainnet) {
+static void test_msg_header_valid_mainnet(void) {
     msg_header_t header;
     header.magic = MAGIC_MAINNET;
     strcpy(header.command, "version");
@@ -142,7 +128,7 @@ TEST(test_msg_header_valid_mainnet) {
     assert(msg_header_valid(&header, MAGIC_MAINNET) == ECHO_TRUE);
 }
 
-TEST(test_msg_header_valid_testnet) {
+static void test_msg_header_valid_testnet(void) {
     msg_header_t header;
     header.magic = MAGIC_TESTNET;
     strcpy(header.command, "ping");
@@ -152,7 +138,7 @@ TEST(test_msg_header_valid_testnet) {
     assert(msg_header_valid(&header, MAGIC_TESTNET) == ECHO_TRUE);
 }
 
-TEST(test_msg_header_valid_regtest) {
+static void test_msg_header_valid_regtest(void) {
     msg_header_t header;
     header.magic = MAGIC_REGTEST;
     strcpy(header.command, "pong");
@@ -162,7 +148,7 @@ TEST(test_msg_header_valid_regtest) {
     assert(msg_header_valid(&header, MAGIC_REGTEST) == ECHO_TRUE);
 }
 
-TEST(test_msg_header_invalid_magic) {
+static void test_msg_header_invalid_magic(void) {
     msg_header_t header;
     header.magic = 0xDEADBEEF;  /* Wrong magic */
     strcpy(header.command, "version");
@@ -172,7 +158,7 @@ TEST(test_msg_header_invalid_magic) {
     assert(msg_header_valid(&header, MAGIC_MAINNET) == ECHO_FALSE);
 }
 
-TEST(test_msg_header_no_null_terminator) {
+static void test_msg_header_no_null_terminator(void) {
     msg_header_t header;
     header.magic = MAGIC_MAINNET;
     memset(header.command, 'x', COMMAND_LEN);  /* No null terminator */
@@ -182,7 +168,7 @@ TEST(test_msg_header_no_null_terminator) {
     assert(msg_header_valid(&header, MAGIC_MAINNET) == ECHO_FALSE);
 }
 
-TEST(test_msg_header_oversized_payload) {
+static void test_msg_header_oversized_payload(void) {
     msg_header_t header;
     header.magic = MAGIC_MAINNET;
     strcpy(header.command, "block");
@@ -192,7 +178,7 @@ TEST(test_msg_header_oversized_payload) {
     assert(msg_header_valid(&header, MAGIC_MAINNET) == ECHO_FALSE);
 }
 
-TEST(test_msg_header_max_size_payload) {
+static void test_msg_header_max_size_payload(void) {
     msg_header_t header;
     header.magic = MAGIC_MAINNET;
     strcpy(header.command, "block");
@@ -202,7 +188,7 @@ TEST(test_msg_header_max_size_payload) {
     assert(msg_header_valid(&header, MAGIC_MAINNET) == ECHO_TRUE);
 }
 
-TEST(test_msg_header_zero_length) {
+static void test_msg_header_zero_length(void) {
     msg_header_t header;
     header.magic = MAGIC_MAINNET;
     strcpy(header.command, "verack");
@@ -213,13 +199,13 @@ TEST(test_msg_header_zero_length) {
 }
 
 /* Test message header size */
-TEST(test_msg_header_size) {
+static void test_msg_header_size(void) {
     /* Header should be exactly 24 bytes */
     assert(sizeof(msg_header_t) == 24);
 }
 
 /* Test command padding */
-TEST(test_command_padding) {
+static void test_command_padding(void) {
     msg_header_t header;
     header.magic = MAGIC_MAINNET;
 
@@ -241,7 +227,7 @@ TEST(test_command_padding) {
 }
 
 /* Test round-trip command conversion */
-TEST(test_command_roundtrip) {
+static void test_command_roundtrip(void) {
     for (msg_type_t type = MSG_VERSION; type < MSG_UNKNOWN; type++) {
         const char *cmd = msg_command_string(type);
         assert(cmd != NULL);
@@ -252,7 +238,7 @@ TEST(test_command_roundtrip) {
 }
 
 /* Test inventory type constants */
-TEST(test_inv_types) {
+static void test_inv_types(void) {
     /* Verify standard inventory types */
     assert(INV_ERROR == 0);
     assert(INV_TX == 1);
@@ -265,14 +251,14 @@ TEST(test_inv_types) {
 }
 
 /* Test service flags */
-TEST(test_service_flags) {
+static void test_service_flags(void) {
     assert(SERVICE_NODE_NETWORK == (1 << 0));
     assert(SERVICE_NODE_WITNESS == (1 << 3));
     assert(SERVICE_NODE_NETWORK_LIMITED == (1 << 10));
 }
 
 /* Test reject codes */
-TEST(test_reject_codes) {
+static void test_reject_codes(void) {
     assert(REJECT_MALFORMED == 0x01);
     assert(REJECT_INVALID == 0x10);
     assert(REJECT_OBSOLETE == 0x11);
@@ -284,14 +270,14 @@ TEST(test_reject_codes) {
 }
 
 /* Test network magic bytes */
-TEST(test_magic_bytes) {
+static void test_magic_bytes(void) {
     assert(MAGIC_MAINNET == 0xD9B4BEF9);
     assert(MAGIC_TESTNET == 0x0709110B);
     assert(MAGIC_REGTEST == 0xDAB5BFFA);
 }
 
 /* Test protocol constants */
-TEST(test_protocol_constants) {
+static void test_protocol_constants(void) {
     assert(PROTOCOL_VERSION == 70016);
     assert(MAX_MESSAGE_SIZE == (32 * 1024 * 1024));
     assert(MAX_INV_ENTRIES == 50000);
@@ -300,45 +286,45 @@ TEST(test_protocol_constants) {
 }
 
 int main(void) {
-    printf("Running protocol message tests...\n");
+    test_suite_begin("Protocol Message Tests");
 
-    /* Command parsing tests */
-    RUN_TEST(test_msg_parse_command_valid);
-    RUN_TEST(test_msg_parse_command_invalid);
-    RUN_TEST(test_msg_parse_command_no_null);
-    RUN_TEST(test_msg_parse_command_padded);
+    test_section("Command Parsing");
+    test_case("Parse all valid commands"); test_msg_parse_command_valid(); test_pass();
+    test_case("Parse invalid commands"); test_msg_parse_command_invalid(); test_pass();
+    test_case("Reject command without null terminator"); test_msg_parse_command_no_null(); test_pass();
+    test_case("Parse command with null padding"); test_msg_parse_command_padded(); test_pass();
 
-    /* Command string tests */
-    RUN_TEST(test_msg_command_string);
-    RUN_TEST(test_msg_command_string_unknown);
+    test_section("Command String Retrieval");
+    test_case("Get all command strings"); test_msg_command_string(); test_pass();
+    test_case("Get unknown command string"); test_msg_command_string_unknown(); test_pass();
 
-    /* Checksum tests */
-    RUN_TEST(test_msg_checksum_empty);
-    RUN_TEST(test_msg_checksum_known);
-    RUN_TEST(test_msg_checksum_verack);
+    test_section("Checksum Computation");
+    test_case("Checksum of empty payload"); test_msg_checksum_empty(); test_pass();
+    test_case("Checksum of known payload"); test_msg_checksum_known(); test_pass();
+    test_case("Checksum of verack message"); test_msg_checksum_verack(); test_pass();
 
-    /* Header validation tests */
-    RUN_TEST(test_msg_header_valid_mainnet);
-    RUN_TEST(test_msg_header_valid_testnet);
-    RUN_TEST(test_msg_header_valid_regtest);
-    RUN_TEST(test_msg_header_invalid_magic);
-    RUN_TEST(test_msg_header_no_null_terminator);
-    RUN_TEST(test_msg_header_oversized_payload);
-    RUN_TEST(test_msg_header_max_size_payload);
-    RUN_TEST(test_msg_header_zero_length);
-    RUN_TEST(test_msg_header_size);
-    RUN_TEST(test_command_padding);
+    test_section("Header Validation");
+    test_case("Valid mainnet header"); test_msg_header_valid_mainnet(); test_pass();
+    test_case("Valid testnet header"); test_msg_header_valid_testnet(); test_pass();
+    test_case("Valid regtest header"); test_msg_header_valid_regtest(); test_pass();
+    test_case("Reject invalid magic"); test_msg_header_invalid_magic(); test_pass();
+    test_case("Reject missing null terminator"); test_msg_header_no_null_terminator(); test_pass();
+    test_case("Reject oversized payload"); test_msg_header_oversized_payload(); test_pass();
+    test_case("Accept max size payload"); test_msg_header_max_size_payload(); test_pass();
+    test_case("Accept zero length payload"); test_msg_header_zero_length(); test_pass();
+    test_case("Header size is 24 bytes"); test_msg_header_size(); test_pass();
+    test_case("Command null padding"); test_command_padding(); test_pass();
 
-    /* Round-trip tests */
-    RUN_TEST(test_command_roundtrip);
+    test_section("Round-trip Conversion");
+    test_case("Command string round-trip"); test_command_roundtrip(); test_pass();
 
-    /* Constants tests */
-    RUN_TEST(test_inv_types);
-    RUN_TEST(test_service_flags);
-    RUN_TEST(test_reject_codes);
-    RUN_TEST(test_magic_bytes);
-    RUN_TEST(test_protocol_constants);
+    test_section("Protocol Constants");
+    test_case("Inventory types"); test_inv_types(); test_pass();
+    test_case("Service flags"); test_service_flags(); test_pass();
+    test_case("Reject codes"); test_reject_codes(); test_pass();
+    test_case("Network magic bytes"); test_magic_bytes(); test_pass();
+    test_case("Protocol constants"); test_protocol_constants(); test_pass();
 
-    printf("\n%d/%d tests passed\n", tests_passed, tests_run);
-    return tests_passed == tests_run ? 0 : 1;
+    test_suite_end();
+    return test_global_summary();
 }

@@ -14,26 +14,18 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include "test_utils.h"
 
 /* Test database path */
 #define TEST_DB_PATH "test_block_index.db"
 
 /* Test counter */
-static int tests_run = 0;
-static int tests_passed = 0;
-
 /* ANSI color codes */
 #define COLOR_GREEN "\033[32m"
 #define COLOR_RED "\033[31m"
 #define COLOR_RESET "\033[0m"
 
 /* Test macros */
-#define TEST(name)                                                             \
-  do {                                                                         \
-    tests_run++;                                                               \
-    printf("Testing %s... ", name);                                            \
-    fflush(stdout);                                                            \
-  } while (0)
 
 #define PASS()                                                                 \
   do {                                                                         \
@@ -103,7 +95,6 @@ static void make_test_entry(block_index_entry_t *entry, uint32_t height,
  * ======================================================================== */
 
 static void test_open_close(void) {
-  TEST("open and close database");
 
   block_index_db_t bdb;
   echo_result_t result;
@@ -116,11 +107,9 @@ static void test_open_close(void) {
   block_index_db_close(&bdb);
 
   cleanup_test_db();
-  PASS();
 }
 
 static void test_insert_and_lookup_by_hash(void) {
-  TEST("insert and lookup by hash");
 
   block_index_db_t bdb;
   block_index_entry_t entry, retrieved;
@@ -150,11 +139,9 @@ static void test_insert_and_lookup_by_hash(void) {
 
   block_index_db_close(&bdb);
   cleanup_test_db();
-  PASS();
 }
 
 static void test_lookup_nonexistent(void) {
-  TEST("lookup nonexistent block");
 
   block_index_db_t bdb;
   block_index_entry_t entry;
@@ -173,11 +160,9 @@ static void test_lookup_nonexistent(void) {
 
   block_index_db_close(&bdb);
   cleanup_test_db();
-  PASS();
 }
 
 static void test_exists(void) {
-  TEST("check block existence");
 
   block_index_db_t bdb;
   block_index_entry_t entry;
@@ -208,11 +193,9 @@ static void test_exists(void) {
 
   block_index_db_close(&bdb);
   cleanup_test_db();
-  PASS();
 }
 
 static void test_lookup_by_height(void) {
-  TEST("lookup by height");
 
   block_index_db_t bdb;
   block_index_entry_t entry, retrieved;
@@ -241,11 +224,9 @@ static void test_lookup_by_height(void) {
 
   block_index_db_close(&bdb);
   cleanup_test_db();
-  PASS();
 }
 
 static void test_update_status(void) {
-  TEST("update block status");
 
   block_index_db_t bdb;
   block_index_entry_t entry, retrieved;
@@ -280,11 +261,9 @@ static void test_update_status(void) {
 
   block_index_db_close(&bdb);
   cleanup_test_db();
-  PASS();
 }
 
 static void test_get_best_chain(void) {
-  TEST("get best chain (highest chainwork)");
 
   block_index_db_t bdb;
   block_index_entry_t entry1, entry2, entry3, best;
@@ -322,11 +301,9 @@ static void test_get_best_chain(void) {
 
   block_index_db_close(&bdb);
   cleanup_test_db();
-  PASS();
 }
 
 static void test_get_prev(void) {
-  TEST("get previous block");
 
   block_index_db_t bdb;
   block_index_entry_t entry1, entry2, prev;
@@ -359,11 +336,9 @@ static void test_get_prev(void) {
 
   block_index_db_close(&bdb);
   cleanup_test_db();
-  PASS();
 }
 
 static void test_find_common_ancestor(void) {
-  TEST("find common ancestor");
 
   block_index_db_t bdb;
   block_index_entry_t genesis, a1, a2, b1, ancestor;
@@ -417,11 +392,9 @@ static void test_find_common_ancestor(void) {
 
   block_index_db_close(&bdb);
   cleanup_test_db();
-  PASS();
 }
 
 static void test_mark_best_chain(void) {
-  TEST("mark blocks as best chain");
 
   block_index_db_t bdb;
   block_index_entry_t entry1, entry2, retrieved;
@@ -464,11 +437,9 @@ static void test_mark_best_chain(void) {
 
   block_index_db_close(&bdb);
   cleanup_test_db();
-  PASS();
 }
 
 static void test_unmark_best_chain(void) {
-  TEST("unmark blocks from best chain");
 
   block_index_db_t bdb;
   block_index_entry_t entry, retrieved;
@@ -502,11 +473,9 @@ static void test_unmark_best_chain(void) {
 
   block_index_db_close(&bdb);
   cleanup_test_db();
-  PASS();
 }
 
 static void test_count(void) {
-  TEST("count blocks in database");
 
   block_index_db_t bdb;
   block_index_entry_t entry;
@@ -538,11 +507,9 @@ static void test_count(void) {
 
   block_index_db_close(&bdb);
   cleanup_test_db();
-  PASS();
 }
 
 static void test_get_height(void) {
-  TEST("get best chain height");
 
   block_index_db_t bdb;
   block_index_entry_t entry;
@@ -570,11 +537,9 @@ static void test_get_height(void) {
 
   block_index_db_close(&bdb);
   cleanup_test_db();
-  PASS();
 }
 
 static void test_get_chainwork(void) {
-  TEST("get best chain total work");
 
   block_index_db_t bdb;
   block_index_entry_t entry;
@@ -599,11 +564,9 @@ static void test_get_chainwork(void) {
 
   block_index_db_close(&bdb);
   cleanup_test_db();
-  PASS();
 }
 
 static void test_get_chain_block(void) {
-  TEST("get block at height on best chain");
 
   block_index_db_t bdb;
   block_index_entry_t entry1, entry2, retrieved;
@@ -640,11 +603,9 @@ static void test_get_chain_block(void) {
 
   block_index_db_close(&bdb);
   cleanup_test_db();
-  PASS();
 }
 
 static void test_persistence(void) {
-  TEST("database persistence across close/reopen");
 
   block_index_db_t bdb;
   block_index_entry_t entry, retrieved;
@@ -674,7 +635,6 @@ static void test_persistence(void) {
 
   block_index_db_close(&bdb);
   cleanup_test_db();
-  PASS();
 }
 
 /* ========================================================================
@@ -682,37 +642,25 @@ static void test_persistence(void) {
  * ======================================================================== */
 
 int main(void) {
-  printf("\n");
-  printf("=================================\n");
-  printf("Block Index Database Tests\n");
-  printf("=================================\n\n");
+    test_suite_begin("Block Index Database Tests");
 
-  /* Run tests */
-  test_open_close();
-  test_insert_and_lookup_by_hash();
-  test_lookup_nonexistent();
-  test_exists();
-  test_lookup_by_height();
-  test_update_status();
-  test_get_best_chain();
-  test_get_prev();
-  test_find_common_ancestor();
-  test_mark_best_chain();
-  test_unmark_best_chain();
-  test_count();
-  test_get_height();
-  test_get_chainwork();
-  test_get_chain_block();
-  test_persistence();
+    test_case("Open and close database"); test_open_close(); test_pass();
+    test_case("Insert and lookup by hash"); test_insert_and_lookup_by_hash(); test_pass();
+    test_case("Lookup nonexistent entry"); test_lookup_nonexistent(); test_pass();
+    test_case("Check if entry exists"); test_exists(); test_pass();
+    test_case("Lookup by height"); test_lookup_by_height(); test_pass();
+    test_case("Update block status"); test_update_status(); test_pass();
+    test_case("Get best chain"); test_get_best_chain(); test_pass();
+    test_case("Get previous block"); test_get_prev(); test_pass();
+    test_case("Find common ancestor"); test_find_common_ancestor(); test_pass();
+    test_case("Mark blocks as best chain"); test_mark_best_chain(); test_pass();
+    test_case("Unmark best chain"); test_unmark_best_chain(); test_pass();
+    test_case("Count entries"); test_count(); test_pass();
+    test_case("Get chain height"); test_get_height(); test_pass();
+    test_case("Get chain work"); test_get_chainwork(); test_pass();
+    test_case("Get block at height"); test_get_chain_block(); test_pass();
+    test_case("Data persistence across restarts"); test_persistence(); test_pass();
 
-  /* Final cleanup */
-  cleanup_test_db();
-
-  /* Summary */
-  printf("\n");
-  printf("=================================\n");
-  printf("Results: %d/%d tests passed\n", tests_passed, tests_run);
-  printf("=================================\n\n");
-
-  return (tests_passed == tests_run) ? 0 : 1;
+    test_suite_end();
+    return test_global_summary();
 }

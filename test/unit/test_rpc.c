@@ -23,16 +23,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "test_utils.h"
 
 /* Test counter */
-static int tests_run = 0;
-static int tests_passed = 0;
-
-#define TEST(name)                                                             \
-  do {                                                                         \
-    printf("Running test: %s...", name);                                       \
-    tests_run++;                                                               \
-  } while (0)
 
 #define PASS()                                                                 \
   do {                                                                         \
@@ -47,8 +40,6 @@ static int tests_passed = 0;
  */
 
 static void test_json_parse_null(void) {
-  TEST("JSON parse null");
-
   json_value_t *value = NULL;
   echo_result_t res = json_parse("null", &value);
 
@@ -57,12 +48,10 @@ static void test_json_parse_null(void) {
   assert(value->type == JSON_NULL);
 
   json_free(value);
-  PASS();
+  test_pass();
 }
 
 static void test_json_parse_true(void) {
-  TEST("JSON parse true");
-
   json_value_t *value = NULL;
   echo_result_t res = json_parse("true", &value);
 
@@ -72,12 +61,10 @@ static void test_json_parse_true(void) {
   assert(value->u.boolean == true);
 
   json_free(value);
-  PASS();
+  test_pass();
 }
 
 static void test_json_parse_false(void) {
-  TEST("JSON parse false");
-
   json_value_t *value = NULL;
   echo_result_t res = json_parse("false", &value);
 
@@ -87,12 +74,10 @@ static void test_json_parse_false(void) {
   assert(value->u.boolean == false);
 
   json_free(value);
-  PASS();
+  test_pass();
 }
 
 static void test_json_parse_integer(void) {
-  TEST("JSON parse integer");
-
   json_value_t *value = NULL;
   echo_result_t res = json_parse("42", &value);
 
@@ -102,12 +87,10 @@ static void test_json_parse_integer(void) {
   assert(value->u.number == 42.0);
 
   json_free(value);
-  PASS();
+  test_pass();
 }
 
 static void test_json_parse_negative(void) {
-  TEST("JSON parse negative number");
-
   json_value_t *value = NULL;
   echo_result_t res = json_parse("-123", &value);
 
@@ -117,12 +100,10 @@ static void test_json_parse_negative(void) {
   assert(value->u.number == -123.0);
 
   json_free(value);
-  PASS();
+  test_pass();
 }
 
 static void test_json_parse_float(void) {
-  TEST("JSON parse float");
-
   json_value_t *value = NULL;
   echo_result_t res = json_parse("3.14159", &value);
 
@@ -132,12 +113,10 @@ static void test_json_parse_float(void) {
   assert(value->u.number > 3.14 && value->u.number < 3.15);
 
   json_free(value);
-  PASS();
+  test_pass();
 }
 
 static void test_json_parse_string(void) {
-  TEST("JSON parse string");
-
   json_value_t *value = NULL;
   echo_result_t res = json_parse("\"hello world\"", &value);
 
@@ -147,12 +126,10 @@ static void test_json_parse_string(void) {
   assert(strcmp(value->u.string, "hello world") == 0);
 
   json_free(value);
-  PASS();
+  test_pass();
 }
 
 static void test_json_parse_escaped_string(void) {
-  TEST("JSON parse escaped string");
-
   json_value_t *value = NULL;
   echo_result_t res = json_parse("\"line1\\nline2\"", &value);
 
@@ -162,12 +139,10 @@ static void test_json_parse_escaped_string(void) {
   assert(strcmp(value->u.string, "line1\nline2") == 0);
 
   json_free(value);
-  PASS();
+  test_pass();
 }
 
 static void test_json_parse_empty_string(void) {
-  TEST("JSON parse empty string");
-
   json_value_t *value = NULL;
   echo_result_t res = json_parse("\"\"", &value);
 
@@ -177,7 +152,7 @@ static void test_json_parse_empty_string(void) {
   assert(strlen(value->u.string) == 0);
 
   json_free(value);
-  PASS();
+  test_pass();
 }
 
 /*
@@ -187,8 +162,6 @@ static void test_json_parse_empty_string(void) {
  */
 
 static void test_json_parse_empty_array(void) {
-  TEST("JSON parse empty array");
-
   json_value_t *value = NULL;
   echo_result_t res = json_parse("[]", &value);
 
@@ -198,12 +171,10 @@ static void test_json_parse_empty_array(void) {
   assert(json_array_length(value) == 0);
 
   json_free(value);
-  PASS();
+  test_pass();
 }
 
 static void test_json_parse_array_numbers(void) {
-  TEST("JSON parse array of numbers");
-
   json_value_t *value = NULL;
   echo_result_t res = json_parse("[1, 2, 3]", &value);
 
@@ -221,12 +192,10 @@ static void test_json_parse_array_numbers(void) {
   assert(elem2 != NULL && elem2->type == JSON_NUMBER && elem2->u.number == 3.0);
 
   json_free(value);
-  PASS();
+  test_pass();
 }
 
 static void test_json_parse_mixed_array(void) {
-  TEST("JSON parse mixed array");
-
   json_value_t *value = NULL;
   echo_result_t res = json_parse("[1, \"two\", true, null]", &value);
 
@@ -241,7 +210,7 @@ static void test_json_parse_mixed_array(void) {
   assert(json_array_get(value, 3)->type == JSON_NULL);
 
   json_free(value);
-  PASS();
+  test_pass();
 }
 
 /*
@@ -251,8 +220,6 @@ static void test_json_parse_mixed_array(void) {
  */
 
 static void test_json_parse_empty_object(void) {
-  TEST("JSON parse empty object");
-
   json_value_t *value = NULL;
   echo_result_t res = json_parse("{}", &value);
 
@@ -261,12 +228,10 @@ static void test_json_parse_empty_object(void) {
   assert(value->type == JSON_OBJECT);
 
   json_free(value);
-  PASS();
+  test_pass();
 }
 
 static void test_json_parse_simple_object(void) {
-  TEST("JSON parse simple object");
-
   json_value_t *value = NULL;
   echo_result_t res = json_parse("{\"name\": \"echo\", \"version\": 1}", &value);
 
@@ -283,12 +248,10 @@ static void test_json_parse_simple_object(void) {
   assert(version->u.number == 1.0);
 
   json_free(value);
-  PASS();
+  test_pass();
 }
 
 static void test_json_parse_nested_object(void) {
-  TEST("JSON parse nested object");
-
   json_value_t *value = NULL;
   echo_result_t res =
       json_parse("{\"outer\": {\"inner\": 42}}", &value);
@@ -305,7 +268,7 @@ static void test_json_parse_nested_object(void) {
   assert(inner->u.number == 42.0);
 
   json_free(value);
-  PASS();
+  test_pass();
 }
 
 /*
@@ -315,8 +278,6 @@ static void test_json_parse_nested_object(void) {
  */
 
 static void test_json_parse_rpc_request(void) {
-  TEST("JSON parse RPC request");
-
   const char *json =
       "{\"id\": 1, \"method\": \"getblockchaininfo\", \"params\": []}";
 
@@ -337,12 +298,10 @@ static void test_json_parse_rpc_request(void) {
   assert(strcmp(method->u.string, "getblockchaininfo") == 0);
 
   json_free(value);
-  PASS();
+  test_pass();
 }
 
 static void test_json_parse_rpc_with_params(void) {
-  TEST("JSON parse RPC request with params");
-
   const char *json =
       "{\"id\": \"test\", \"method\": \"getblock\", \"params\": "
       "[\"000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f\", 1]}";
@@ -366,7 +325,7 @@ static void test_json_parse_rpc_with_params(void) {
   assert(verbosity->u.number == 1.0);
 
   json_free(value);
-  PASS();
+  test_pass();
 }
 
 /*
@@ -376,8 +335,6 @@ static void test_json_parse_rpc_with_params(void) {
  */
 
 static void test_json_builder_string(void) {
-  TEST("JSON builder string");
-
   json_builder_t builder;
   json_builder_init(&builder);
 
@@ -385,12 +342,10 @@ static void test_json_builder_string(void) {
   assert(strcmp(json_builder_str(&builder), "\"hello\"") == 0);
 
   json_builder_free(&builder);
-  PASS();
+  test_pass();
 }
 
 static void test_json_builder_number(void) {
-  TEST("JSON builder number");
-
   json_builder_t builder;
   json_builder_init(&builder);
 
@@ -398,12 +353,10 @@ static void test_json_builder_number(void) {
   assert(strcmp(json_builder_str(&builder), "42") == 0);
 
   json_builder_free(&builder);
-  PASS();
+  test_pass();
 }
 
 static void test_json_builder_bool(void) {
-  TEST("JSON builder bool");
-
   json_builder_t builder;
   json_builder_init(&builder);
 
@@ -411,12 +364,10 @@ static void test_json_builder_bool(void) {
   assert(strcmp(json_builder_str(&builder), "true") == 0);
 
   json_builder_free(&builder);
-  PASS();
+  test_pass();
 }
 
 static void test_json_builder_null(void) {
-  TEST("JSON builder null");
-
   json_builder_t builder;
   json_builder_init(&builder);
 
@@ -424,12 +375,10 @@ static void test_json_builder_null(void) {
   assert(strcmp(json_builder_str(&builder), "null") == 0);
 
   json_builder_free(&builder);
-  PASS();
+  test_pass();
 }
 
 static void test_json_builder_hex(void) {
-  TEST("JSON builder hex");
-
   uint8_t data[] = {0xde, 0xad, 0xbe, 0xef};
   json_builder_t builder;
   json_builder_init(&builder);
@@ -438,12 +387,10 @@ static void test_json_builder_hex(void) {
   assert(strcmp(json_builder_str(&builder), "\"deadbeef\"") == 0);
 
   json_builder_free(&builder);
-  PASS();
+  test_pass();
 }
 
 static void test_json_builder_object(void) {
-  TEST("JSON builder object");
-
   json_builder_t builder;
   json_builder_init(&builder);
 
@@ -455,7 +402,7 @@ static void test_json_builder_object(void) {
   assert(strcmp(json_builder_str(&builder), "{\"key\":\"value\"}") == 0);
 
   json_builder_free(&builder);
-  PASS();
+  test_pass();
 }
 
 /*
@@ -465,8 +412,6 @@ static void test_json_builder_object(void) {
  */
 
 static void test_rpc_request_parse_basic(void) {
-  TEST("RPC request parse basic");
-
   const char *json =
       "{\"id\": \"1\", \"method\": \"getblockchaininfo\", \"params\": []}";
 
@@ -481,12 +426,10 @@ static void test_rpc_request_parse_basic(void) {
   assert(req.params != NULL);
 
   rpc_request_free(&req);
-  PASS();
+  test_pass();
 }
 
 static void test_rpc_request_parse_numeric_id(void) {
-  TEST("RPC request parse numeric id");
-
   const char *json =
       "{\"id\": 42, \"method\": \"getblock\", \"params\": [\"hash\"]}";
 
@@ -499,12 +442,10 @@ static void test_rpc_request_parse_numeric_id(void) {
   assert(strcmp(req.method, "getblock") == 0);
 
   rpc_request_free(&req);
-  PASS();
+  test_pass();
 }
 
 static void test_rpc_request_parse_null_id(void) {
-  TEST("RPC request parse null id");
-
   const char *json = "{\"id\": null, \"method\": \"test\", \"params\": []}";
 
   rpc_request_t req;
@@ -515,7 +456,7 @@ static void test_rpc_request_parse_null_id(void) {
   assert(strcmp(req.method, "test") == 0);
 
   rpc_request_free(&req);
-  PASS();
+  test_pass();
 }
 
 /*
@@ -525,8 +466,6 @@ static void test_rpc_request_parse_null_id(void) {
  */
 
 static void test_rpc_response_success(void) {
-  TEST("RPC response success");
-
   json_builder_t builder;
   echo_result_t res = rpc_response_success("1", "42", &builder);
 
@@ -538,12 +477,10 @@ static void test_rpc_response_success(void) {
   assert(strstr(response, "\"id\":\"1\"") != NULL);
 
   json_builder_free(&builder);
-  PASS();
+  test_pass();
 }
 
 static void test_rpc_response_error(void) {
-  TEST("RPC response error");
-
   json_builder_t builder;
   echo_result_t res =
       rpc_response_error("1", RPC_ERR_METHOD_NOT_FOUND, "Method not found", &builder);
@@ -557,7 +494,7 @@ static void test_rpc_response_error(void) {
   assert(strstr(response, "\"message\":\"Method not found\"") != NULL);
 
   json_builder_free(&builder);
-  PASS();
+  test_pass();
 }
 
 /*
@@ -567,8 +504,6 @@ static void test_rpc_response_error(void) {
  */
 
 static void test_hex_decode_valid(void) {
-  TEST("hex decode valid");
-
   uint8_t out[4];
   size_t written;
   echo_result_t res = rpc_hex_decode("deadbeef", out, sizeof(out), &written);
@@ -580,12 +515,10 @@ static void test_hex_decode_valid(void) {
   assert(out[2] == 0xbe);
   assert(out[3] == 0xef);
 
-  PASS();
+  test_pass();
 }
 
 static void test_hex_decode_uppercase(void) {
-  TEST("hex decode uppercase");
-
   uint8_t out[4];
   size_t written;
   echo_result_t res = rpc_hex_decode("DEADBEEF", out, sizeof(out), &written);
@@ -595,23 +528,20 @@ static void test_hex_decode_uppercase(void) {
   assert(out[0] == 0xde);
   assert(out[1] == 0xad);
 
-  PASS();
+  test_pass();
 }
 
 static void test_hex_decode_odd_length(void) {
-  TEST("hex decode odd length rejected");
-
   uint8_t out[4];
   size_t written;
   echo_result_t res = rpc_hex_decode("abc", out, sizeof(out), &written);
 
   assert(res == ECHO_ERR_INVALID_FORMAT);
 
-  PASS();
+  test_pass();
 }
 
 static void test_format_hash(void) {
-  TEST("format hash (reversed byte order)");
 
   hash256_t hash = {0};
   /* Genesis block hash in internal byte order */
@@ -626,12 +556,10 @@ static void test_format_hash(void) {
   assert(strlen(out) == 64);
   assert(out[0] == '0' && out[1] == '0'); /* High byte first in display */
 
-  PASS();
+  test_pass();
 }
 
 static void test_parse_hash(void) {
-  TEST("parse hash from hex");
-
   /* Genesis block hash in display format */
   const char *hex =
       "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f";
@@ -644,18 +572,16 @@ static void test_parse_hash(void) {
   assert(hash.bytes[31] == 0x00);
   assert(hash.bytes[0] == 0x6f);
 
-  PASS();
+  test_pass();
 }
 
 static void test_parse_hash_invalid_length(void) {
-  TEST("parse hash invalid length");
-
   hash256_t hash;
   echo_result_t res = rpc_parse_hash("0123456789", &hash);
 
   assert(res == ECHO_ERR_INVALID_FORMAT);
 
-  PASS();
+  test_pass();
 }
 
 /*
@@ -665,27 +591,23 @@ static void test_parse_hash_invalid_length(void) {
  */
 
 static void test_rpc_config_init(void) {
-  TEST("RPC config init");
-
   rpc_config_t config;
   rpc_config_init(&config);
 
   assert(config.port == RPC_DEFAULT_PORT);
   assert(config.bind_addr == NULL);
 
-  PASS();
+  test_pass();
 }
 
 static void test_rpc_server_create_null_node(void) {
-  TEST("RPC server create with NULL node");
-
   rpc_config_t config;
   rpc_config_init(&config);
 
   rpc_server_t *server = rpc_server_create(&config, NULL);
   assert(server == NULL);
 
-  PASS();
+  test_pass();
 }
 
 /*
@@ -695,36 +617,30 @@ static void test_rpc_server_create_null_node(void) {
  */
 
 static void test_json_parse_invalid_json(void) {
-  TEST("JSON parse invalid JSON");
-
   json_value_t *value = NULL;
   echo_result_t res = json_parse("{invalid", &value);
 
   assert(res == ECHO_ERR_INVALID_FORMAT);
   assert(value == NULL);
 
-  PASS();
+  test_pass();
 }
 
 static void test_json_parse_null_input(void) {
-  TEST("JSON parse NULL input");
-
   json_value_t *value = NULL;
   echo_result_t res = json_parse(NULL, &value);
 
   assert(res == ECHO_ERR_NULL_PARAM);
 
-  PASS();
+  test_pass();
 }
 
 static void test_json_parse_null_output(void) {
-  TEST("JSON parse NULL output");
-
   echo_result_t res = json_parse("{}", NULL);
 
   assert(res == ECHO_ERR_NULL_PARAM);
 
-  PASS();
+  test_pass();
 }
 
 /*
@@ -734,70 +650,48 @@ static void test_json_parse_null_output(void) {
  */
 
 int main(void) {
-  printf("Bitcoin Echo — RPC Interface Tests\n");
-  printf("===================================\n\n");
+    test_suite_begin("Rpc Tests");
 
-  /* JSON Parser - Basic Types */
-  test_json_parse_null();
-  test_json_parse_true();
-  test_json_parse_false();
-  test_json_parse_integer();
-  test_json_parse_negative();
-  test_json_parse_float();
-  test_json_parse_string();
-  test_json_parse_escaped_string();
-  test_json_parse_empty_string();
+    test_case("Json parse null"); test_json_parse_null(); test_pass();
+    test_case("Json parse true"); test_json_parse_true(); test_pass();
+    test_case("Json parse false"); test_json_parse_false(); test_pass();
+    test_case("Json parse integer"); test_json_parse_integer(); test_pass();
+    test_case("Json parse negative"); test_json_parse_negative(); test_pass();
+    test_case("Json parse float"); test_json_parse_float(); test_pass();
+    test_case("Json parse string"); test_json_parse_string(); test_pass();
+    test_case("Json parse escaped string"); test_json_parse_escaped_string(); test_pass();
+    test_case("Json parse empty string"); test_json_parse_empty_string(); test_pass();
+    test_case("Json parse empty array"); test_json_parse_empty_array(); test_pass();
+    test_case("Json parse array numbers"); test_json_parse_array_numbers(); test_pass();
+    test_case("Json parse mixed array"); test_json_parse_mixed_array(); test_pass();
+    test_case("Json parse empty object"); test_json_parse_empty_object(); test_pass();
+    test_case("Json parse simple object"); test_json_parse_simple_object(); test_pass();
+    test_case("Json parse nested object"); test_json_parse_nested_object(); test_pass();
+    test_case("Json parse rpc request"); test_json_parse_rpc_request(); test_pass();
+    test_case("Json parse rpc with params"); test_json_parse_rpc_with_params(); test_pass();
+    test_case("Json builder string"); test_json_builder_string(); test_pass();
+    test_case("Json builder number"); test_json_builder_number(); test_pass();
+    test_case("Json builder bool"); test_json_builder_bool(); test_pass();
+    test_case("Json builder null"); test_json_builder_null(); test_pass();
+    test_case("Json builder hex"); test_json_builder_hex(); test_pass();
+    test_case("Json builder object"); test_json_builder_object(); test_pass();
+    test_case("Rpc request parse basic"); test_rpc_request_parse_basic(); test_pass();
+    test_case("Rpc request parse numeric id"); test_rpc_request_parse_numeric_id(); test_pass();
+    test_case("Rpc request parse null id"); test_rpc_request_parse_null_id(); test_pass();
+    test_case("Rpc response success"); test_rpc_response_success(); test_pass();
+    test_case("Rpc response error"); test_rpc_response_error(); test_pass();
+    test_case("Hex decode valid"); test_hex_decode_valid(); test_pass();
+    test_case("Hex decode uppercase"); test_hex_decode_uppercase(); test_pass();
+    test_case("Hex decode odd length"); test_hex_decode_odd_length(); test_pass();
+    test_case("Format hash"); test_format_hash(); test_pass();
+    test_case("Parse hash"); test_parse_hash(); test_pass();
+    test_case("Parse hash invalid length"); test_parse_hash_invalid_length(); test_pass();
+    test_case("Rpc config init"); test_rpc_config_init(); test_pass();
+    test_case("Rpc server create null node"); test_rpc_server_create_null_node(); test_pass();
+    test_case("Json parse invalid json"); test_json_parse_invalid_json(); test_pass();
+    test_case("Json parse null input"); test_json_parse_null_input(); test_pass();
+    test_case("Json parse null output"); test_json_parse_null_output(); test_pass();
 
-  /* JSON Parser - Arrays */
-  test_json_parse_empty_array();
-  test_json_parse_array_numbers();
-  test_json_parse_mixed_array();
-
-  /* JSON Parser - Objects */
-  test_json_parse_empty_object();
-  test_json_parse_simple_object();
-  test_json_parse_nested_object();
-
-  /* JSON Parser - RPC Format */
-  test_json_parse_rpc_request();
-  test_json_parse_rpc_with_params();
-
-  /* JSON Builder */
-  test_json_builder_string();
-  test_json_builder_number();
-  test_json_builder_bool();
-  test_json_builder_null();
-  test_json_builder_hex();
-  test_json_builder_object();
-
-  /* RPC Request Parsing */
-  test_rpc_request_parse_basic();
-  test_rpc_request_parse_numeric_id();
-  test_rpc_request_parse_null_id();
-
-  /* RPC Response Building */
-  test_rpc_response_success();
-  test_rpc_response_error();
-
-  /* Utility Functions */
-  test_hex_decode_valid();
-  test_hex_decode_uppercase();
-  test_hex_decode_odd_length();
-  test_format_hash();
-  test_parse_hash();
-  test_parse_hash_invalid_length();
-
-  /* RPC Server */
-  test_rpc_config_init();
-  test_rpc_server_create_null_node();
-
-  /* JSON Parser - Error Cases */
-  test_json_parse_invalid_json();
-  test_json_parse_null_input();
-  test_json_parse_null_output();
-
-  printf("\n===================================\n");
-  printf("Tests: %d/%d passed\n", tests_passed, tests_run);
-
-  return (tests_passed == tests_run) ? 0 : 1;
+    test_suite_end();
+    return test_global_summary();
 }

@@ -6,12 +6,11 @@
  * Build once. Build right. Stop.
  */
 
+#include "secp256k1.h"
+#include "test_utils.h"
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#include "secp256k1.h"
-
-static int tests_run = 0;
-static int tests_passed = 0;
 
 static void print_hex(const uint8_t *data, size_t len)
 {
@@ -40,8 +39,6 @@ static void test_generator_on_curve(void)
     secp256k1_fe_t gx, gy;
     uint8_t gx_bytes[32], gy_bytes[32];
 
-    tests_run++;
-
     /* Known generator point coordinates */
     hex_to_bytes(gx_bytes, "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798", 32);
     hex_to_bytes(gy_bytes, "483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8", 32);
@@ -50,11 +47,11 @@ static void test_generator_on_curve(void)
     secp256k1_fe_set_bytes(&gy, gy_bytes);
     secp256k1_point_set_xy(&g, &gx, &gy);
 
+    test_case("Generator G is on curve");
     if (secp256k1_point_is_valid(&g)) {
-        tests_passed++;
-        printf("  [PASS] Generator G is on curve\n");
+        test_pass();
     } else {
-        printf("  [FAIL] Generator G is on curve\n");
+        test_fail("Generator point not on curve");
     }
 }
 
@@ -65,7 +62,7 @@ static void test_point_double(void)
     uint8_t gx_bytes[32], gy_bytes[32];
     uint8_t result[32];
 
-    tests_run++;
+    
 
     /* Load G */
     hex_to_bytes(gx_bytes, "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798", 32);
@@ -85,11 +82,12 @@ static void test_point_double(void)
     uint8_t expected_x[32];
     hex_to_bytes(expected_x, "c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5", 32);
 
+    test_case("2*G x-coordinate");
     if (memcmp(result, expected_x, 32) == 0) {
-        tests_passed++;
-        printf("  [PASS] 2*G x-coordinate\n");
+        
+        test_pass();
     } else {
-        printf("  [FAIL] 2*G x-coordinate\n");
+        test_fail("2*G x-coordinate");
         printf("    Expected: ");
         print_hex(expected_x, 32);
         printf("\n");
@@ -98,14 +96,15 @@ static void test_point_double(void)
         printf("\n");
     }
 
-    tests_run++;
+    
 
     /* Verify 2*G is on curve */
+    test_case("2*G is on curve");
     if (secp256k1_point_is_valid(&g2)) {
-        tests_passed++;
-        printf("  [PASS] 2*G is on curve\n");
+        
+        test_pass();
     } else {
-        printf("  [FAIL] 2*G is on curve\n");
+        test_fail("2*G is on curve");
     }
 }
 
@@ -116,7 +115,7 @@ static void test_point_add(void)
     uint8_t gx_bytes[32], gy_bytes[32];
     uint8_t result_add[32], result_dbl[32];
 
-    tests_run++;
+    
 
     /* Load G */
     hex_to_bytes(gx_bytes, "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798", 32);
@@ -137,14 +136,15 @@ static void test_point_add(void)
     secp256k1_fe_get_bytes(result_add, &x_add);
     secp256k1_fe_get_bytes(result_dbl, &x_dbl);
 
+    test_case("G + G = 2*G");
     if (memcmp(result_add, result_dbl, 32) == 0) {
-        tests_passed++;
-        printf("  [PASS] G + G = 2*G\n");
+        
+        test_pass();
     } else {
-        printf("  [FAIL] G + G = 2*G\n");
+        test_fail("G + G = 2*G");
     }
 
-    tests_run++;
+    
 
     /* Compute 3*G = 2*G + G */
     secp256k1_point_add(&g3_add, &g2, &g);
@@ -155,11 +155,12 @@ static void test_point_add(void)
     secp256k1_point_get_xy(&x_add, NULL, &g3_add);
     secp256k1_fe_get_bytes(result_add, &x_add);
 
+    test_case("3*G x-coordinate");
     if (memcmp(result_add, expected_3g_x, 32) == 0) {
-        tests_passed++;
-        printf("  [PASS] 3*G x-coordinate\n");
+        
+        test_pass();
     } else {
-        printf("  [FAIL] 3*G x-coordinate\n");
+        test_fail("3*G x-coordinate");
         printf("    Expected: ");
         print_hex(expected_3g_x, 32);
         printf("\n");
@@ -175,7 +176,7 @@ static void test_point_neg(void)
     secp256k1_fe_t gx, gy;
     uint8_t gx_bytes[32], gy_bytes[32];
 
-    tests_run++;
+    
 
     /* Load G */
     hex_to_bytes(gx_bytes, "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798", 32);
@@ -190,11 +191,12 @@ static void test_point_neg(void)
     /* G + (-G) should be infinity */
     secp256k1_point_add(&sum, &g, &neg_g);
 
+    test_case("G + (-G) = infinity");
     if (secp256k1_point_is_infinity(&sum)) {
-        tests_passed++;
-        printf("  [PASS] G + (-G) = infinity\n");
+        
+        test_pass();
     } else {
-        printf("  [FAIL] G + (-G) = infinity\n");
+        test_fail("G + (-G) = infinity");
     }
 }
 
@@ -205,7 +207,7 @@ static void test_scalar_mul(void)
     secp256k1_fe_t x;
     uint8_t k_bytes[32], result_x[32];
 
-    tests_run++;
+    
 
     /* k = 2 */
     memset(k_bytes, 0, 32);
@@ -221,11 +223,12 @@ static void test_scalar_mul(void)
     uint8_t expected_2g_x[32];
     hex_to_bytes(expected_2g_x, "c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5", 32);
 
+    test_case("2*G via scalar mul");
     if (memcmp(result_x, expected_2g_x, 32) == 0) {
-        tests_passed++;
-        printf("  [PASS] 2*G via scalar mul\n");
+        
+        test_pass();
     } else {
-        printf("  [FAIL] 2*G via scalar mul\n");
+        test_fail("2*G via scalar mul");
         printf("    Expected: ");
         print_hex(expected_2g_x, 32);
         printf("\n");
@@ -234,7 +237,7 @@ static void test_scalar_mul(void)
         printf("\n");
     }
 
-    tests_run++;
+    
 
     /* k = 7 */
     memset(k_bytes, 0, 32);
@@ -250,11 +253,12 @@ static void test_scalar_mul(void)
     uint8_t expected_7g_x[32];
     hex_to_bytes(expected_7g_x, "5cbdf0646e5db4eaa398f365f2ea7a0e3d419b7e0330e39ce92bddedcac4f9bc", 32);
 
+    test_case("7*G via scalar mul");
     if (memcmp(result_x, expected_7g_x, 32) == 0) {
-        tests_passed++;
-        printf("  [PASS] 7*G via scalar mul\n");
+        
+        test_pass();
     } else {
-        printf("  [FAIL] 7*G via scalar mul\n");
+        test_fail("7*G via scalar mul");
         printf("    Expected: ");
         print_hex(expected_7g_x, 32);
         printf("\n");
@@ -263,7 +267,7 @@ static void test_scalar_mul(void)
         printf("\n");
     }
 
-    tests_run++;
+    
 
     /* Test with a larger scalar */
     /* k = 0xAA...AA (alternating bits) */
@@ -272,11 +276,12 @@ static void test_scalar_mul(void)
 
     secp256k1_point_mul_gen(&result, &k);
 
+    test_case("Large scalar result on curve");
     if (secp256k1_point_is_valid(&result)) {
-        tests_passed++;
-        printf("  [PASS] Large scalar result on curve\n");
+        
+        test_pass();
     } else {
-        printf("  [FAIL] Large scalar result on curve\n");
+        test_fail("Large scalar result on curve");
     }
 }
 
@@ -288,7 +293,7 @@ static void test_pubkey_roundtrip(void)
     uint8_t compressed[33], uncompressed[65];
     uint8_t gx_out[32], px_out[32];
 
-    tests_run++;
+    
 
     /* Load G */
     hex_to_bytes(gx_bytes, "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798", 32);
@@ -301,56 +306,56 @@ static void test_pubkey_roundtrip(void)
     secp256k1_pubkey_serialize(compressed, &g, 1);
 
     /* Parse compressed */
+    test_case("Compressed pubkey roundtrip");
     if (secp256k1_pubkey_parse(&parsed, compressed, 33)) {
         secp256k1_point_get_xy(&px, &py, &parsed);
         secp256k1_fe_get_bytes(gx_out, &gx);
         secp256k1_fe_get_bytes(px_out, &px);
 
         if (memcmp(gx_out, px_out, 32) == 0) {
-            tests_passed++;
-            printf("  [PASS] Compressed pubkey roundtrip\n");
+            test_pass();
         } else {
-            printf("  [FAIL] Compressed pubkey roundtrip\n");
+            test_fail("Compressed pubkey x-coordinate mismatch");
         }
     } else {
-        printf("  [FAIL] Compressed pubkey parse\n");
+        test_fail("Compressed pubkey parse failed");
     }
 
-    tests_run++;
+    
 
     /* Serialize uncompressed */
     secp256k1_pubkey_serialize(uncompressed, &g, 0);
 
     /* Parse uncompressed */
+    test_case("Uncompressed pubkey roundtrip");
     if (secp256k1_pubkey_parse(&parsed, uncompressed, 65)) {
         secp256k1_point_get_xy(&px, &py, &parsed);
         secp256k1_fe_get_bytes(px_out, &px);
 
         if (memcmp(gx_out, px_out, 32) == 0) {
-            tests_passed++;
-            printf("  [PASS] Uncompressed pubkey roundtrip\n");
+            test_pass();
         } else {
-            printf("  [FAIL] Uncompressed pubkey roundtrip\n");
+            test_fail("Uncompressed pubkey x-coordinate mismatch");
         }
     } else {
-        printf("  [FAIL] Uncompressed pubkey parse\n");
+        test_fail("Uncompressed pubkey parse failed");
     }
 
-    tests_run++;
+    
 
     /* Test parsing known compressed pubkey */
     uint8_t known_compressed[33];
     hex_to_bytes(known_compressed, "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798", 33);
 
+    test_case("Parse known compressed G");
     if (secp256k1_pubkey_parse(&parsed, known_compressed, 33)) {
         if (secp256k1_point_is_valid(&parsed)) {
-            tests_passed++;
-            printf("  [PASS] Parse known compressed G\n");
+            test_pass();
         } else {
-            printf("  [FAIL] Parsed point not on curve\n");
+            test_fail("Parsed point not on curve");
         }
     } else {
-        printf("  [FAIL] Parse known compressed G\n");
+        test_fail("Failed to parse known compressed G");
     }
 }
 
@@ -360,7 +365,7 @@ static void test_infinity_handling(void)
     secp256k1_fe_t gx, gy;
     uint8_t gx_bytes[32], gy_bytes[32];
 
-    tests_run++;
+    
 
     /* Set up infinity */
     secp256k1_point_set_infinity(&inf);
@@ -380,14 +385,15 @@ static void test_infinity_handling(void)
     secp256k1_point_get_xy(&rx, NULL, &result);
     secp256k1_fe_get_bytes(rx_bytes, &rx);
 
+    test_case("infinity + G = G");
     if (memcmp(rx_bytes, gx_bytes, 32) == 0) {
-        tests_passed++;
-        printf("  [PASS] infinity + G = G\n");
+        
+        test_pass();
     } else {
-        printf("  [FAIL] infinity + G = G\n");
+        test_fail("infinity + G = G");
     }
 
-    tests_run++;
+    
 
     /* G + infinity = G */
     secp256k1_point_add(&result, &g, &inf);
@@ -395,30 +401,31 @@ static void test_infinity_handling(void)
     secp256k1_point_get_xy(&rx, NULL, &result);
     secp256k1_fe_get_bytes(rx_bytes, &rx);
 
+    test_case("G + infinity = G");
     if (memcmp(rx_bytes, gx_bytes, 32) == 0) {
-        tests_passed++;
-        printf("  [PASS] G + infinity = G\n");
+        
+        test_pass();
     } else {
-        printf("  [FAIL] G + infinity = G\n");
+        test_fail("G + infinity = G");
     }
 
-    tests_run++;
+    
 
     /* 2*infinity = infinity */
     secp256k1_point_double(&result, &inf);
 
+    test_case("2*infinity = infinity");
     if (secp256k1_point_is_infinity(&result)) {
-        tests_passed++;
-        printf("  [PASS] 2*infinity = infinity\n");
+        
+        test_pass();
     } else {
-        printf("  [FAIL] 2*infinity = infinity\n");
+        test_fail("2*infinity = infinity");
     }
 }
 
 int main(void)
 {
-    printf("secp256k1 Group Operations Tests\n");
-    printf("================================\n\n");
+    test_suite_begin("secp256k1 Group Operations Tests");
 
     test_generator_on_curve();
     test_point_double();
@@ -428,8 +435,6 @@ int main(void)
     test_pubkey_roundtrip();
     test_infinity_handling();
 
-    printf("\n");
-    printf("Results: %d/%d tests passed\n", tests_passed, tests_run);
-
-    return (tests_passed == tests_run) ? 0 : 1;
+    test_suite_end();
+    return test_global_summary();
 }

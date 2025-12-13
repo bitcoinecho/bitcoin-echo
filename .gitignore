@@ -11,6 +11,7 @@ echo.exe
 # Test binaries
 test/unit/test_*
 !test/unit/test_*.c
+!test/unit/test_*.h
 
 # Editor files
 *.swp
