@@ -256,6 +256,28 @@ int plat_thread_create(plat_thread_t *thread, void *(*fn)(void *), void *arg);
 int plat_thread_join(plat_thread_t *thread);
 
 /*
+ * Allocate a mutex structure.
+ *
+ * Returns:
+ *   Pointer to allocated mutex, or NULL on failure
+ *
+ * Notes:
+ *   - Must call plat_mutex_free() when done
+ */
+plat_mutex_t *plat_mutex_alloc(void);
+
+/*
+ * Free a mutex structure.
+ *
+ * Parameters:
+ *   mutex - Mutex to free (may be NULL)
+ *
+ * Notes:
+ *   - Mutex should already be destroyed via plat_mutex_destroy()
+ */
+void plat_mutex_free(plat_mutex_t *mutex);
+
+/*
  * Initialize a mutex.
  *
  * Parameters:

@@ -37,6 +37,7 @@ SRCS    = src/main.c \
           src/protocol/mempool.c \
           src/app/node.c \
           src/app/rpc.c \
+          src/app/log.c \
           lib/sqlite/sqlite3.c
 OBJS    = $(SRCS:.c=.o)
 
@@ -78,6 +79,7 @@ TEST_MEMPOOL         = test/unit/test_mempool
 TEST_NODE            = test/unit/test_node
 TEST_EVENT_LOOP      = test/unit/test_event_loop
 TEST_RPC             = test/unit/test_rpc
+TEST_LOG             = test/unit/test_log
 
 .PHONY: all clean test
 
@@ -201,7 +203,10 @@ $(TEST_EVENT_LOOP): test/unit/test_event_loop.c src/protocol/mempool.c src/proto
 $(TEST_RPC): test/unit/test_rpc.c src/app/rpc.c src/app/node.c src/protocol/mempool.c src/protocol/sync.c src/protocol/discovery.c src/protocol/peer.c src/protocol/relay.c src/protocol/serialize.c src/protocol/messages.c src/consensus/consensus.c src/consensus/chainstate.c src/consensus/utxo.c src/consensus/block_validate.c src/consensus/tx_validate.c src/consensus/script.c src/consensus/sig_verify.c src/consensus/merkle.c src/consensus/block.c src/consensus/tx.c src/consensus/serialize.c src/storage/blocks.c src/storage/db.c src/storage/utxo_db.c src/storage/block_index_db.c src/crypto/sha256.c src/crypto/sha1.c src/crypto/ripemd160.c src/crypto/secp256k1.c src/platform/posix.c lib/sqlite/sqlite3.c
 	$(CC) $(CFLAGS) -o $@ $^
 
-test: $(TEST_SHA256) $(TEST_RIPEMD160) $(TEST_SECP256K1_FE) $(TEST_SECP256K1_GROUP) $(TEST_ECDSA) $(TEST_SCHNORR) $(TEST_SIG_VERIFY) $(TEST_SERIALIZE) $(TEST_TX) $(TEST_BLOCK) $(TEST_MERKLE) $(TEST_SCRIPT) $(TEST_STACK) $(TEST_OPCODES) $(TEST_P2SH) $(TEST_TIMELOCK) $(TEST_TX_VALIDATE) $(TEST_BLOCK_VALIDATE) $(TEST_COINBASE) $(TEST_UTXO) $(TEST_CHAINSTATE) $(TEST_CONSENSUS) $(TEST_BLOCK_STORAGE) $(TEST_DB) $(TEST_UTXO_DB) $(TEST_BLOCK_INDEX_DB) $(TEST_PROTOCOL) $(TEST_PROTOCOL_SERIALIZE) $(TEST_PEER) $(TEST_DISCOVERY) $(TEST_RELAY) $(TEST_SYNC) $(TEST_MEMPOOL) $(TEST_NODE) $(TEST_EVENT_LOOP) $(TEST_RPC)
+$(TEST_LOG): test/unit/test_log.c src/app/log.c src/platform/posix.c
+	$(CC) $(CFLAGS) -o $@ $^
+
+test: $(TEST_SHA256) $(TEST_RIPEMD160) $(TEST_SECP256K1_FE) $(TEST_SECP256K1_GROUP) $(TEST_ECDSA) $(TEST_SCHNORR) $(TEST_SIG_VERIFY) $(TEST_SERIALIZE) $(TEST_TX) $(TEST_BLOCK) $(TEST_MERKLE) $(TEST_SCRIPT) $(TEST_STACK) $(TEST_OPCODES) $(TEST_P2SH) $(TEST_TIMELOCK) $(TEST_TX_VALIDATE) $(TEST_BLOCK_VALIDATE) $(TEST_COINBASE) $(TEST_UTXO) $(TEST_CHAINSTATE) $(TEST_CONSENSUS) $(TEST_BLOCK_STORAGE) $(TEST_DB) $(TEST_UTXO_DB) $(TEST_BLOCK_INDEX_DB) $(TEST_PROTOCOL) $(TEST_PROTOCOL_SERIALIZE) $(TEST_PEER) $(TEST_DISCOVERY) $(TEST_RELAY) $(TEST_SYNC) $(TEST_MEMPOOL) $(TEST_NODE) $(TEST_EVENT_LOOP) $(TEST_RPC) $(TEST_LOG)
 	@echo "Running SHA-256 tests..."
 	@./$(TEST_SHA256)
 	@echo ""
@@ -309,8 +314,11 @@ test: $(TEST_SHA256) $(TEST_RIPEMD160) $(TEST_SECP256K1_FE) $(TEST_SECP256K1_GRO
 	@echo ""
 	@echo "Running RPC Interface tests..."
 	@./$(TEST_RPC)
+	@echo ""
+	@echo "Running Logging System tests..."
+	@./$(TEST_LOG)
 
 clean:
-	rm -f $(TARGET) $(OBJS) $(TEST_SHA256) $(TEST_RIPEMD160) $(TEST_SECP256K1_FE) $(TEST_SECP256K1_GROUP) $(TEST_ECDSA) $(TEST_SCHNORR) $(TEST_SIG_VERIFY) $(TEST_SERIALIZE) $(TEST_TX) $(TEST_BLOCK) $(TEST_MERKLE) $(TEST_SCRIPT) $(TEST_STACK) $(TEST_OPCODES) $(TEST_P2SH) $(TEST_TIMELOCK) $(TEST_SCRIPT_VECTORS) $(TEST_TX_VALIDATE) $(TEST_BLOCK_VALIDATE) $(TEST_COINBASE) $(TEST_UTXO) $(TEST_CHAINSTATE) $(TEST_CONSENSUS) $(TEST_BLOCK_STORAGE) $(TEST_DB) $(TEST_UTXO_DB) $(TEST_BLOCK_INDEX_DB) $(TEST_PROTOCOL) $(TEST_PROTOCOL_SERIALIZE) $(TEST_PEER) $(TEST_DISCOVERY) $(TEST_RELAY) $(TEST_SYNC) $(TEST_MEMPOOL) $(TEST_NODE) $(TEST_EVENT_LOOP) $(TEST_RPC)
+	rm -f $(TARGET) $(OBJS) $(TEST_SHA256) $(TEST_RIPEMD160) $(TEST_SECP256K1_FE) $(TEST_SECP256K1_GROUP) $(TEST_ECDSA) $(TEST_SCHNORR) $(TEST_SIG_VERIFY) $(TEST_SERIALIZE) $(TEST_TX) $(TEST_BLOCK) $(TEST_MERKLE) $(TEST_SCRIPT) $(TEST_STACK) $(TEST_OPCODES) $(TEST_P2SH) $(TEST_TIMELOCK) $(TEST_SCRIPT_VECTORS) $(TEST_TX_VALIDATE) $(TEST_BLOCK_VALIDATE) $(TEST_COINBASE) $(TEST_UTXO) $(TEST_CHAINSTATE) $(TEST_CONSENSUS) $(TEST_BLOCK_STORAGE) $(TEST_DB) $(TEST_UTXO_DB) $(TEST_BLOCK_INDEX_DB) $(TEST_PROTOCOL) $(TEST_PROTOCOL_SERIALIZE) $(TEST_PEER) $(TEST_DISCOVERY) $(TEST_RELAY) $(TEST_SYNC) $(TEST_MEMPOOL) $(TEST_NODE) $(TEST_EVENT_LOOP) $(TEST_RPC) $(TEST_LOG)
 	find src -name '*.o' -delete
 	find lib -name '*.o' -delete

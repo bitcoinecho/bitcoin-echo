@@ -14,7 +14,7 @@ A complete, ossified implementation of the Bitcoin protocol in pure C.
 
 ## Status
 
-**Phase 8: Protocol Layer** — Complete
+**Phase 9: Application Layer** — Complete
 
 | Component | Status |
 |-----------|--------|
@@ -64,8 +64,13 @@ A complete, ossified implementation of the Bitcoin protocol in pure C.
 | Inventory/Data Relay | Complete |
 | Headers-First Sync | Complete |
 | Transaction Mempool | Complete |
+| **Application Layer** | |
+| Node Initialization | Complete |
+| Main Event Loop | Complete |
+| RPC Interface | Complete |
+| Logging System | Complete |
 
-Next: [Phase 9 — Application Layer](https://github.com/bitcoinecho/bitcoinecho-org/blob/main/ROADMAP.md#phase-9-application-layer)
+Next: [Phase 10 — Mining Interface](https://github.com/bitcoinecho/bitcoinecho-org/blob/main/ROADMAP.md#phase-10-mining-interface)
 
 ## Building
 
