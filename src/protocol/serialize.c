@@ -652,15 +652,46 @@ echo_result_t msg_inv_deserialize(const uint8_t *buf, size_t buf_len,
   }
 
   msg->count = (size_t)count;
-  msg->inventory = NULL; /* Caller must allocate */
+
+  /* Check if we have enough data for all inventory vectors */
+  size_t inv_bytes = msg->count * 36; /* 4 bytes type + 32 bytes hash */
+  if (ptr + inv_bytes > end) {
+    return ECHO_ERR_TRUNCATED;
+  }
+
+  /* Allocate and parse inventory vectors */
+  if (msg->count > 0) {
+    msg->inventory = malloc(msg->count * sizeof(inv_vector_t));
+    if (msg->inventory == NULL) {
+      return ECHO_ERR_OUT_OF_MEMORY;
+    }
+
+    for (size_t i = 0; i < msg->count; i++) {
+      /* Read type (4 bytes, little-endian) */
+      if (ptr + 4 > end) {
+        free(msg->inventory);
+        msg->inventory = NULL;
+        return ECHO_ERR_TRUNCATED;
+      }
+      msg->inventory[i].type = (uint32_t)ptr[0] | ((uint32_t)ptr[1] << 8) |
+                               ((uint32_t)ptr[2] << 16) | ((uint32_t)ptr[3] << 24);
+      ptr += 4;
+
+      /* Read hash (32 bytes) */
+      if (ptr + 32 > end) {
+        free(msg->inventory);
+        msg->inventory = NULL;
+        return ECHO_ERR_TRUNCATED;
+      }
+      memcpy(msg->inventory[i].hash.bytes, ptr, 32);
+      ptr += 32;
+    }
+  } else {
+    msg->inventory = NULL;
+  }
 
   if (consumed) {
-    /* Calculate consumed bytes including all inventory vectors */
-    size_t inv_bytes = msg->count * 36; /* 4 bytes type + 32 bytes hash */
-    if (ptr + inv_bytes > end) {
-      return ECHO_ERR_TRUNCATED;
-    }
-    *consumed = (size_t)(ptr - buf) + inv_bytes;
+    *consumed = (size_t)(ptr - buf);
   }
 
   return ECHO_OK;

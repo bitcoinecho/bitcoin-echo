@@ -28,6 +28,7 @@
 #include "discovery.h"
 #include "echo_config.h"
 #include "echo_types.h"
+#include "log.h"
 #include "mempool.h"
 #include "peer.h"
 #include "platform.h"
@@ -61,7 +62,7 @@ struct node {
   volatile bool shutdown_requested; /* Signal-safe shutdown flag */
   uint64_t start_time;              /* When node started (plat_time_ms) */
 
-  /* Storage layer */
+  /* Storage layer (NULL if in observer mode) */
   utxo_db_t utxo_db;
   block_index_db_t block_index_db;
   block_file_manager_t block_storage;
@@ -69,10 +70,10 @@ struct node {
   bool block_index_db_open;
   bool block_storage_init;
 
-  /* Consensus engine */
+  /* Consensus engine (NULL if in observer mode) */
   consensus_engine_t *consensus;
 
-  /* Mempool */
+  /* Mempool (NULL if in observer mode) */
   mempool_t *mempool;
 
   /* Sync manager */
@@ -86,6 +87,9 @@ struct node {
   /* Listening socket */
   plat_socket_t *listen_socket;
   bool is_listening;
+
+  /* Observer mode statistics (Session 9.5) */
+  observer_stats_t observer_stats;
 };
 
 /*
@@ -127,6 +131,9 @@ void node_config_init(node_config_t *config, const char *data_dir) {
   /* Set default ports based on network */
   config->port = ECHO_DEFAULT_PORT;
   config->rpc_port = ECHO_DEFAULT_RPC_PORT;
+
+  /* Default to full validation mode (not observer) */
+  config->observer_mode = false;
 }
 
 /*
@@ -161,7 +168,7 @@ node_t *node_create(const node_config_t *config) {
   }
   node->peer_count = 0;
 
-  /* Step 1: Create data directory structure */
+  /* Step 1: Create data directory structure (always needed) */
   echo_result_t result = node_init_directories(node);
   if (result != ECHO_OK) {
     node_cleanup(node);
@@ -169,36 +176,47 @@ node_t *node_create(const node_config_t *config) {
     return NULL;
   }
 
-  /* Step 2: Open databases */
-  result = node_init_databases(node);
-  if (result != ECHO_OK) {
-    node_cleanup(node);
-    free(node);
-    return NULL;
+  /*
+   * Observer mode: Skip consensus, storage, and mempool initialization.
+   * Only peer discovery and networking are initialized.
+   */
+  if (!node->config.observer_mode) {
+    /* Step 2: Open databases (full node only) */
+    result = node_init_databases(node);
+    if (result != ECHO_OK) {
+      node_cleanup(node);
+      free(node);
+      return NULL;
+    }
+
+    /* Step 3: Initialize consensus engine (full node only) */
+    result = node_init_consensus(node);
+    if (result != ECHO_OK) {
+      node_cleanup(node);
+      free(node);
+      return NULL;
+    }
+
+    /* Step 4: Initialize mempool (full node only) */
+    result = node_init_mempool(node);
+    if (result != ECHO_OK) {
+      node_cleanup(node);
+      free(node);
+      return NULL;
+    }
   }
 
-  /* Step 3: Initialize consensus engine */
-  result = node_init_consensus(node);
-  if (result != ECHO_OK) {
-    node_cleanup(node);
-    free(node);
-    return NULL;
-  }
-
-  /* Step 4: Initialize mempool */
-  result = node_init_mempool(node);
-  if (result != ECHO_OK) {
-    node_cleanup(node);
-    free(node);
-    return NULL;
-  }
-
-  /* Step 5: Initialize peer discovery */
+  /* Step 5: Initialize peer discovery (both modes) */
   result = node_init_discovery(node);
   if (result != ECHO_OK) {
     node_cleanup(node);
     free(node);
     return NULL;
+  }
+
+  /* Initialize observer statistics if in observer mode */
+  if (node->config.observer_mode) {
+    memset(&node->observer_stats, 0, sizeof(observer_stats_t));
   }
 
   /* Node created successfully but not yet started */
@@ -772,9 +790,40 @@ static void node_handle_peer_message(node_t *node, peer_t *peer,
     return;
   }
 
+  /* Observer mode: Track message types (Session 9.5) */
+  if (node->config.observer_mode) {
+    /* Get message command string for tracking */
+    const char *command = NULL;
+    switch (msg->type) {
+    case MSG_VERSION: command = "version"; break;
+    case MSG_VERACK: command = "verack"; break;
+    case MSG_PING: command = "ping"; break;
+    case MSG_PONG: command = "pong"; break;
+    case MSG_ADDR: command = "addr"; break;
+    case MSG_INV: command = "inv"; break;
+    case MSG_GETDATA: command = "getdata"; break;
+    case MSG_BLOCK: command = "block"; break;
+    case MSG_TX: command = "tx"; break;
+    case MSG_HEADERS: command = "headers"; break;
+    case MSG_GETBLOCKS: command = "getblocks"; break;
+    case MSG_GETHEADERS: command = "getheaders"; break;
+    default: command = "other"; break;
+    }
+    if (command != NULL) {
+      node_observe_message(node, command);
+    }
+  }
+
   switch (msg->type) {
   case MSG_VERSION:
-    /* Version handled during handshake in peer.c */
+    /* Version received - send verack to complete handshake */
+    {
+      msg_t verack;
+      memset(&verack, 0, sizeof(verack));
+      verack.type = MSG_VERACK;
+      peer_queue_message(peer, &verack);
+      log_info(LOG_COMP_NET, "Sent VERACK to peer %s", peer->address);
+    }
     break;
 
   case MSG_VERACK:
@@ -857,28 +906,43 @@ static void node_handle_peer_message(node_t *node, peer_t *peer,
   case MSG_INV:
     /* Inventory announcement - request interesting items */
     if (msg->payload.inv.count > 0 && msg->payload.inv.inventory != NULL) {
+      /* Observer mode: Track block and transaction announcements (Session 9.5) */
+      if (node->config.observer_mode) {
+        for (size_t i = 0; i < msg->payload.inv.count; i++) {
+          const inv_vector_t *inv = &msg->payload.inv.inventory[i];
+          if (inv->type == INV_BLOCK || inv->type == INV_WITNESS_BLOCK) {
+            node_observe_block(node, &inv->hash);
+          } else if (inv->type == INV_TX || inv->type == INV_WITNESS_TX) {
+            node_observe_tx(node, &inv->hash);
+          }
+        }
+      }
+
       /* Allocate buffer for getdata inventory vectors */
       #define MAX_GETDATA_ITEMS 1000
       inv_vector_t items[MAX_GETDATA_ITEMS];
       size_t item_count = 0;
 
       /* Request blocks and transactions we don't have */
-      for (size_t i = 0; i < msg->payload.inv.count && item_count < MAX_GETDATA_ITEMS; i++) {
-        const inv_vector_t *inv = &msg->payload.inv.inventory[i];
+      /* In observer mode, we can optionally skip requesting to reduce bandwidth */
+      if (!node->config.observer_mode) {
+        for (size_t i = 0; i < msg->payload.inv.count && item_count < MAX_GETDATA_ITEMS; i++) {
+          const inv_vector_t *inv = &msg->payload.inv.inventory[i];
 
-        /* For Session 9.2, request all announced items */
-        /* Filtering logic (already have? want?) will be added in later sessions */
-        memcpy(&items[item_count], inv, sizeof(inv_vector_t));
-        item_count++;
-      }
+          /* For Session 9.2, request all announced items */
+          /* Filtering logic (already have? want?) will be added in later sessions */
+          memcpy(&items[item_count], inv, sizeof(inv_vector_t));
+          item_count++;
+        }
 
-      if (item_count > 0) {
-        msg_t getdata;
-        memset(&getdata, 0, sizeof(getdata));
-        getdata.type = MSG_GETDATA;
-        getdata.payload.getdata.count = item_count;
-        getdata.payload.getdata.inventory = items;
-        peer_queue_message(peer, &getdata);
+        if (item_count > 0) {
+          msg_t getdata;
+          memset(&getdata, 0, sizeof(getdata));
+          getdata.type = MSG_GETDATA;
+          getdata.payload.getdata.count = item_count;
+          getdata.payload.getdata.inventory = items;
+          peer_queue_message(peer, &getdata);
+        }
       }
       #undef MAX_GETDATA_ITEMS
     }
@@ -988,6 +1052,13 @@ echo_result_t node_process_peers(node_t *node) {
     if (result == ECHO_OK) {
       /* Message received - handle it */
       node_handle_peer_message(node, peer, &msg);
+
+      /* Free any allocated inventory vectors (from INV/GETDATA parsing) */
+      if (msg.type == MSG_INV && msg.payload.inv.inventory != NULL) {
+        free(msg.payload.inv.inventory);
+      } else if (msg.type == MSG_GETDATA && msg.payload.getdata.inventory != NULL) {
+        free(msg.payload.getdata.inventory);
+      }
     } else if (result == ECHO_ERR_WOULD_BLOCK) {
       /* No message available - not an error */
     } else {
@@ -1054,6 +1125,11 @@ echo_result_t node_maintenance(node_t *node) {
   }
 
   uint64_t now = plat_time_ms();
+  static uint64_t last_log = 0;
+  if (now - last_log > 5000) { /* Log every 5 seconds */
+    log_info(LOG_COMP_NET, "Maintenance tick: peer_count=%zu", node->peer_count);
+    last_log = now;
+  }
 
   /* Task 1: Ping peers to keep connections alive */
   for (size_t i = 0; i < NODE_MAX_PEERS; i++) {
@@ -1091,6 +1167,11 @@ echo_result_t node_maintenance(node_t *node) {
     }
   }
 
+  static uint64_t last_peer_log = 0;
+  if (now - last_peer_log > 5000) { /* Log every 5 seconds */
+    log_info(LOG_COMP_NET, "Outbound peers: %zu/%d", outbound_count, ECHO_MAX_OUTBOUND_PEERS);
+    last_peer_log = now;
+  }
   if (outbound_count < ECHO_MAX_OUTBOUND_PEERS) {
     /* Try to make one new outbound connection */
     net_addr_t addr;
@@ -1106,10 +1187,16 @@ echo_result_t node_maintenance(node_t *node) {
           snprintf(ip_str, sizeof(ip_str), "%d.%d.%d.%d", addr.ip[12],
                    addr.ip[13], addr.ip[14], addr.ip[15]);
 
+          log_info(LOG_COMP_NET, "Attempting outbound connection to %s:%u", ip_str, addr.port);
+
+          /* Mark address as in-use BEFORE connecting to prevent duplicate connections */
+          discovery_mark_address_in_use(&node->addr_manager, &addr);
+
           uint64_t nonce = generate_nonce();
           echo_result_t result = peer_connect(peer, ip_str, addr.port, nonce);
           if (result == ECHO_OK) {
             node->peer_count++;
+            log_info(LOG_COMP_NET, "Connected to peer %s:%u", ip_str, addr.port);
 
             /* Send version message to start handshake */
             uint32_t our_height = 0;
@@ -1120,10 +1207,14 @@ echo_result_t node_maintenance(node_t *node) {
             /* Service flags: NODE_NETWORK (1) */
             uint64_t services = 1;
             peer_send_version(peer, services, (int32_t)our_height, true);
+          } else {
+            log_warn(LOG_COMP_NET, "Failed to connect to %s:%u: error %d", ip_str, addr.port, result);
           }
           break; /* Only one connection attempt per maintenance cycle */
         }
       }
+    } else {
+      log_debug(LOG_COMP_NET, "No addresses available for outbound connection (have %zu peers)", outbound_count);
     }
   }
 
@@ -1156,4 +1247,135 @@ bool node_shutdown_requested(const node_t *node) {
     return false;
   }
   return node->shutdown_requested;
+}
+
+/*
+ * ============================================================================
+ * OBSERVER MODE FUNCTIONS (Session 9.5)
+ * ============================================================================
+ */
+
+bool node_is_observer(const node_t *node) {
+  if (node == NULL) {
+    return false;
+  }
+  return node->config.observer_mode;
+}
+
+void node_get_observer_stats(const node_t *node, observer_stats_t *stats) {
+  if (node == NULL || stats == NULL) {
+    return;
+  }
+
+  if (!node->config.observer_mode) {
+    /* Not in observer mode - return empty stats */
+    memset(stats, 0, sizeof(*stats));
+    return;
+  }
+
+  /* Copy observer statistics */
+  memcpy(stats, &node->observer_stats, sizeof(*stats));
+}
+
+void node_observe_block(node_t *node, const hash256_t *hash) {
+  if (node == NULL || hash == NULL || !node->config.observer_mode) {
+    return;
+  }
+
+  observer_stats_t *obs = &node->observer_stats;
+  uint64_t now = plat_time_ms();
+
+  /* Check if block already observed */
+  for (size_t i = 0; i < obs->block_count; i++) {
+    if (memcmp(&obs->blocks[i].hash, hash, sizeof(hash256_t)) == 0) {
+      /* Already seen - increment peer count */
+      obs->blocks[i].peer_count++;
+      return;
+    }
+  }
+
+  /* New block - add to ring buffer */
+  size_t index = obs->block_write_index;
+  obs->blocks[index].hash = *hash;
+  obs->blocks[index].first_seen = now;
+  obs->blocks[index].peer_count = 1;
+
+  /* Update ring buffer position */
+  obs->block_write_index = (obs->block_write_index + 1) % NODE_OBSERVER_MAX_BLOCKS;
+
+  /* Update count (saturates at max) */
+  if (obs->block_count < NODE_OBSERVER_MAX_BLOCKS) {
+    obs->block_count++;
+  }
+}
+
+void node_observe_tx(node_t *node, const hash256_t *txid) {
+  if (node == NULL || txid == NULL || !node->config.observer_mode) {
+    return;
+  }
+
+  observer_stats_t *obs = &node->observer_stats;
+  uint64_t now = plat_time_ms();
+
+  /* Check if transaction already observed (simple linear search for recent txs)
+   * We only check the last 100 entries to avoid O(n) search on large buffer */
+  size_t check_count = obs->tx_count < 100 ? obs->tx_count : 100;
+  for (size_t i = 0; i < check_count; i++) {
+    size_t idx = (obs->tx_write_index + NODE_OBSERVER_MAX_TXS - 1 - i) %
+                 NODE_OBSERVER_MAX_TXS;
+    if (memcmp(&obs->txs[idx].txid, txid, sizeof(hash256_t)) == 0) {
+      /* Already seen recently - skip */
+      return;
+    }
+  }
+
+  /* New transaction - add to ring buffer */
+  size_t index = obs->tx_write_index;
+  obs->txs[index].txid = *txid;
+  obs->txs[index].first_seen = now;
+
+  /* Update ring buffer position */
+  obs->tx_write_index = (obs->tx_write_index + 1) % NODE_OBSERVER_MAX_TXS;
+
+  /* Update count (saturates at max) */
+  if (obs->tx_count < NODE_OBSERVER_MAX_TXS) {
+    obs->tx_count++;
+  }
+}
+
+void node_observe_message(node_t *node, const char *command) {
+  if (node == NULL || command == NULL || !node->config.observer_mode) {
+    return;
+  }
+
+  observer_stats_t *obs = &node->observer_stats;
+
+  /* Update message counters based on command */
+  if (strcmp(command, "version") == 0) {
+    obs->msg_version++;
+  } else if (strcmp(command, "verack") == 0) {
+    obs->msg_verack++;
+  } else if (strcmp(command, "ping") == 0) {
+    obs->msg_ping++;
+  } else if (strcmp(command, "pong") == 0) {
+    obs->msg_pong++;
+  } else if (strcmp(command, "addr") == 0) {
+    obs->msg_addr++;
+  } else if (strcmp(command, "inv") == 0) {
+    obs->msg_inv++;
+  } else if (strcmp(command, "getdata") == 0) {
+    obs->msg_getdata++;
+  } else if (strcmp(command, "block") == 0) {
+    obs->msg_block++;
+  } else if (strcmp(command, "tx") == 0) {
+    obs->msg_tx++;
+  } else if (strcmp(command, "headers") == 0) {
+    obs->msg_headers++;
+  } else if (strcmp(command, "getblocks") == 0) {
+    obs->msg_getblocks++;
+  } else if (strcmp(command, "getheaders") == 0) {
+    obs->msg_getheaders++;
+  } else {
+    obs->msg_other++;
+  }
 }

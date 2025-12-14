@@ -645,6 +645,152 @@ static void test_json_parse_null_output(void) {
 
 /*
  * ============================================================================
+ * TEST: Batch Request Parsing (Session 9.5+)
+ * ============================================================================
+ */
+
+static void test_json_parse_batch_request(void) {
+  const char *json =
+      "[{\"jsonrpc\":\"2.0\",\"method\":\"getobserverstats\",\"params\":[],"
+      "\"id\":1},"
+      "{\"jsonrpc\":\"2.0\",\"method\":\"getobservedblocks\",\"params\":[],"
+      "\"id\":2}]";
+
+  json_value_t *value = NULL;
+  echo_result_t res = json_parse(json, &value);
+
+  assert(res == ECHO_OK);
+  assert(value != NULL);
+  assert(value->type == JSON_ARRAY);
+  assert(json_array_length(value) == 2);
+
+  /* First request */
+  json_value_t *req1 = json_array_get(value, 0);
+  assert(req1 != NULL && req1->type == JSON_OBJECT);
+  json_value_t *method1 = json_object_get(req1, "method");
+  assert(method1 != NULL && method1->type == JSON_STRING);
+  assert(strcmp(method1->u.string, "getobserverstats") == 0);
+
+  /* Second request */
+  json_value_t *req2 = json_array_get(value, 1);
+  assert(req2 != NULL && req2->type == JSON_OBJECT);
+  json_value_t *method2 = json_object_get(req2, "method");
+  assert(method2 != NULL && method2->type == JSON_STRING);
+  assert(strcmp(method2->u.string, "getobservedblocks") == 0);
+
+  json_free(value);
+  test_pass();
+}
+
+static void test_json_parse_empty_batch(void) {
+  const char *json = "[]";
+
+  json_value_t *value = NULL;
+  echo_result_t res = json_parse(json, &value);
+
+  assert(res == ECHO_OK);
+  assert(value != NULL);
+  assert(value->type == JSON_ARRAY);
+  assert(json_array_length(value) == 0);
+
+  json_free(value);
+  test_pass();
+}
+
+static void test_json_parse_batch_mixed_ids(void) {
+  const char *json =
+      "[{\"method\":\"test1\",\"id\":1},"
+      "{\"method\":\"test2\",\"id\":\"string\"},"
+      "{\"method\":\"test3\",\"id\":null}]";
+
+  json_value_t *value = NULL;
+  echo_result_t res = json_parse(json, &value);
+
+  assert(res == ECHO_OK);
+  assert(value != NULL);
+  assert(value->type == JSON_ARRAY);
+  assert(json_array_length(value) == 3);
+
+  /* Check first ID (number) */
+  json_value_t *req1 = json_array_get(value, 0);
+  json_value_t *id1 = json_object_get(req1, "id");
+  assert(id1 != NULL && id1->type == JSON_NUMBER);
+  assert(id1->u.number == 1.0);
+
+  /* Check second ID (string) */
+  json_value_t *req2 = json_array_get(value, 1);
+  json_value_t *id2 = json_object_get(req2, "id");
+  assert(id2 != NULL && id2->type == JSON_STRING);
+  assert(strcmp(id2->u.string, "string") == 0);
+
+  /* Check third ID (null) */
+  json_value_t *req3 = json_array_get(value, 2);
+  json_value_t *id3 = json_object_get(req3, "id");
+  assert(id3 != NULL && id3->type == JSON_NULL);
+
+  json_free(value);
+  test_pass();
+}
+
+static void test_json_builder_batch_response(void) {
+  json_builder_t builder;
+  json_builder_init(&builder);
+
+  /* Build a batch response array */
+  json_builder_append(&builder, "[");
+
+  /* First response */
+  json_builder_append(&builder, "{\"result\":");
+  json_builder_int(&builder, 42);
+  json_builder_append(&builder, ",\"error\":null,\"id\":1}");
+
+  json_builder_append(&builder, ",");
+
+  /* Second response */
+  json_builder_append(&builder, "{\"result\":");
+  json_builder_string(&builder, "success");
+  json_builder_append(&builder, ",\"error\":null,\"id\":2}");
+
+  json_builder_append(&builder, "]");
+
+  const char *result = json_builder_str(&builder);
+  assert(strstr(result, "[{") != NULL);
+  assert(strstr(result, "\"result\":42") != NULL);
+  assert(strstr(result, "\"result\":\"success\"") != NULL);
+  assert(strstr(result, "}]") != NULL);
+
+  json_builder_free(&builder);
+  test_pass();
+}
+
+static void test_json_parse_batch_with_invalid_request(void) {
+  /* Batch with one valid and one invalid request */
+  const char *json =
+      "[{\"method\":\"test\",\"id\":1},"
+      "\"invalid_request\"]";
+
+  json_value_t *value = NULL;
+  echo_result_t res = json_parse(json, &value);
+
+  assert(res == ECHO_OK);
+  assert(value != NULL);
+  assert(value->type == JSON_ARRAY);
+  assert(json_array_length(value) == 2);
+
+  /* First should be object */
+  json_value_t *req1 = json_array_get(value, 0);
+  assert(req1 != NULL && req1->type == JSON_OBJECT);
+
+  /* Second should be string (invalid request object) */
+  json_value_t *req2 = json_array_get(value, 1);
+  assert(req2 != NULL && req2->type == JSON_STRING);
+
+  json_free(value);
+  test_pass();
+}
+
+/*
+ * ============================================================================
  * Main
  * ============================================================================
  */
@@ -691,6 +837,11 @@ int main(void) {
     test_case("Json parse invalid json"); test_json_parse_invalid_json(); test_pass();
     test_case("Json parse null input"); test_json_parse_null_input(); test_pass();
     test_case("Json parse null output"); test_json_parse_null_output(); test_pass();
+    test_case("Json parse batch request"); test_json_parse_batch_request(); test_pass();
+    test_case("Json parse empty batch"); test_json_parse_empty_batch(); test_pass();
+    test_case("Json parse batch mixed ids"); test_json_parse_batch_mixed_ids(); test_pass();
+    test_case("Json builder batch response"); test_json_builder_batch_response(); test_pass();
+    test_case("Json parse batch with invalid request"); test_json_parse_batch_with_invalid_request(); test_pass();
 
     test_suite_end();
     return test_global_summary();

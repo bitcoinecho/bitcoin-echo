@@ -21,6 +21,7 @@
 #include "consensus.h"
 #include "echo_config.h"
 #include "echo_types.h"
+#include "log.h"
 #include "mempool.h"
 #include "node.h"
 #include "platform.h"
@@ -934,6 +935,15 @@ echo_result_t rpc_server_start(rpc_server_t *server) {
     return ECHO_ERR_PLATFORM_IO;
   }
 
+  /* Set non-blocking mode so event loop doesn't block on accept() */
+  res = plat_socket_set_nonblocking(server->listen_sock);
+  if (res != PLAT_OK) {
+    plat_socket_close(server->listen_sock);
+    plat_socket_free(server->listen_sock);
+    server->listen_sock = NULL;
+    return ECHO_ERR_PLATFORM_IO;
+  }
+
   server->running = true;
   return ECHO_OK;
 }
@@ -1002,20 +1012,28 @@ static echo_result_t http_parse_request(const char *data, size_t len,
 /* Send HTTP response */
 static void http_send_response(plat_socket_t *sock, int status,
                                const char *status_text, const char *body) {
-  char header[512];
+  char header[768]; /* Increased size for CORS headers */
   size_t body_len = body ? strlen(body) : 0;
+
+  log_info(LOG_COMP_RPC, "Sending HTTP %d response, body_len=%zu", status, body_len);
 
   int header_len = snprintf(header, sizeof(header),
                             "HTTP/1.0 %d %s\r\n"
                             "Content-Type: application/json\r\n"
                             "Content-Length: %zu\r\n"
                             "Connection: close\r\n"
+                            "Access-Control-Allow-Origin: *\r\n"
+                            "Access-Control-Allow-Methods: POST, OPTIONS\r\n"
+                            "Access-Control-Allow-Headers: Content-Type\r\n"
                             "\r\n",
                             status, status_text, body_len);
 
-  plat_socket_send(sock, header, (size_t)header_len);
+  int sent = plat_socket_send(sock, header, (size_t)header_len);
+  log_info(LOG_COMP_RPC, "Sent header: %d bytes (expected %d)", sent, header_len);
+
   if (body != NULL && body_len > 0) {
-    plat_socket_send(sock, body, body_len);
+    sent = plat_socket_send(sock, body, body_len);
+    log_info(LOG_COMP_RPC, "Sent body: %d bytes (expected %zu)", sent, body_len);
   }
 }
 
@@ -1032,6 +1050,14 @@ typedef struct {
                            json_builder_t *builder);
 } rpc_method_entry_t;
 
+/* Forward declarations for observer RPC methods (Session 9.5) */
+static echo_result_t rpc_getobserverstats(node_t *node, const json_value_t *params,
+                                          json_builder_t *builder);
+static echo_result_t rpc_getobservedblocks(node_t *node, const json_value_t *params,
+                                           json_builder_t *builder);
+static echo_result_t rpc_getobservedtxs(node_t *node, const json_value_t *params,
+                                        json_builder_t *builder);
+
 /* Method dispatch table */
 static const rpc_method_entry_t rpc_methods[] = {
     {"getblockchaininfo", rpc_getblockchaininfo},
@@ -1041,6 +1067,9 @@ static const rpc_method_entry_t rpc_methods[] = {
     {"sendrawtransaction", rpc_sendrawtransaction},
     {"getblocktemplate", rpc_getblocktemplate},
     {"submitblock", rpc_submitblock},
+    {"getobserverstats", rpc_getobserverstats},   /* Session 9.5 */
+    {"getobservedblocks", rpc_getobservedblocks}, /* Session 9.5 */
+    {"getobservedtxs", rpc_getobservedtxs},       /* Session 9.5 */
     {NULL, NULL}};
 
 /* Find method handler */
@@ -1055,58 +1084,233 @@ static echo_result_t (*rpc_find_method(const char *name))(node_t *,
   return NULL;
 }
 
-/* Handle a single RPC request */
+/* Execute a single RPC request and build response */
+static void rpc_execute_single(rpc_server_t *server, rpc_request_t *req,
+                                json_builder_t *response) {
+  /* Find and execute method */
+  echo_result_t (*handler)(node_t *, const json_value_t *, json_builder_t *) =
+      rpc_find_method(req->method);
+
+  if (handler == NULL) {
+    rpc_response_error(req->id, RPC_ERR_METHOD_NOT_FOUND, "Method not found",
+                       response);
+  } else {
+    json_builder_t result;
+    json_builder_init(&result);
+
+    log_info(LOG_COMP_RPC, "Calling handler for method: %s", req->method);
+    echo_result_t res = handler(server->node, req->params, &result);
+
+    const char *result_str = json_builder_str(&result);
+    log_info(LOG_COMP_RPC, "Handler returned: res=%d, result_str=%s",
+             res, result_str ? result_str : "(null)");
+
+    if (res == ECHO_OK) {
+      log_info(LOG_COMP_RPC, "Building success response with result: %s",
+               result_str ? result_str : "(null)");
+      rpc_response_success(req->id, result_str, response);
+
+      const char *response_str = json_builder_str(response);
+      log_info(LOG_COMP_RPC, "After rpc_response_success, response_str=%s",
+               response_str ? response_str : "(null)");
+    } else {
+      /* Handler sets its own error - extract it from result */
+      rpc_response_error(req->id, RPC_ERR_INTERNAL_ERROR, "Internal error",
+                         response);
+    }
+
+    json_builder_free(&result);
+  }
+}
+
+/* Handle a single RPC request or batch of requests */
 static void rpc_handle_request(rpc_server_t *server, plat_socket_t *client_sock,
                                const char *body) {
-  json_builder_t response;
-
-  /* Parse RPC request */
-  rpc_request_t req;
-  echo_result_t res = rpc_request_parse(body, &req);
-  if (res != ECHO_OK) {
+  /* Parse JSON to detect single vs batch request */
+  json_value_t *root = NULL;
+  echo_result_t parse_res = json_parse(body, &root);
+  if (parse_res != ECHO_OK) {
+    json_builder_t response;
     rpc_response_error(NULL, RPC_ERR_PARSE_ERROR, "Parse error", &response);
     http_send_response(client_sock, 200, "OK", json_builder_str(&response));
     json_builder_free(&response);
     return;
   }
 
-  /* Find and execute method */
-  echo_result_t (*handler)(node_t *, const json_value_t *, json_builder_t *) =
-      rpc_find_method(req.method);
+  /* Check if this is a batch request (array) or single request (object) */
+  if (root->type == JSON_ARRAY) {
+    /* Batch request - process each request and return array of responses */
+    size_t batch_size = json_array_length(root);
 
-  if (handler == NULL) {
-    rpc_response_error(req.id, RPC_ERR_METHOD_NOT_FOUND, "Method not found",
-                       &response);
-  } else {
-    json_builder_t result;
-    json_builder_init(&result);
+    log_info(LOG_COMP_RPC, "Processing batch request with %zu items", batch_size);
 
-    res = handler(server->node, req.params, &result);
-
-    if (res == ECHO_OK) {
-      rpc_response_success(req.id, json_builder_str(&result), &response);
-    } else {
-      /* Handler sets its own error - extract it from result */
-      rpc_response_error(req.id, RPC_ERR_INTERNAL_ERROR, "Internal error",
+    if (batch_size == 0) {
+      /* Empty batch is invalid per JSON-RPC 2.0 spec */
+      json_builder_t response;
+      rpc_response_error(NULL, RPC_ERR_INVALID_REQUEST, "Invalid request: empty batch",
                          &response);
+      http_send_response(client_sock, 200, "OK", json_builder_str(&response));
+      json_builder_free(&response);
+      json_free(root);
+      return;
     }
 
-    json_builder_free(&result);
+    json_builder_t batch_response;
+    json_builder_init(&batch_response);
+    json_builder_append(&batch_response, "[");
+
+    /* Process each request in the batch */
+    for (size_t i = 0; i < batch_size; i++) {
+      json_value_t *request_obj = json_array_get(root, i);
+
+      if (i > 0) {
+        json_builder_append(&batch_response, ",");
+      }
+
+      if (request_obj == NULL || request_obj->type != JSON_OBJECT) {
+        /* Invalid request in batch */
+        json_builder_t error_response;
+        rpc_response_error(NULL, RPC_ERR_INVALID_REQUEST, "Invalid request",
+                           &error_response);
+        json_builder_append(&batch_response, json_builder_str(&error_response));
+        json_builder_free(&error_response);
+        continue;
+      }
+
+      /* Parse this request */
+      rpc_request_t req;
+      memset(&req, 0, sizeof(req));
+
+      /* Extract method */
+      json_value_t *method = json_object_get(request_obj, "method");
+      if (method == NULL || method->type != JSON_STRING) {
+        json_builder_t error_response;
+        rpc_response_error(NULL, RPC_ERR_INVALID_REQUEST, "Missing method",
+                           &error_response);
+        json_builder_append(&batch_response, json_builder_str(&error_response));
+        json_builder_free(&error_response);
+        continue;
+      }
+      req.method = str_dup(method->u.string);
+
+      /* Extract id (optional) */
+      json_value_t *id = json_object_get(request_obj, "id");
+      if (id != NULL) {
+        if (id->type == JSON_STRING) {
+          req.id = str_dup(id->u.string);
+        } else if (id->type == JSON_NUMBER) {
+          char buf[32];
+          snprintf(buf, sizeof(buf), "%.0f", id->u.number);
+          req.id = str_dup(buf);
+        } else if (id->type == JSON_NULL) {
+          req.id = NULL;
+        }
+      }
+
+      /* Extract params (optional) */
+      json_value_t *params = json_object_get(request_obj, "params");
+      if (params != NULL) {
+        /* Deep copy params since we need to keep them */
+        /* For simplicity, we'll just reference them - they're owned by root */
+        req.params = params;
+      }
+
+      /* Execute the request */
+      json_builder_t single_response;
+      rpc_execute_single(server, &req, &single_response);
+      json_builder_append(&batch_response, json_builder_str(&single_response));
+      json_builder_free(&single_response);
+
+      /* Free request (but don't free params - they're owned by root) */
+      free(req.id);
+      free(req.method);
+    }
+
+    json_builder_append(&batch_response, "]");
+
+    const char *final_response = json_builder_str(&batch_response);
+    log_info(LOG_COMP_RPC, "Sending batch response: %s",
+             final_response ? final_response : "(null)");
+    http_send_response(client_sock, 200, "OK", final_response);
+    json_builder_free(&batch_response);
+
+  } else if (root->type == JSON_OBJECT) {
+    /* Single request - original behavior */
+    rpc_request_t req;
+    memset(&req, 0, sizeof(req));
+
+    /* Extract method */
+    json_value_t *method = json_object_get(root, "method");
+    if (method == NULL || method->type != JSON_STRING) {
+      json_builder_t response;
+      rpc_response_error(NULL, RPC_ERR_INVALID_REQUEST, "Missing method", &response);
+      http_send_response(client_sock, 200, "OK", json_builder_str(&response));
+      json_builder_free(&response);
+      json_free(root);
+      return;
+    }
+    req.method = str_dup(method->u.string);
+
+    /* Extract id (optional) */
+    json_value_t *id = json_object_get(root, "id");
+    if (id != NULL) {
+      if (id->type == JSON_STRING) {
+        req.id = str_dup(id->u.string);
+      } else if (id->type == JSON_NUMBER) {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%.0f", id->u.number);
+        req.id = str_dup(buf);
+      } else if (id->type == JSON_NULL) {
+        req.id = NULL;
+      }
+    }
+
+    /* Extract params (optional) */
+    json_value_t *params = json_object_get(root, "params");
+    if (params != NULL) {
+      req.params = params;
+    }
+
+    /* Execute single request */
+    json_builder_t response;
+    rpc_execute_single(server, &req, &response);
+
+    const char *final_response = json_builder_str(&response);
+    log_info(LOG_COMP_RPC, "Sending single response: %s",
+             final_response ? final_response : "(null)");
+    http_send_response(client_sock, 200, "OK", final_response);
+    json_builder_free(&response);
+
+    /* Free request (but don't free params - they're owned by root) */
+    free(req.id);
+    free(req.method);
+
+  } else {
+    /* Invalid request type */
+    json_builder_t response;
+    rpc_response_error(NULL, RPC_ERR_INVALID_REQUEST, "Invalid request", &response);
+    http_send_response(client_sock, 200, "OK", json_builder_str(&response));
+    json_builder_free(&response);
   }
 
-  http_send_response(client_sock, 200, "OK", json_builder_str(&response));
-  json_builder_free(&response);
-  rpc_request_free(&req);
+  json_free(root);
 }
 
 echo_result_t rpc_server_process(rpc_server_t *server) {
+  static int call_count = 0;
+  if (++call_count % 1000 == 0) {
+    log_info(LOG_COMP_RPC, "rpc_server_process called %d times", call_count);
+  }
+
   if (server == NULL || !server->running) {
+    log_warn(LOG_COMP_RPC, "rpc_server_process: server NULL or not running");
     return ECHO_ERR_INVALID_STATE;
   }
 
   /* Allocate client socket */
   plat_socket_t *client_sock = plat_socket_alloc();
   if (client_sock == NULL) {
+    log_error(LOG_COMP_RPC, "Failed to allocate client socket");
     return ECHO_ERR_OUT_OF_MEMORY;
   }
 
@@ -1117,16 +1321,40 @@ echo_result_t rpc_server_process(rpc_server_t *server) {
     return ECHO_OK; /* No pending connection */
   }
 
+  log_info(LOG_COMP_RPC, "Accepted new RPC connection");
+
+  /* Set short receive timeout - we expect data to arrive quickly */
+  plat_socket_set_recv_timeout(client_sock, 100); /* 100ms initial timeout */
+
   /* Read HTTP request */
   char buf[RPC_MAX_REQUEST_SIZE];
   size_t total_read = 0;
+  int recv_attempts = 0;
+  const int max_recv_attempts = 20; /* Max 2 seconds total (20 * 100ms) */
 
-  while (total_read < sizeof(buf) - 1) {
+  while (total_read < sizeof(buf) - 1 && recv_attempts < max_recv_attempts) {
     int n =
         plat_socket_recv(client_sock, buf + total_read, HTTP_READ_CHUNK_SIZE);
-    if (n <= 0) {
+    recv_attempts++;
+
+    if (n < 0) {
+      /* Error or timeout - if we have data, try to process it */
+      if (total_read > 0) {
+        log_info(LOG_COMP_RPC, "Recv timeout/error after %zu bytes, processing", total_read);
+        break;
+      }
+      /* No data at all - give up */
+      log_warn(LOG_COMP_RPC, "Socket recv returned %d with no data, closing", n);
+      plat_socket_close(client_sock);
+      plat_socket_free(client_sock);
+      return ECHO_OK;
+    }
+    if (n == 0) {
+      /* Connection closed */
+      log_info(LOG_COMP_RPC, "Connection closed by client");
       break;
     }
+
     total_read += (size_t)n;
     buf[total_read] = '\0';
 
@@ -1164,11 +1392,25 @@ echo_result_t rpc_server_process(rpc_server_t *server) {
   http_request_t http_req;
   echo_result_t parse_res = http_parse_request(buf, total_read, &http_req);
 
-  if (parse_res == ECHO_OK && strcmp(http_req.method, "POST") == 0 &&
-      http_req.body != NULL) {
+  log_info(LOG_COMP_RPC, "Parsed HTTP: res=%d, method=%s, body=%s",
+           parse_res,
+           (parse_res == ECHO_OK) ? http_req.method : "(null)",
+           (parse_res == ECHO_OK && http_req.body) ? http_req.body : "(null)");
+
+  if (parse_res == ECHO_OK && strcmp(http_req.method, "OPTIONS") == 0) {
+    /* CORS preflight request - respond with 200 OK and CORS headers */
+    log_info(LOG_COMP_RPC, "Handling OPTIONS (CORS preflight)");
+    http_send_response(client_sock, 200, "OK", "");
+  } else if (parse_res == ECHO_OK && strcmp(http_req.method, "POST") == 0 &&
+             http_req.body != NULL) {
+    log_info(LOG_COMP_RPC, "Handling POST, body=%s", http_req.body);
     rpc_handle_request(server, client_sock, http_req.body);
   } else {
     /* Bad request */
+    log_warn(LOG_COMP_RPC, "Bad request: parse_res=%d, method=%s, body=%s",
+             parse_res,
+             (parse_res == ECHO_OK) ? http_req.method : "(null)",
+             (parse_res == ECHO_OK && http_req.body) ? http_req.body : "(null)");
     json_builder_t response;
     rpc_response_error(NULL, RPC_ERR_INVALID_REQUEST, "Invalid request",
                        &response);
@@ -1808,5 +2050,231 @@ echo_result_t rpc_submitblock(node_t *node, const json_value_t *params,
 
   /* Success - null means accepted */
   json_builder_null(builder);
+  return ECHO_OK;
+}
+
+/*
+ * ============================================================================
+ * OBSERVER MODE RPC METHODS (Session 9.5)
+ * ============================================================================
+ */
+
+/**
+ * RPC: getobserverstats
+ *
+ * Returns observer mode statistics including message counts and peer count.
+ *
+ * Response:
+ * {
+ *   "mode": "observer",
+ *   "uptime_seconds": 123,
+ *   "peer_count": 5,
+ *   "messages_received": {
+ *     "version": 5,
+ *     "verack": 5,
+ *     "inv": 42,
+ *     ...
+ *   }
+ * }
+ */
+static echo_result_t rpc_getobserverstats(node_t *node,
+                                          const json_value_t *params,
+                                          json_builder_t *builder) {
+  (void)params; /* Unused */
+
+  if (node == NULL || builder == NULL) {
+    return ECHO_ERR_NULL_PARAM;
+  }
+
+  if (!node_is_observer(node)) {
+    return RPC_ERR_MISC; /* Not in observer mode */
+  }
+
+  /* Get observer statistics */
+  observer_stats_t stats;
+  node_get_observer_stats(node, &stats);
+
+  /* Get node statistics */
+  node_stats_t node_stats;
+  node_get_stats(node, &node_stats);
+
+  /* Build JSON response */
+  json_builder_append(builder, "{");
+
+  json_builder_append(builder, "\"mode\":\"observer\",");
+
+  /* Uptime */
+  uint64_t uptime_seconds = node_stats.uptime_ms / 1000;
+  json_builder_append(builder, "\"uptime_seconds\":");
+  json_builder_uint(builder, uptime_seconds);
+  json_builder_append(builder, ",");
+
+  /* Peer count */
+  json_builder_append(builder, "\"peer_count\":");
+  json_builder_uint(builder, (uint64_t)node_stats.peer_count);
+  json_builder_append(builder, ",");
+
+  /* Message counts */
+  json_builder_append(builder, "\"messages_received\":{");
+  json_builder_append(builder, "\"version\":");
+  json_builder_uint(builder, stats.msg_version);
+  json_builder_append(builder, ",\"verack\":");
+  json_builder_uint(builder, stats.msg_verack);
+  json_builder_append(builder, ",\"ping\":");
+  json_builder_uint(builder, stats.msg_ping);
+  json_builder_append(builder, ",\"pong\":");
+  json_builder_uint(builder, stats.msg_pong);
+  json_builder_append(builder, ",\"addr\":");
+  json_builder_uint(builder, stats.msg_addr);
+  json_builder_append(builder, ",\"inv\":");
+  json_builder_uint(builder, stats.msg_inv);
+  json_builder_append(builder, ",\"getdata\":");
+  json_builder_uint(builder, stats.msg_getdata);
+  json_builder_append(builder, ",\"block\":");
+  json_builder_uint(builder, stats.msg_block);
+  json_builder_append(builder, ",\"tx\":");
+  json_builder_uint(builder, stats.msg_tx);
+  json_builder_append(builder, ",\"headers\":");
+  json_builder_uint(builder, stats.msg_headers);
+  json_builder_append(builder, ",\"getblocks\":");
+  json_builder_uint(builder, stats.msg_getblocks);
+  json_builder_append(builder, ",\"getheaders\":");
+  json_builder_uint(builder, stats.msg_getheaders);
+  json_builder_append(builder, ",\"other\":");
+  json_builder_uint(builder, stats.msg_other);
+  json_builder_append(builder, "}");
+
+  json_builder_append(builder, "}");
+  return ECHO_OK;
+}
+
+/**
+ * RPC: getobservedblocks
+ *
+ * Returns recently observed block announcements.
+ *
+ * Response:
+ * {
+ *   "blocks": [
+ *     {"hash": "00000000...", "first_seen": 1234567890, "peer_count": 3},
+ *     ...
+ *   ]
+ * }
+ */
+static echo_result_t rpc_getobservedblocks(node_t *node,
+                                           const json_value_t *params,
+                                           json_builder_t *builder) {
+  (void)params; /* Unused */
+
+  if (node == NULL || builder == NULL) {
+    return ECHO_ERR_NULL_PARAM;
+  }
+
+  if (!node_is_observer(node)) {
+    return RPC_ERR_MISC; /* Not in observer mode */
+  }
+
+  /* Get observer statistics */
+  observer_stats_t stats;
+  node_get_observer_stats(node, &stats);
+
+  /* Build JSON response */
+  json_builder_append(builder, "{\"blocks\":[");
+
+  /* Output blocks in chronological order (oldest first) */
+  for (size_t i = 0; i < stats.block_count; i++) {
+    const observer_block_t *block = &stats.blocks[i];
+
+    if (i > 0) {
+      json_builder_append(builder, ",");
+    }
+
+    json_builder_append(builder, "{");
+
+    /* Block hash (reversed for display) */
+    json_builder_append(builder, "\"hash\":\"");
+    char hash_str[65];
+    rpc_format_hash(&block->hash, hash_str);
+    json_builder_append(builder, hash_str);
+    json_builder_append(builder, "\",");
+
+    /* First seen timestamp */
+    json_builder_append(builder, "\"first_seen\":");
+    json_builder_uint(builder, block->first_seen);
+    json_builder_append(builder, ",");
+
+    /* Peer count */
+    json_builder_append(builder, "\"peer_count\":");
+    json_builder_uint(builder, block->peer_count);
+
+    json_builder_append(builder, "}");
+  }
+
+  json_builder_append(builder, "]}");
+  return ECHO_OK;
+}
+
+/**
+ * RPC: getobservedtxs
+ *
+ * Returns recently observed transaction announcements.
+ *
+ * Response:
+ * {
+ *   "transactions": [
+ *     {"txid": "abc123...", "first_seen": 1234567890},
+ *     ...
+ *   ]
+ * }
+ */
+static echo_result_t rpc_getobservedtxs(node_t *node,
+                                        const json_value_t *params,
+                                        json_builder_t *builder) {
+  (void)params; /* Unused */
+
+  if (node == NULL || builder == NULL) {
+    return ECHO_ERR_NULL_PARAM;
+  }
+
+  if (!node_is_observer(node)) {
+    return RPC_ERR_MISC; /* Not in observer mode */
+  }
+
+  /* Get observer statistics */
+  observer_stats_t stats;
+  node_get_observer_stats(node, &stats);
+
+  /* Build JSON response */
+  json_builder_append(builder, "{\"transactions\":[");
+
+  /* Output transactions (most recent first, up to 100) */
+  size_t count = stats.tx_count < 100 ? stats.tx_count : 100;
+  for (size_t i = 0; i < count; i++) {
+    /* Calculate index (most recent first) */
+    size_t idx =
+        (stats.tx_write_index + NODE_OBSERVER_MAX_TXS - 1 - i) % NODE_OBSERVER_MAX_TXS;
+    const observer_tx_t *tx = &stats.txs[idx];
+
+    if (i > 0) {
+      json_builder_append(builder, ",");
+    }
+
+    json_builder_append(builder, "{");
+
+    /* Transaction ID (reversed for display) */
+    json_builder_append(builder, "\"txid\":\"");
+    char txid_str[65];
+    rpc_format_hash(&tx->txid, txid_str);
+    json_builder_append(builder, txid_str);
+    json_builder_append(builder, "\",");
+
+    /* First seen timestamp */
+    json_builder_append(builder, "\"first_seen\":");
+    json_builder_uint(builder, tx->first_seen);
+
+    json_builder_append(builder, "}");
+  }
+
+  json_builder_append(builder, "]}");
   return ECHO_OK;
 }

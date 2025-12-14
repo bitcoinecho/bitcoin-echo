@@ -153,16 +153,57 @@ int plat_socket_connect(plat_socket_t *sock, const char *host, uint16_t port) {
     return PLAT_ERR;
   }
 
+  /* Set socket to non-blocking for connect with timeout */
+  int flags = fcntl(sock->fd, F_GETFL, 0);
+  if (flags < 0) {
+    freeaddrinfo(result);
+    return PLAT_ERR;
+  }
+  if (fcntl(sock->fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+    freeaddrinfo(result);
+    return PLAT_ERR;
+  }
+
   /* Try each address until one succeeds */
-  for (rp = result; rp != NULL; rp = rp->ai_next) {
-    if (connect(sock->fd, rp->ai_addr, rp->ai_addrlen) == 0) {
-      freeaddrinfo(result);
-      return PLAT_OK;
+  int connected = 0;
+  for (rp = result; rp != NULL && !connected; rp = rp->ai_next) {
+    ret = connect(sock->fd, rp->ai_addr, rp->ai_addrlen);
+    if (ret == 0) {
+      /* Immediate connection (rare, but possible on localhost) */
+      connected = 1;
+    } else if (errno == EINPROGRESS) {
+      /* Connection in progress - wait with timeout */
+      fd_set write_fds;
+      struct timeval tv;
+
+      FD_ZERO(&write_fds);
+      FD_SET(sock->fd, &write_fds);
+
+      /* 5 second timeout */
+      tv.tv_sec = 5;
+      tv.tv_usec = 0;
+
+      ret = select(sock->fd + 1, NULL, &write_fds, NULL, &tv);
+      if (ret > 0) {
+        /* Check if connection succeeded */
+        int error = 0;
+        socklen_t len = sizeof(error);
+        if (getsockopt(sock->fd, SOL_SOCKET, SO_ERROR, &error, &len) == 0 &&
+            error == 0) {
+          connected = 1;
+        }
+      }
+      /* ret == 0 means timeout, ret < 0 means error - try next address */
     }
+    /* Other errors - try next address */
   }
 
   freeaddrinfo(result);
-  return PLAT_ERR;
+
+  /* Restore blocking mode for subsequent I/O */
+  fcntl(sock->fd, F_SETFL, flags);
+
+  return connected ? PLAT_OK : PLAT_ERR;
 }
 
 int plat_socket_listen(plat_socket_t *sock, uint16_t port, int backlog) {
@@ -217,6 +258,43 @@ int plat_socket_accept(plat_socket_t *listener, plat_socket_t *client) {
   return PLAT_OK;
 }
 
+int plat_socket_set_nonblocking(plat_socket_t *sock) {
+  int flags;
+
+  if (sock == NULL || sock->fd < 0) {
+    return PLAT_ERR;
+  }
+
+  /* Get current flags */
+  flags = fcntl(sock->fd, F_GETFL, 0);
+  if (flags == -1) {
+    return PLAT_ERR;
+  }
+
+  /* Set non-blocking flag */
+  if (fcntl(sock->fd, F_SETFL, flags | O_NONBLOCK) == -1) {
+    return PLAT_ERR;
+  }
+
+  return PLAT_OK;
+}
+
+int plat_socket_set_recv_timeout(plat_socket_t *sock, uint32_t timeout_ms) {
+  if (sock == NULL || sock->fd < 0) {
+    return PLAT_ERR;
+  }
+
+  struct timeval tv;
+  tv.tv_sec = (time_t)(timeout_ms / 1000);
+  tv.tv_usec = (suseconds_t)((timeout_ms % 1000) * 1000);
+
+  if (setsockopt(sock->fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
+    return PLAT_ERR;
+  }
+
+  return PLAT_OK;
+}
+
 int plat_socket_send(plat_socket_t *sock, const void *buf, size_t len) {
   ssize_t sent;
 
@@ -244,6 +322,9 @@ int plat_socket_recv(plat_socket_t *sock, void *buf, size_t len) {
 
   received = recv(sock->fd, buf, len, 0);
   if (received < 0) {
+    if (errno == EAGAIN || errno == EWOULDBLOCK) {
+      return PLAT_ERR_WOULD_BLOCK;
+    }
     if (errno == ECONNRESET) {
       return PLAT_ERR_CLOSED;
     }

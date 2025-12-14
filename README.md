@@ -88,6 +88,46 @@ build.bat
 echo.exe
 ```
 
+## Running Observer Mode
+
+Observer mode connects to Bitcoin mainnet and watches live network traffic without validation or chain sync. The "Pinocchio moment."
+
+```sh
+./echo --observe
+```
+
+This starts the node in observer mode with:
+- RPC server on `localhost:8332`
+- P2P port on `8333`
+- Data directory at `~/.bitcoin-echo`
+
+**Optional flags:**
+```sh
+./echo --observe --datadir /path/to/data --port 8333 --rpcport 8332
+```
+
+**Testing the RPC API:**
+```sh
+# Get observer statistics
+curl -X POST http://localhost:8332/ \
+  -H "Content-Type: application/json" \
+  -d '{"method":"getobserverstats","params":[],"id":1}'
+
+# Get recent block announcements
+curl -X POST http://localhost:8332/ \
+  -H "Content-Type: application/json" \
+  -d '{"method":"getobservedblocks","params":[],"id":1}'
+
+# Get recent transaction announcements
+curl -X POST http://localhost:8332/ \
+  -H "Content-Type: application/json" \
+  -d '{"method":"getobservedtxs","params":[],"id":1}'
+```
+
+**Using with the GUI:**
+
+See [bitcoinecho-gui](https://github.com/bitcoinecho/bitcoinecho-gui) for a browser-based interface to observer mode.
+
 ## Testing
 
 ```sh

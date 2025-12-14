@@ -4,6 +4,7 @@
 
 #include "discovery.h"
 #include "echo_types.h"
+#include "log.h"
 #include "platform.h"
 #include "protocol.h"
 #include <stdint.h>
@@ -57,14 +58,23 @@ static void ipv4_to_ipv6_mapped(const char *ipv4, uint8_t *ipv6) {
   unsigned int d = 0;
   /* Use sscanf with bounds checking - we only read 4 bounded integers */
   /* NOLINTBEGIN(cert-err34-c) - sscanf correct here: return value checked */
-  if (sscanf(ipv4, "%u.%u.%u.%u", &a, &b, &c, &d) == 4) {
+  int parsed = sscanf(ipv4, "%u.%u.%u.%u", &a, &b, &c, &d);
+  log_info(LOG_COMP_NET, "ipv4_to_ipv6_mapped: input='%s' parsed=%d values=%u.%u.%u.%u",
+           ipv4, parsed, a, b, c, d);
+  if (parsed == 4) {
     /* NOLINTEND(cert-err34-c) */
     if (a <= 255 && b <= 255 && c <= 255 && d <= 255) {
       ipv6[12] = (uint8_t)a;
       ipv6[13] = (uint8_t)b;
       ipv6[14] = (uint8_t)c;
       ipv6[15] = (uint8_t)d;
+      log_info(LOG_COMP_NET, "Successfully converted to IPv6-mapped: %d.%d.%d.%d",
+               ipv6[12], ipv6[13], ipv6[14], ipv6[15]);
+    } else {
+      log_warn(LOG_COMP_NET, "IP octet out of range: %u.%u.%u.%u", a, b, c, d);
     }
+  } else {
+    log_warn(LOG_COMP_NET, "Failed to parse IPv4 address '%s' (parsed %d/4)", ipv4, parsed);
   }
 }
 
@@ -166,9 +176,11 @@ size_t discovery_query_dns_seeds(peer_addr_manager_t *manager) {
   switch (manager->network) {
   case NETWORK_MAINNET:
     seeds = DNS_SEEDS_MAINNET;
+    log_info(LOG_COMP_NET, "Querying mainnet DNS seeds...");
     break;
   case NETWORK_TESTNET:
     seeds = DNS_SEEDS_TESTNET;
+    log_info(LOG_COMP_NET, "Querying testnet DNS seeds...");
     break;
   case NETWORK_REGTEST:
     /* Regtest doesn't use DNS seeds */
@@ -180,12 +192,17 @@ size_t discovery_query_dns_seeds(peer_addr_manager_t *manager) {
   /* Query each DNS seed */
   for (size_t i = 0; seeds[i] != NULL; i++) {
     char ip_str[64];
+    memset(ip_str, 0, sizeof(ip_str));
+    log_debug(LOG_COMP_NET, "Resolving DNS seed: %s", seeds[i]);
     int result = plat_dns_resolve(seeds[i], ip_str, sizeof(ip_str));
 
     /* Skip if DNS resolution failed */
     if (result != PLAT_OK) {
+      log_warn(LOG_COMP_NET, "DNS resolution failed for %s (error %d)", seeds[i], result);
       continue;
     }
+
+    log_info(LOG_COMP_NET, "Resolved %s -> '%s' (len=%zu)", seeds[i], ip_str, strlen(ip_str));
 
     /* Create address from resolved IP */
     net_addr_t addr;
@@ -206,9 +223,12 @@ size_t discovery_query_dns_seeds(peer_addr_manager_t *manager) {
     if (manager->count < MAX_PEER_ADDRESSES) {
       manager->addresses[manager->count++] = entry;
       total_added++;
+      log_debug(LOG_COMP_NET, "Added address to manager: %d.%d.%d.%d:%u",
+                addr.ip[12], addr.ip[13], addr.ip[14], addr.ip[15], addr.port);
     }
   }
 
+  log_info(LOG_COMP_NET, "DNS seed query complete: %zu addresses discovered", total_added);
   return total_added;
 }
 
@@ -264,6 +284,13 @@ size_t discovery_add_hardcoded_seeds(peer_addr_manager_t *manager) {
     net_addr_t addr;
     memset(&addr, 0, sizeof(addr));
     ipv4_to_ipv6_mapped(ip_str, addr.ip);
+
+    /* Skip if conversion failed (check if still 0.0.0.0) */
+    if (addr.ip[12] == 0 && addr.ip[13] == 0 && addr.ip[14] == 0 && addr.ip[15] == 0) {
+      log_warn(LOG_COMP_NET, "Skipping invalid hardcoded seed: %s", seeds[i]);
+      continue;
+    }
+
     addr.port = port;
     addr.services = SERVICE_NODE_NETWORK | SERVICE_NODE_WITNESS;
     addr.timestamp = (uint32_t)(plat_time_ms() / 1000);
@@ -431,10 +458,14 @@ echo_result_t discovery_select_outbound_address(peer_addr_manager_t *manager,
   }
 
   if (best == NULL) {
+    log_warn(LOG_COMP_NET, "No suitable outbound address found (checked %zu addresses)", manager->count);
     return ECHO_ERR_NOT_FOUND;
   }
 
   *out_addr = best->addr;
+  log_info(LOG_COMP_NET, "Selected address: %d.%d.%d.%d:%u (score=%llu)",
+            best->addr.ip[12], best->addr.ip[13], best->addr.ip[14], best->addr.ip[15],
+            best->addr.port, (unsigned long long)best_score);
   return ECHO_SUCCESS;
 }
 

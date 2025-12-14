@@ -50,9 +50,10 @@
  * allows the node to be created with a specific data directory path.
  */
 typedef struct {
-  char data_dir[512]; /* Path to data directory */
-  uint16_t port;      /* P2P port (default: network-specific) */
-  uint16_t rpc_port;  /* RPC port (default: network-specific) */
+  char data_dir[512];  /* Path to data directory */
+  uint16_t port;       /* P2P port (default: network-specific) */
+  uint16_t rpc_port;   /* RPC port (default: network-specific) */
+  bool observer_mode;  /* If true, skip consensus/storage (Session 9.5) */
 } node_config_t;
 
 /**
@@ -519,5 +520,112 @@ void node_request_shutdown(node_t *node);
  *   true if shutdown has been requested
  */
 bool node_shutdown_requested(const node_t *node);
+
+/*
+ * ============================================================================
+ * OBSERVER MODE (Session 9.5)
+ * ============================================================================
+ */
+
+/**
+ * Maximum number of observed blocks/transactions to track.
+ */
+#define NODE_OBSERVER_MAX_BLOCKS 100
+#define NODE_OBSERVER_MAX_TXS 1000
+
+/**
+ * Observed block information.
+ */
+typedef struct {
+  hash256_t hash;       /* Block hash */
+  uint64_t first_seen;  /* Timestamp (plat_time_ms) */
+  uint32_t peer_count;  /* Number of peers that announced it */
+} observer_block_t;
+
+/**
+ * Observed transaction information.
+ */
+typedef struct {
+  hash256_t txid;       /* Transaction ID */
+  uint64_t first_seen;  /* Timestamp (plat_time_ms) */
+} observer_tx_t;
+
+/**
+ * Observer mode statistics.
+ */
+typedef struct {
+  /* Message counts by type */
+  uint64_t msg_version;
+  uint64_t msg_verack;
+  uint64_t msg_ping;
+  uint64_t msg_pong;
+  uint64_t msg_addr;
+  uint64_t msg_inv;
+  uint64_t msg_getdata;
+  uint64_t msg_block;
+  uint64_t msg_tx;
+  uint64_t msg_headers;
+  uint64_t msg_getblocks;
+  uint64_t msg_getheaders;
+  uint64_t msg_other;
+
+  /* Recent observations */
+  observer_block_t blocks[NODE_OBSERVER_MAX_BLOCKS];
+  size_t block_count;
+  size_t block_write_index; /* Ring buffer write position */
+
+  observer_tx_t txs[NODE_OBSERVER_MAX_TXS];
+  size_t tx_count;
+  size_t tx_write_index; /* Ring buffer write position */
+} observer_stats_t;
+
+/**
+ * Check if node is in observer mode.
+ *
+ * Parameters:
+ *   node - The node
+ *
+ * Returns:
+ *   true if node is in observer mode
+ */
+bool node_is_observer(const node_t *node);
+
+/**
+ * Get observer statistics.
+ *
+ * Only valid if node_is_observer() returns true.
+ *
+ * Parameters:
+ *   node  - The node
+ *   stats - Output: observer statistics
+ */
+void node_get_observer_stats(const node_t *node, observer_stats_t *stats);
+
+/**
+ * Record an observed block announcement.
+ *
+ * Parameters:
+ *   node  - The node
+ *   hash  - Block hash
+ */
+void node_observe_block(node_t *node, const hash256_t *hash);
+
+/**
+ * Record an observed transaction announcement.
+ *
+ * Parameters:
+ *   node - The node
+ *   txid - Transaction ID
+ */
+void node_observe_tx(node_t *node, const hash256_t *txid);
+
+/**
+ * Record a received protocol message (for statistics).
+ *
+ * Parameters:
+ *   node    - The node
+ *   command - Message command string (e.g., "version", "inv")
+ */
+void node_observe_message(node_t *node, const char *command);
 
 #endif /* ECHO_NODE_H */

@@ -45,10 +45,11 @@ typedef struct plat_cond plat_cond_t;
  * ============================================================================
  */
 
-#define PLAT_OK 0             /* Operation succeeded */
-#define PLAT_ERR (-1)         /* General error */
-#define PLAT_ERR_TIMEOUT (-2) /* Operation timed out */
-#define PLAT_ERR_CLOSED (-3)  /* Connection closed by peer */
+#define PLAT_OK 0               /* Operation succeeded */
+#define PLAT_ERR (-1)           /* General error */
+#define PLAT_ERR_TIMEOUT (-2)   /* Operation timed out */
+#define PLAT_ERR_CLOSED (-3)    /* Connection closed by peer */
+#define PLAT_ERR_WOULD_BLOCK (-4) /* Operation would block (non-blocking socket) */
 
 /*
  * ============================================================================
@@ -145,6 +146,37 @@ int plat_socket_listen(plat_socket_t *sock, uint16_t port, int backlog);
  *   - client socket is ready for send/recv on success
  */
 int plat_socket_accept(plat_socket_t *listener, plat_socket_t *client);
+
+/*
+ * Set socket to non-blocking mode.
+ *
+ * Parameters:
+ *   sock - Socket to configure
+ *
+ * Returns:
+ *   PLAT_OK on success, PLAT_ERR on failure
+ *
+ * Notes:
+ *   - After this call, operations like accept/recv/send will return immediately
+ *     with PLAT_ERR if they would block
+ */
+int plat_socket_set_nonblocking(plat_socket_t *sock);
+
+/*
+ * Set socket receive timeout.
+ *
+ * Parameters:
+ *   sock       - Socket to configure
+ *   timeout_ms - Timeout in milliseconds (0 = no timeout)
+ *
+ * Returns:
+ *   PLAT_OK on success, PLAT_ERR on failure
+ *
+ * Notes:
+ *   - recv() will return PLAT_ERR after timeout expires with no data
+ *   - Useful for RPC connections to prevent blocking indefinitely
+ */
+int plat_socket_set_recv_timeout(plat_socket_t *sock, uint32_t timeout_ms);
 
 /*
  * Send data on connected socket.

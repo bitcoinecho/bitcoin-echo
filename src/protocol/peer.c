@@ -91,6 +91,9 @@ echo_result_t peer_connect(peer_t *peer, const char *address, uint16_t port,
     return ECHO_ERR_NETWORK;
   }
 
+  /* Set socket to non-blocking for event loop compatibility */
+  plat_socket_set_nonblocking(peer->socket);
+
   /* Connection established */
   peer->state = PEER_STATE_CONNECTED;
   peer->connect_time = plat_time_ms();
@@ -126,6 +129,9 @@ echo_result_t peer_accept(peer_t *peer, plat_socket_t *listener,
     peer->socket = NULL;
     return ECHO_ERR_NETWORK;
   }
+
+  /* Set socket to non-blocking for event loop compatibility */
+  plat_socket_set_nonblocking(peer->socket);
 
   /* Connection established */
   peer->state = PEER_STATE_CONNECTED;
@@ -252,7 +258,10 @@ echo_result_t peer_receive(peer_t *peer, msg_t *msg) {
   if (available > 0) {
     int received = plat_socket_recv(
         peer->socket, peer->recv_buffer + peer->recv_buffer_len, available);
-    if (received < 0) {
+    if (received == PLAT_ERR_WOULD_BLOCK) {
+      /* No data available right now - not an error for non-blocking socket */
+      /* Fall through to check if we have a complete message buffered */
+    } else if (received < 0) {
       /* Network error */
       peer_disconnect(peer, PEER_DISCONNECT_NETWORK_ERROR,
                       "Socket receive error");
