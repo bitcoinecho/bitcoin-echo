@@ -358,6 +358,7 @@ static void test_relay_getdata_rate_limit(void) {
     test_fail("getdata should be rate limited");
     relay_destroy(mgr);
     free(peer);
+    return;
   }
 
   relay_destroy(mgr);
