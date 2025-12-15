@@ -11,23 +11,26 @@
 #include <stdio.h>
 #include <string.h>
 
-/* DNS seeds for mainnet (as of 2025) */
+/* DNS seeds for mainnet (as of December 2025) */
 static const char *DNS_SEEDS_MAINNET[] = {
     "seed.bitcoin.sipa.be",          /* Pieter Wuille */
     "dnsseed.bluematt.me",           /* Matt Corallo */
-    "dnsseed.bitcoin.dashjr.org",    /* Luke Dashjr */
-    "seed.bitcoinstats.com",         /* Christian Decker */
     "seed.bitcoin.jonasschnelli.ch", /* Jonas Schnelli */
-    "seed.btc.petertodd.org",        /* Peter Todd */
+    "seed.btc.petertodd.net",        /* Peter Todd */
     "seed.bitcoin.sprovoost.nl",     /* Sjors Provoost */
     "dnsseed.emzy.de",               /* Stephan Oeste */
     "seed.bitcoin.wiz.biz",          /* Jason Maurice */
+    "seed.mainnet.achownodes.xyz",   /* Ava Chow */
     NULL};
 
-/* DNS seeds for testnet */
+/* DNS seeds for testnet (as of December 2025) */
 static const char *DNS_SEEDS_TESTNET[] = {
-    "testnet-seed.bitcoin.jonasschnelli.ch", "seed.tbtc.petertodd.org",
-    "testnet-seed.bluematt.me", "testnet-seed.bitcoin.sprovoost.nl", NULL};
+    "testnet-seed.bitcoin.jonasschnelli.ch",
+    "seed.tbtc.petertodd.net",
+    "seed.testnet.bitcoin.sprovoost.nl",
+    "testnet-seed.bluematt.me",
+    "seed.testnet.achownodes.xyz",
+    NULL};
 
 /* Hardcoded seed addresses for mainnet (fallback) */
 static const char *HARDCODED_SEEDS_MAINNET[] = {
