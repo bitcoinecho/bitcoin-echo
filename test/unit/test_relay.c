@@ -350,6 +350,7 @@ static void test_relay_getdata_rate_limit(void) {
       test_fail_int(message, (long)ECHO_SUCCESS, (long)result);
       relay_destroy(mgr);
       free(peer);
+      return;
     }
   }
 
