@@ -17,6 +17,7 @@
  * Build once. Build right. Stop.
  */
 
+#include "consensus.h"
 #include "echo_assert.h"
 #include "echo_config.h"
 #include "echo_types.h"
