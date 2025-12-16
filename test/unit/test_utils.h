@@ -16,6 +16,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* Compare two byte arrays (returns 1 if equal, 0 otherwise) */
+int bytes_equal(const uint8_t *a, const uint8_t *b, size_t len);
+
 /*
  * Test Suite Management
  * =====================

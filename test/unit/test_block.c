@@ -53,18 +53,6 @@ static void print_hex(const uint8_t *data, size_t len) {
 }
 
 /*
- * Compare two byte arrays.
- */
-static int bytes_equal(const uint8_t *a, const uint8_t *b, size_t len) {
-  size_t i;
-  for (i = 0; i < len; i++) {
-    if (a[i] != b[i])
-      return 0;
-  }
-  return 1;
-}
-
-/*
  * Reverse bytes for display (little-endian to big-endian).
  */
 static void reverse_bytes(uint8_t *data, size_t len) {

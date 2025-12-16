@@ -13,19 +13,6 @@
 #include <stdio.h>
 #include <string.h>
 
-/*
- * Compare two byte arrays.
- */
-static int bytes_equal(const uint8_t *a, const uint8_t *b, size_t len)
-{
-    size_t i;
-    for (i = 0; i < len; i++) {
-        if (a[i] != b[i]) {
-            return 0;
-        }
-    }
-    return 1;
-}
 
 /*
  * Print a byte array as hex.

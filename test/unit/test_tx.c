@@ -33,17 +33,6 @@ static size_t hex_to_bytes(const char *hex, uint8_t *out, size_t max_len)
     return len / 2;
 }
 
-/*
- * Compare two byte arrays.
- */
-static int bytes_equal(const uint8_t *a, const uint8_t *b, size_t len)
-{
-    size_t i;
-    for (i = 0; i < len; i++) {
-        if (a[i] != b[i]) return 0;
-    }
-    return 1;
-}
 
 /*
  * Test transaction parsing.
