@@ -1,9 +1,14 @@
 /*
- * Bitcoin Echo — Compile-Time Configuration
+ * Bitcoin Echo — Master Configuration
  *
  * All configuration is compile-time. There are no configuration files,
  * no command-line flags, no runtime policy changes. The node behaves
  * identically on every execution.
+ *
+ * This file coordinates all configuration layers:
+ * - Consensus rules (frozen, never change)
+ * - Policy settings (configurable, reflect operational choices)
+ * - Platform settings (pragmatic, may need updates as systems evolve)
  *
  * To build for a different network, define one of:
  *   ECHO_NETWORK_MAINNET  (default)
@@ -69,119 +74,88 @@
 #endif
 
 /*
- * Consensus parameters.
- * These values define Bitcoin's rules and must never be changed.
- */
-
-/* Block subsidy halving interval (blocks) */
-#define ECHO_HALVING_INTERVAL 210000
-
-/* Initial block subsidy in satoshis (50 BTC) */
-#define ECHO_INITIAL_SUBSIDY 5000000000LL
-
-/* Difficulty adjustment interval (blocks) */
-#define ECHO_DIFFICULTY_INTERVAL 2016
-
-/* Target time per block (seconds) */
-#define ECHO_TARGET_BLOCK_TIME 600
-
-/* Target time per difficulty period (seconds) */
-#define ECHO_TARGET_PERIOD_TIME                                                \
-  (ECHO_DIFFICULTY_INTERVAL * ECHO_TARGET_BLOCK_TIME)
-
-/* Coinbase maturity (blocks before spendable) */
-#define ECHO_COINBASE_MATURITY 100
-
-/* Maximum block weight (weight units) */
-#define ECHO_MAX_BLOCK_WEIGHT 4000000
-
-/* Maximum block size for legacy calculations (bytes) */
-#define ECHO_MAX_BLOCK_SIZE 1000000
-
-/* Maximum script size (bytes) */
-#define ECHO_MAX_SCRIPT_SIZE 10000
-
-/* Maximum script element size (bytes) */
-#define ECHO_MAX_SCRIPT_ELEMENT 520
-
-/* Maximum number of operations per script */
-#define ECHO_MAX_SCRIPT_OPS 201
-
-/* Maximum stack size during script execution */
-#define ECHO_MAX_STACK_SIZE 1000
-
-/* Maximum number of public keys in multisig */
-#define ECHO_MAX_MULTISIG_KEYS 20
-
-/* Maximum number of signature operations per block */
-#define ECHO_MAX_BLOCK_SIGOPS 80000
-
-/* Maximum transaction size (bytes) */
-#define ECHO_MAX_TX_SIZE 400000
-
-/* Locktime threshold: values below are block heights, above are timestamps */
-#define ECHO_LOCKTIME_THRESHOLD 500000000
-
-/* Sequence number that disables locktime */
-#define ECHO_SEQUENCE_FINAL 0xFFFFFFFF
-
-/* BIP-68 sequence lock flags */
-#define ECHO_SEQUENCE_LOCKTIME_DISABLE (1 << 31)
-#define ECHO_SEQUENCE_LOCKTIME_TYPE (1 << 22)
-#define ECHO_SEQUENCE_LOCKTIME_MASK 0x0000FFFF
-
-/*
- * Soft fork activation heights (mainnet).
- * After these heights, the corresponding rules are enforced.
+ * Soft fork activation heights.
+ * Network-specific, defined here then used by consensus layer.
  */
 #if defined(ECHO_NETWORK_MAINNET)
-#define ECHO_BIP16_HEIGHT 173805   /* P2SH */
-#define ECHO_BIP34_HEIGHT 227931   /* Height in coinbase */
-#define ECHO_BIP65_HEIGHT 388381   /* CHECKLOCKTIMEVERIFY */
-#define ECHO_BIP66_HEIGHT 363725   /* Strict DER signatures */
-#define ECHO_BIP68_HEIGHT 419328   /* Relative lock-time */
-#define ECHO_SEGWIT_HEIGHT 481824  /* Segregated Witness */
-#define ECHO_TAPROOT_HEIGHT 709632 /* Taproot/Schnorr */
+#define CONSENSUS_BIP16_HEIGHT 173805   /* P2SH */
+#define CONSENSUS_BIP34_HEIGHT 227931   /* Height in coinbase */
+#define CONSENSUS_BIP65_HEIGHT 388381   /* CHECKLOCKTIMEVERIFY */
+#define CONSENSUS_BIP66_HEIGHT 363725   /* Strict DER signatures */
+#define CONSENSUS_BIP68_HEIGHT 419328   /* Relative lock-time */
+#define CONSENSUS_SEGWIT_HEIGHT 481824  /* Segregated Witness */
+#define CONSENSUS_TAPROOT_HEIGHT 709632 /* Taproot/Schnorr */
 #elif defined(ECHO_NETWORK_TESTNET)
-#define ECHO_BIP16_HEIGHT 514
-#define ECHO_BIP34_HEIGHT 21111
-#define ECHO_BIP65_HEIGHT 581885
-#define ECHO_BIP66_HEIGHT 330776
-#define ECHO_BIP68_HEIGHT 770112
-#define ECHO_SEGWIT_HEIGHT 834624
-#define ECHO_TAPROOT_HEIGHT 2000000 /* Approximate */
+#define CONSENSUS_BIP16_HEIGHT 514
+#define CONSENSUS_BIP34_HEIGHT 21111
+#define CONSENSUS_BIP65_HEIGHT 581885
+#define CONSENSUS_BIP66_HEIGHT 330776
+#define CONSENSUS_BIP68_HEIGHT 770112
+#define CONSENSUS_SEGWIT_HEIGHT 834624
+#define CONSENSUS_TAPROOT_HEIGHT 2000000 /* Approximate */
 #elif defined(ECHO_NETWORK_REGTEST)
-#define ECHO_BIP16_HEIGHT 0 /* Always active */
-#define ECHO_BIP34_HEIGHT 500
-#define ECHO_BIP65_HEIGHT 1351
-#define ECHO_BIP66_HEIGHT 1251
-#define ECHO_BIP68_HEIGHT 432
-#define ECHO_SEGWIT_HEIGHT 0  /* Always active */
-#define ECHO_TAPROOT_HEIGHT 0 /* Always active */
+#define CONSENSUS_BIP16_HEIGHT 0 /* Always active */
+#define CONSENSUS_BIP34_HEIGHT 500
+#define CONSENSUS_BIP65_HEIGHT 1351
+#define CONSENSUS_BIP66_HEIGHT 1251
+#define CONSENSUS_BIP68_HEIGHT 432
+#define CONSENSUS_SEGWIT_HEIGHT 0  /* Always active */
+#define CONSENSUS_TAPROOT_HEIGHT 0 /* Always active */
 #endif
 
 /*
- * Peer-to-peer configuration.
+ * Include configuration layers.
  */
-#define ECHO_MAX_OUTBOUND_PEERS 8
-#define ECHO_MAX_INBOUND_PEERS 117
-#define ECHO_MAX_TOTAL_PEERS (ECHO_MAX_OUTBOUND_PEERS + ECHO_MAX_INBOUND_PEERS)
-
-/* Connection timeout (milliseconds) */
-#define ECHO_CONNECT_TIMEOUT_MS 5000
-
-/* Ping interval (milliseconds) */
-#define ECHO_PING_INTERVAL_MS 120000
-
-/* Inactivity timeout (milliseconds) */
-#define ECHO_INACTIVITY_TIMEOUT_MS 600000
+#include "echo_consensus.h"
+#include "echo_policy.h"
+#include "echo_platform_config.h"
 
 /*
- * Data directory structure.
- * Relative to data directory root.
+ * Backward compatibility aliases.
+ * These maintain compatibility with existing code while we transition
+ * to the new layered configuration structure.
+ *
+ * TODO: Remove these aliases once all code uses new constant names.
  */
-#define ECHO_BLOCKS_DIR "blocks"
-#define ECHO_CHAINSTATE_DIR "chainstate"
-#define ECHO_DATABASE_FILE "echo.db"
+
+/* Consensus aliases (ECHO_* -> CONSENSUS_*) */
+#define ECHO_HALVING_INTERVAL CONSENSUS_HALVING_INTERVAL
+#define ECHO_INITIAL_SUBSIDY CONSENSUS_INITIAL_SUBSIDY
+#define ECHO_DIFFICULTY_INTERVAL CONSENSUS_DIFFICULTY_INTERVAL
+#define ECHO_TARGET_BLOCK_TIME CONSENSUS_TARGET_BLOCK_TIME
+#define ECHO_TARGET_PERIOD_TIME CONSENSUS_TARGET_PERIOD_TIME
+#define ECHO_COINBASE_MATURITY CONSENSUS_COINBASE_MATURITY
+#define ECHO_MAX_BLOCK_WEIGHT CONSENSUS_MAX_BLOCK_WEIGHT
+#define ECHO_MAX_BLOCK_SIZE CONSENSUS_MAX_BLOCK_SIZE
+#define ECHO_MAX_SCRIPT_SIZE CONSENSUS_MAX_SCRIPT_SIZE
+#define ECHO_MAX_SCRIPT_ELEMENT CONSENSUS_MAX_SCRIPT_ELEMENT
+#define ECHO_MAX_SCRIPT_OPS CONSENSUS_MAX_SCRIPT_OPS
+#define ECHO_MAX_STACK_SIZE CONSENSUS_MAX_STACK_SIZE
+#define ECHO_MAX_MULTISIG_KEYS CONSENSUS_MAX_MULTISIG_KEYS
+#define ECHO_MAX_BLOCK_SIGOPS CONSENSUS_MAX_BLOCK_SIGOPS
+#define ECHO_MAX_TX_SIZE CONSENSUS_MAX_TX_SIZE
+#define ECHO_LOCKTIME_THRESHOLD CONSENSUS_LOCKTIME_THRESHOLD
+#define ECHO_SEQUENCE_FINAL CONSENSUS_SEQUENCE_FINAL
+#define ECHO_SEQUENCE_LOCKTIME_DISABLE CONSENSUS_SEQUENCE_LOCKTIME_DISABLE
+#define ECHO_SEQUENCE_LOCKTIME_TYPE CONSENSUS_SEQUENCE_LOCKTIME_TYPE
+#define ECHO_SEQUENCE_LOCKTIME_MASK CONSENSUS_SEQUENCE_LOCKTIME_MASK
+#define ECHO_BIP16_HEIGHT CONSENSUS_BIP16_HEIGHT
+#define ECHO_BIP34_HEIGHT CONSENSUS_BIP34_HEIGHT
+#define ECHO_BIP65_HEIGHT CONSENSUS_BIP65_HEIGHT
+#define ECHO_BIP66_HEIGHT CONSENSUS_BIP66_HEIGHT
+#define ECHO_BIP68_HEIGHT CONSENSUS_BIP68_HEIGHT
+#define ECHO_SEGWIT_HEIGHT CONSENSUS_SEGWIT_HEIGHT
+#define ECHO_TAPROOT_HEIGHT CONSENSUS_TAPROOT_HEIGHT
+
+/* Platform aliases (ECHO_* -> PLATFORM_*) */
+#define ECHO_MAX_OUTBOUND_PEERS PLATFORM_MAX_OUTBOUND_PEERS
+#define ECHO_MAX_INBOUND_PEERS PLATFORM_MAX_INBOUND_PEERS
+#define ECHO_MAX_TOTAL_PEERS PLATFORM_MAX_TOTAL_PEERS
+#define ECHO_CONNECT_TIMEOUT_MS PLATFORM_CONNECT_TIMEOUT_MS
+#define ECHO_PING_INTERVAL_MS PLATFORM_PING_INTERVAL_MS
+#define ECHO_INACTIVITY_TIMEOUT_MS PLATFORM_INACTIVITY_TIMEOUT_MS
+#define ECHO_BLOCKS_DIR PLATFORM_BLOCKS_DIR
+#define ECHO_CHAINSTATE_DIR PLATFORM_CHAINSTATE_DIR
+#define ECHO_DATABASE_FILE PLATFORM_DATABASE_FILE
 
 #endif /* ECHO_CONFIG_H */
