@@ -1399,9 +1399,10 @@ echo_result_t rpc_server_process(rpc_server_t *server) {
            (parse_res == ECHO_OK && http_req.body) ? http_req.body : "(null)");
 
   if (parse_res == ECHO_OK && strcmp(http_req.method, "OPTIONS") == 0) {
-    /* CORS preflight request - respond with 200 OK and CORS headers */
+    /* CORS preflight request - respond with 204 No Content and CORS headers
+     * 204 is the standard status for OPTIONS and ensures browser caching */
     log_info(LOG_COMP_RPC, "Handling OPTIONS (CORS preflight)");
-    http_send_response(client_sock, 200, "OK", "");
+    http_send_response(client_sock, 204, "No Content", NULL);
   } else if (parse_res == ECHO_OK && strcmp(http_req.method, "POST") == 0 &&
              http_req.body != NULL) {
     log_info(LOG_COMP_RPC, "Handling POST, body=%s", http_req.body);
