@@ -1376,13 +1376,13 @@ int main(void) {
     test_case("Valid state transitions"); state_transitions(); test_pass();
     test_case("Get state for NULL node"); get_state_null(); test_pass();
 
-    test_section("Storage Foundation (Session 9.6.0)");
+    test_section("Storage Foundation");
     test_case("Chain state restoration across restarts"); storage_chain_restoration(); test_pass();
     test_case("UTXO database persistence"); storage_utxo_persistence(); test_pass();
     test_case("node_apply_block handles NULL"); storage_apply_block_persistence(); test_pass();
     test_case("Multiple restart cycles"); storage_multiple_restarts(); test_pass();
 
-    test_section("Block Pipeline (Session 9.6.1)");
+    test_section("Block Pipeline");
     test_case("Invalid block tracking initialization"); block_pipeline_invalid_tracking_init(); test_pass();
     test_case("Invalid block check with NULL params"); block_pipeline_invalid_check_null(); test_pass();
     test_case("Invalid block count with NULL"); block_pipeline_count_null(); test_pass();
@@ -1392,7 +1392,7 @@ int main(void) {
     test_case("Sync manager created for full node"); block_pipeline_sync_manager_created(); test_pass();
     test_case("Sync manager NULL for observer mode"); block_pipeline_sync_manager_observer(); test_pass();
 
-    test_section("Transaction Pipeline (Session 9.6.3)");
+    test_section("Transaction Pipeline");
     test_case("Mempool callbacks wired after creation"); tx_pipeline_mempool_callbacks_wired(); test_pass();
     test_case("Observer mode has no mempool"); tx_pipeline_observer_no_mempool_validation(); test_pass();
     test_case("UTXO database accessible"); tx_pipeline_utxo_db_accessible(); test_pass();

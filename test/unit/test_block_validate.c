@@ -1626,7 +1626,7 @@ int main(void) {
   test_section("Error strings");
   test_error_strings();
 
-  test_section("Full block validation (Session 5.4)");
+  test_section("Full block validation");
   test_full_ctx_init();
   test_result_init();
   test_tx_structure_empty_block();
