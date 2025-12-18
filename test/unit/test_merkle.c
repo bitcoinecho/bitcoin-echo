@@ -42,7 +42,7 @@ static void bytes_to_hex(const uint8_t *data, size_t len, char *out)
 {
     size_t i;
     for (i = 0; i < len; i++) {
-        sprintf(out + i * 2, "%02x", data[i]);
+        snprintf(out + i * 2, 3, "%02x", data[i]);
     }
     out[len * 2] = '\0';
 }
