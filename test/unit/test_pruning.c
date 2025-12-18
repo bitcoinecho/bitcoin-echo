@@ -1,5 +1,5 @@
 /*
- * Bitcoin Echo — Pruning Tests (Session 9.6.2)
+ * Bitcoin Echo — Pruning Tests
  *
  * Tests for block pruning functionality including:
  * - Block status flags for pruned blocks
@@ -21,23 +21,6 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include "test_utils.h"
-
-#define ASSERT(cond)                                                           \
-  do {                                                                         \
-    if (!(cond)) {                                                             \
-      printf("\n%s:%d: Assertion failed: %s\n", __FILE__, __LINE__, #cond);    \
-      return;                                                                  \
-    }                                                                          \
-  } while (0)
-
-#define ASSERT_EQ(a, b)                                                        \
-  do {                                                                         \
-    if ((a) != (b)) {                                                          \
-      printf("\n%s:%d: Expected %d, got %d\n", __FILE__, __LINE__, (int)(b),   \
-             (int)(a));                                                        \
-      return;                                                                  \
-    }                                                                          \
-  } while (0)
 
 /*
  * Test data directory.
@@ -82,24 +65,66 @@ static void cleanup_test_dir(void) { remove_dir_recursive(TEST_DATA_DIR); }
  * Test: BLOCK_STATUS_PRUNED flag value.
  */
 static void test_pruned_flag_value(void) {
+  bool passed = true;
+
   /* Verify flag is defined and has expected value */
-  ASSERT_EQ(BLOCK_STATUS_PRUNED, 0x40);
+  if (BLOCK_STATUS_PRUNED != 0x40) {
+    passed = false;
+    goto done;
+  }
 
   /* Verify flag doesn't overlap with other status flags */
-  ASSERT((BLOCK_STATUS_PRUNED & BLOCK_STATUS_VALID_HEADER) == 0);
-  ASSERT((BLOCK_STATUS_PRUNED & BLOCK_STATUS_VALID_TREE) == 0);
-  ASSERT((BLOCK_STATUS_PRUNED & BLOCK_STATUS_VALID_SCRIPTS) == 0);
-  ASSERT((BLOCK_STATUS_PRUNED & BLOCK_STATUS_VALID_CHAIN) == 0);
-  ASSERT((BLOCK_STATUS_PRUNED & BLOCK_STATUS_HAVE_DATA) == 0);
-  ASSERT((BLOCK_STATUS_PRUNED & BLOCK_STATUS_FAILED) == 0);
+  if ((BLOCK_STATUS_PRUNED & BLOCK_STATUS_VALID_HEADER) != 0) {
+    passed = false;
+    goto done;
+  }
+  if ((BLOCK_STATUS_PRUNED & BLOCK_STATUS_VALID_TREE) != 0) {
+    passed = false;
+    goto done;
+  }
+  if ((BLOCK_STATUS_PRUNED & BLOCK_STATUS_VALID_SCRIPTS) != 0) {
+    passed = false;
+    goto done;
+  }
+  if ((BLOCK_STATUS_PRUNED & BLOCK_STATUS_VALID_CHAIN) != 0) {
+    passed = false;
+    goto done;
+  }
+  if ((BLOCK_STATUS_PRUNED & BLOCK_STATUS_HAVE_DATA) != 0) {
+    passed = false;
+    goto done;
+  }
+  if ((BLOCK_STATUS_PRUNED & BLOCK_STATUS_FAILED) != 0) {
+    passed = false;
+    goto done;
+  }
+
+done:
+  test_case("BLOCK_STATUS_PRUNED flag value");
+  if (passed) {
+    test_pass();
+  } else {
+    test_fail("flag value or overlap check failed");
+  }
 }
 
 /*
  * Test: PRUNE_TARGET_MIN_MB constant.
  */
 static void test_prune_target_min(void) {
+  bool passed = true;
+
   /* Verify minimum is 550 MB (for reorg safety) */
-  ASSERT_EQ(PRUNE_TARGET_MIN_MB, 550);
+  if (PRUNE_TARGET_MIN_MB != 550) {
+    passed = false;
+  }
+
+  test_case("PRUNE_TARGET_MIN_MB constant");
+  if (passed) {
+    test_pass();
+  } else {
+    test_fail("expected 550 MB minimum");
+  }
 }
 
 /*
@@ -107,29 +132,61 @@ static void test_prune_target_min(void) {
  */
 static void test_block_storage_file_exists(void) {
   cleanup_test_dir();
+  bool passed = true;
 
   block_file_manager_t mgr;
-  ASSERT_EQ(block_storage_init(&mgr, TEST_DATA_DIR), ECHO_OK);
+  if (block_storage_init(&mgr, TEST_DATA_DIR) != ECHO_OK) {
+    passed = false;
+    goto done;
+  }
 
   /* File 0 should not exist yet */
   bool exists = true;
-  ASSERT_EQ(block_storage_file_exists(&mgr, 0, &exists), ECHO_OK);
-  ASSERT(exists == false);
+  if (block_storage_file_exists(&mgr, 0, &exists) != ECHO_OK) {
+    passed = false;
+    goto done;
+  }
+  if (exists != false) {
+    passed = false;
+    goto done;
+  }
 
   /* Write a block to create the file */
   uint8_t block_data[100] = {0};
   block_file_pos_t pos;
-  ASSERT_EQ(block_storage_write(&mgr, block_data, 100, &pos), ECHO_OK);
+  if (block_storage_write(&mgr, block_data, 100, &pos) != ECHO_OK) {
+    passed = false;
+    goto done;
+  }
 
   /* Now file 0 should exist */
-  ASSERT_EQ(block_storage_file_exists(&mgr, 0, &exists), ECHO_OK);
-  ASSERT(exists == true);
+  if (block_storage_file_exists(&mgr, 0, &exists) != ECHO_OK) {
+    passed = false;
+    goto done;
+  }
+  if (exists != true) {
+    passed = false;
+    goto done;
+  }
 
   /* File 1 should not exist */
-  ASSERT_EQ(block_storage_file_exists(&mgr, 1, &exists), ECHO_OK);
-  ASSERT(exists == false);
+  if (block_storage_file_exists(&mgr, 1, &exists) != ECHO_OK) {
+    passed = false;
+    goto done;
+  }
+  if (exists != false) {
+    passed = false;
+    goto done;
+  }
 
+done:
   cleanup_test_dir();
+  test_case("Block storage file exists check");
+  if (passed) {
+    test_pass();
+  } else {
+    test_fail("file existence check failed");
+  }
 }
 
 /*
@@ -137,27 +194,56 @@ static void test_block_storage_file_exists(void) {
  */
 static void test_block_storage_get_file_size(void) {
   cleanup_test_dir();
+  bool passed = true;
 
   block_file_manager_t mgr;
-  ASSERT_EQ(block_storage_init(&mgr, TEST_DATA_DIR), ECHO_OK);
+  if (block_storage_init(&mgr, TEST_DATA_DIR) != ECHO_OK) {
+    passed = false;
+    goto done;
+  }
 
   /* Size of non-existent file should be 0 */
   uint64_t size = 999;
-  ASSERT_EQ(block_storage_get_file_size(&mgr, 0, &size), ECHO_OK);
-  ASSERT_EQ(size, 0);
+  if (block_storage_get_file_size(&mgr, 0, &size) != ECHO_OK) {
+    passed = false;
+    goto done;
+  }
+  if (size != 0) {
+    passed = false;
+    goto done;
+  }
 
   /* Write a block */
   uint8_t block_data[100] = {0};
   block_file_pos_t pos;
-  ASSERT_EQ(block_storage_write(&mgr, block_data, 100, &pos), ECHO_OK);
+  if (block_storage_write(&mgr, block_data, 100, &pos) != ECHO_OK) {
+    passed = false;
+    goto done;
+  }
 
   /* File should now have size > 0 */
-  ASSERT_EQ(block_storage_get_file_size(&mgr, 0, &size), ECHO_OK);
-  ASSERT(size > 0);
+  if (block_storage_get_file_size(&mgr, 0, &size) != ECHO_OK) {
+    passed = false;
+    goto done;
+  }
+  if (size == 0) {
+    passed = false;
+    goto done;
+  }
   /* Size should include record header */
-  ASSERT(size >= 100 + BLOCK_FILE_RECORD_HEADER_SIZE);
+  if (size < 100 + BLOCK_FILE_RECORD_HEADER_SIZE) {
+    passed = false;
+    goto done;
+  }
 
+done:
   cleanup_test_dir();
+  test_case("Block storage get file size");
+  if (passed) {
+    test_pass();
+  } else {
+    test_fail("file size query failed");
+  }
 }
 
 /*
@@ -165,27 +251,59 @@ static void test_block_storage_get_file_size(void) {
  */
 static void test_block_storage_get_total_size(void) {
   cleanup_test_dir();
+  bool passed = true;
 
   block_file_manager_t mgr;
-  ASSERT_EQ(block_storage_init(&mgr, TEST_DATA_DIR), ECHO_OK);
+  if (block_storage_init(&mgr, TEST_DATA_DIR) != ECHO_OK) {
+    passed = false;
+    goto done;
+  }
 
   /* Empty storage should have size 0 */
   uint64_t total = 999;
-  ASSERT_EQ(block_storage_get_total_size(&mgr, &total), ECHO_OK);
-  ASSERT_EQ(total, 0);
+  if (block_storage_get_total_size(&mgr, &total) != ECHO_OK) {
+    passed = false;
+    goto done;
+  }
+  if (total != 0) {
+    passed = false;
+    goto done;
+  }
 
   /* Write some blocks */
   uint8_t block_data[100] = {0};
   block_file_pos_t pos;
-  ASSERT_EQ(block_storage_write(&mgr, block_data, 100, &pos), ECHO_OK);
-  ASSERT_EQ(block_storage_write(&mgr, block_data, 100, &pos), ECHO_OK);
-  ASSERT_EQ(block_storage_write(&mgr, block_data, 100, &pos), ECHO_OK);
+  if (block_storage_write(&mgr, block_data, 100, &pos) != ECHO_OK) {
+    passed = false;
+    goto done;
+  }
+  if (block_storage_write(&mgr, block_data, 100, &pos) != ECHO_OK) {
+    passed = false;
+    goto done;
+  }
+  if (block_storage_write(&mgr, block_data, 100, &pos) != ECHO_OK) {
+    passed = false;
+    goto done;
+  }
 
   /* Total should be > 0 */
-  ASSERT_EQ(block_storage_get_total_size(&mgr, &total), ECHO_OK);
-  ASSERT(total > 0);
+  if (block_storage_get_total_size(&mgr, &total) != ECHO_OK) {
+    passed = false;
+    goto done;
+  }
+  if (total == 0) {
+    passed = false;
+    goto done;
+  }
 
+done:
   cleanup_test_dir();
+  test_case("Block storage get total size");
+  if (passed) {
+    test_pass();
+  } else {
+    test_fail("total size query failed");
+  }
 }
 
 /*
@@ -193,14 +311,28 @@ static void test_block_storage_get_total_size(void) {
  */
 static void test_block_storage_get_current_file(void) {
   cleanup_test_dir();
+  bool passed = true;
 
   block_file_manager_t mgr;
-  ASSERT_EQ(block_storage_init(&mgr, TEST_DATA_DIR), ECHO_OK);
+  if (block_storage_init(&mgr, TEST_DATA_DIR) != ECHO_OK) {
+    passed = false;
+    goto done;
+  }
 
   /* Initial file should be 0 */
-  ASSERT_EQ(block_storage_get_current_file(&mgr), 0);
+  if (block_storage_get_current_file(&mgr) != 0) {
+    passed = false;
+    goto done;
+  }
 
+done:
   cleanup_test_dir();
+  test_case("Block storage get current file");
+  if (passed) {
+    test_pass();
+  } else {
+    test_fail("current file index incorrect");
+  }
 }
 
 /*
@@ -208,34 +340,66 @@ static void test_block_storage_get_current_file(void) {
  */
 static void test_block_storage_delete_file(void) {
   cleanup_test_dir();
+  bool passed = true;
 
   block_file_manager_t mgr;
-  ASSERT_EQ(block_storage_init(&mgr, TEST_DATA_DIR), ECHO_OK);
+  if (block_storage_init(&mgr, TEST_DATA_DIR) != ECHO_OK) {
+    passed = false;
+    goto done;
+  }
 
   /* Write a block to create file 0 */
   uint8_t block_data[100] = {0};
   block_file_pos_t pos;
-  ASSERT_EQ(block_storage_write(&mgr, block_data, 100, &pos), ECHO_OK);
+  if (block_storage_write(&mgr, block_data, 100, &pos) != ECHO_OK) {
+    passed = false;
+    goto done;
+  }
 
   /* Verify file exists */
   bool exists = false;
-  ASSERT_EQ(block_storage_file_exists(&mgr, 0, &exists), ECHO_OK);
-  ASSERT(exists == true);
+  if (block_storage_file_exists(&mgr, 0, &exists) != ECHO_OK) {
+    passed = false;
+    goto done;
+  }
+  if (exists != true) {
+    passed = false;
+    goto done;
+  }
 
   /* Cannot delete current write file */
-  ASSERT_EQ(block_storage_delete_file(&mgr, 0), ECHO_ERR_INVALID_PARAM);
+  if (block_storage_delete_file(&mgr, 0) != ECHO_ERR_INVALID_PARAM) {
+    passed = false;
+    goto done;
+  }
 
   /* Simulate having moved to file 1 by modifying manager */
   mgr.current_file_index = 1;
 
   /* Now we should be able to delete file 0 */
-  ASSERT_EQ(block_storage_delete_file(&mgr, 0), ECHO_OK);
+  if (block_storage_delete_file(&mgr, 0) != ECHO_OK) {
+    passed = false;
+    goto done;
+  }
 
   /* Verify file is gone */
-  ASSERT_EQ(block_storage_file_exists(&mgr, 0, &exists), ECHO_OK);
-  ASSERT(exists == false);
+  if (block_storage_file_exists(&mgr, 0, &exists) != ECHO_OK) {
+    passed = false;
+    goto done;
+  }
+  if (exists != false) {
+    passed = false;
+    goto done;
+  }
 
+done:
   cleanup_test_dir();
+  test_case("Block storage delete file");
+  if (passed) {
+    test_pass();
+  } else {
+    test_fail("delete file operation failed");
+  }
 }
 
 /*
@@ -244,12 +408,16 @@ static void test_block_storage_delete_file(void) {
 static void test_block_index_db_mark_pruned(void) {
   cleanup_test_dir();
   mkdir(TEST_DATA_DIR, 0755);
+  bool passed = true;
 
   char db_path[512];
   snprintf(db_path, sizeof(db_path), "%s/blocks.db", TEST_DATA_DIR);
 
   block_index_db_t db;
-  ASSERT_EQ(block_index_db_open(&db, db_path), ECHO_OK);
+  if (block_index_db_open(&db, db_path) != ECHO_OK) {
+    passed = false;
+    goto done;
+  }
 
   /* Create some test block entries */
   for (uint32_t i = 0; i < 10; i++) {
@@ -259,30 +427,70 @@ static void test_block_index_db_mark_pruned(void) {
     entry.hash.bytes[0] = (uint8_t)i; /* Unique hash */
     entry.status = BLOCK_STATUS_VALID_HEADER | BLOCK_STATUS_HAVE_DATA;
 
-    ASSERT_EQ(block_index_db_insert(&db, &entry), ECHO_OK);
+    if (block_index_db_insert(&db, &entry) != ECHO_OK) {
+      passed = false;
+      block_index_db_close(&db);
+      goto done;
+    }
   }
 
   /* Mark blocks 0-4 as pruned */
-  ASSERT_EQ(block_index_db_mark_pruned(&db, 0, 5), ECHO_OK);
+  if (block_index_db_mark_pruned(&db, 0, 5) != ECHO_OK) {
+    passed = false;
+    block_index_db_close(&db);
+    goto done;
+  }
 
   /* Verify blocks 0-4 are marked as pruned */
   for (uint32_t i = 0; i < 5; i++) {
     block_index_entry_t entry;
-    ASSERT_EQ(block_index_db_lookup_by_height(&db, i, &entry), ECHO_OK);
-    ASSERT((entry.status & BLOCK_STATUS_PRUNED) != 0);
-    ASSERT((entry.status & BLOCK_STATUS_HAVE_DATA) == 0);
+    if (block_index_db_lookup_by_height(&db, i, &entry) != ECHO_OK) {
+      passed = false;
+      block_index_db_close(&db);
+      goto done;
+    }
+    if ((entry.status & BLOCK_STATUS_PRUNED) == 0) {
+      passed = false;
+      block_index_db_close(&db);
+      goto done;
+    }
+    if ((entry.status & BLOCK_STATUS_HAVE_DATA) != 0) {
+      passed = false;
+      block_index_db_close(&db);
+      goto done;
+    }
   }
 
   /* Verify blocks 5-9 are NOT pruned */
   for (uint32_t i = 5; i < 10; i++) {
     block_index_entry_t entry;
-    ASSERT_EQ(block_index_db_lookup_by_height(&db, i, &entry), ECHO_OK);
-    ASSERT((entry.status & BLOCK_STATUS_PRUNED) == 0);
-    ASSERT((entry.status & BLOCK_STATUS_HAVE_DATA) != 0);
+    if (block_index_db_lookup_by_height(&db, i, &entry) != ECHO_OK) {
+      passed = false;
+      block_index_db_close(&db);
+      goto done;
+    }
+    if ((entry.status & BLOCK_STATUS_PRUNED) != 0) {
+      passed = false;
+      block_index_db_close(&db);
+      goto done;
+    }
+    if ((entry.status & BLOCK_STATUS_HAVE_DATA) == 0) {
+      passed = false;
+      block_index_db_close(&db);
+      goto done;
+    }
   }
 
   block_index_db_close(&db);
+
+done:
   cleanup_test_dir();
+  test_case("Block index DB mark pruned");
+  if (passed) {
+    test_pass();
+  } else {
+    test_fail("mark pruned operation failed");
+  }
 }
 
 /*
@@ -291,12 +499,16 @@ static void test_block_index_db_mark_pruned(void) {
 static void test_block_index_db_get_pruned_height(void) {
   cleanup_test_dir();
   mkdir(TEST_DATA_DIR, 0755);
+  bool passed = true;
 
   char db_path[512];
   snprintf(db_path, sizeof(db_path), "%s/blocks.db", TEST_DATA_DIR);
 
   block_index_db_t db;
-  ASSERT_EQ(block_index_db_open(&db, db_path), ECHO_OK);
+  if (block_index_db_open(&db, db_path) != ECHO_OK) {
+    passed = false;
+    goto done;
+  }
 
   /* Create test entries */
   for (uint32_t i = 0; i < 10; i++) {
@@ -306,23 +518,55 @@ static void test_block_index_db_get_pruned_height(void) {
     entry.hash.bytes[0] = (uint8_t)i;
     entry.status = BLOCK_STATUS_VALID_HEADER | BLOCK_STATUS_HAVE_DATA;
 
-    ASSERT_EQ(block_index_db_insert(&db, &entry), ECHO_OK);
+    if (block_index_db_insert(&db, &entry) != ECHO_OK) {
+      passed = false;
+      block_index_db_close(&db);
+      goto done;
+    }
   }
 
   /* Initially, pruned height should be 0 (genesis has data) */
   uint32_t pruned_height = 999;
-  ASSERT_EQ(block_index_db_get_pruned_height(&db, &pruned_height), ECHO_OK);
-  ASSERT_EQ(pruned_height, 0);
+  if (block_index_db_get_pruned_height(&db, &pruned_height) != ECHO_OK) {
+    passed = false;
+    block_index_db_close(&db);
+    goto done;
+  }
+  if (pruned_height != 0) {
+    passed = false;
+    block_index_db_close(&db);
+    goto done;
+  }
 
   /* Prune blocks 0-4 */
-  ASSERT_EQ(block_index_db_mark_pruned(&db, 0, 5), ECHO_OK);
+  if (block_index_db_mark_pruned(&db, 0, 5) != ECHO_OK) {
+    passed = false;
+    block_index_db_close(&db);
+    goto done;
+  }
 
   /* Now pruned height should be 5 (first block with data) */
-  ASSERT_EQ(block_index_db_get_pruned_height(&db, &pruned_height), ECHO_OK);
-  ASSERT_EQ(pruned_height, 5);
+  if (block_index_db_get_pruned_height(&db, &pruned_height) != ECHO_OK) {
+    passed = false;
+    block_index_db_close(&db);
+    goto done;
+  }
+  if (pruned_height != 5) {
+    passed = false;
+    block_index_db_close(&db);
+    goto done;
+  }
 
   block_index_db_close(&db);
+
+done:
   cleanup_test_dir();
+  test_case("Block index DB get pruned height");
+  if (passed) {
+    test_pass();
+  } else {
+    test_fail("get pruned height failed");
+  }
 }
 
 /*
@@ -331,12 +575,16 @@ static void test_block_index_db_get_pruned_height(void) {
 static void test_block_index_db_is_pruned(void) {
   cleanup_test_dir();
   mkdir(TEST_DATA_DIR, 0755);
+  bool passed = true;
 
   char db_path[512];
   snprintf(db_path, sizeof(db_path), "%s/blocks.db", TEST_DATA_DIR);
 
   block_index_db_t db;
-  ASSERT_EQ(block_index_db_open(&db, db_path), ECHO_OK);
+  if (block_index_db_open(&db, db_path) != ECHO_OK) {
+    passed = false;
+    goto done;
+  }
 
   /* Create a test entry */
   block_index_entry_t entry;
@@ -345,53 +593,126 @@ static void test_block_index_db_is_pruned(void) {
   entry.hash.bytes[0] = 0x42;
   entry.status = BLOCK_STATUS_VALID_HEADER | BLOCK_STATUS_HAVE_DATA;
 
-  ASSERT_EQ(block_index_db_insert(&db, &entry), ECHO_OK);
+  if (block_index_db_insert(&db, &entry) != ECHO_OK) {
+    passed = false;
+    block_index_db_close(&db);
+    goto done;
+  }
 
   /* Check not pruned initially */
   bool is_pruned = true;
-  ASSERT_EQ(block_index_db_is_pruned(&db, &entry.hash, &is_pruned), ECHO_OK);
-  ASSERT(is_pruned == false);
+  if (block_index_db_is_pruned(&db, &entry.hash, &is_pruned) != ECHO_OK) {
+    passed = false;
+    block_index_db_close(&db);
+    goto done;
+  }
+  if (is_pruned != false) {
+    passed = false;
+    block_index_db_close(&db);
+    goto done;
+  }
 
   /* Mark as pruned */
-  ASSERT_EQ(block_index_db_mark_pruned(&db, 0, 1), ECHO_OK);
+  if (block_index_db_mark_pruned(&db, 0, 1) != ECHO_OK) {
+    passed = false;
+    block_index_db_close(&db);
+    goto done;
+  }
 
   /* Now should be pruned */
-  ASSERT_EQ(block_index_db_is_pruned(&db, &entry.hash, &is_pruned), ECHO_OK);
-  ASSERT(is_pruned == true);
+  if (block_index_db_is_pruned(&db, &entry.hash, &is_pruned) != ECHO_OK) {
+    passed = false;
+    block_index_db_close(&db);
+    goto done;
+  }
+  if (is_pruned != true) {
+    passed = false;
+    block_index_db_close(&db);
+    goto done;
+  }
 
   block_index_db_close(&db);
+
+done:
   cleanup_test_dir();
+  test_case("Block index DB is_pruned check");
+  if (passed) {
+    test_pass();
+  } else {
+    test_fail("is_pruned check failed");
+  }
 }
 
 /*
  * Test: Node config prune target initialization.
  */
 static void test_node_config_prune_target(void) {
+  bool passed = true;
+
   node_config_t config;
   node_config_init(&config, TEST_DATA_DIR);
 
   /* Default should be 0 (no pruning) */
-  ASSERT_EQ(config.prune_target_mb, 0);
+  if (config.prune_target_mb != 0) {
+    passed = false;
+  }
+
+  test_case("Node config prune target initialization");
+  if (passed) {
+    test_pass();
+  } else {
+    test_fail("default prune target not 0");
+  }
 }
 
 /*
  * Test: NULL parameter handling for pruning functions.
  */
 static void test_pruning_null_params(void) {
+  bool passed = true;
   block_file_manager_t mgr;
   bool exists;
   uint64_t size;
 
-  ASSERT_EQ(block_storage_file_exists(NULL, 0, &exists), ECHO_ERR_NULL_PARAM);
-  ASSERT_EQ(block_storage_file_exists(&mgr, 0, NULL), ECHO_ERR_NULL_PARAM);
+  if (block_storage_file_exists(NULL, 0, &exists) != ECHO_ERR_NULL_PARAM) {
+    passed = false;
+    goto done;
+  }
+  if (block_storage_file_exists(&mgr, 0, NULL) != ECHO_ERR_NULL_PARAM) {
+    passed = false;
+    goto done;
+  }
 
-  ASSERT_EQ(block_storage_get_file_size(NULL, 0, &size), ECHO_ERR_NULL_PARAM);
-  ASSERT_EQ(block_storage_get_file_size(&mgr, 0, NULL), ECHO_ERR_NULL_PARAM);
+  if (block_storage_get_file_size(NULL, 0, &size) != ECHO_ERR_NULL_PARAM) {
+    passed = false;
+    goto done;
+  }
+  if (block_storage_get_file_size(&mgr, 0, NULL) != ECHO_ERR_NULL_PARAM) {
+    passed = false;
+    goto done;
+  }
 
-  ASSERT_EQ(block_storage_get_total_size(NULL, &size), ECHO_ERR_NULL_PARAM);
-  ASSERT_EQ(block_storage_get_total_size(&mgr, NULL), ECHO_ERR_NULL_PARAM);
+  if (block_storage_get_total_size(NULL, &size) != ECHO_ERR_NULL_PARAM) {
+    passed = false;
+    goto done;
+  }
+  if (block_storage_get_total_size(&mgr, NULL) != ECHO_ERR_NULL_PARAM) {
+    passed = false;
+    goto done;
+  }
 
-  ASSERT_EQ(block_storage_delete_file(NULL, 0), ECHO_ERR_NULL_PARAM);
+  if (block_storage_delete_file(NULL, 0) != ECHO_ERR_NULL_PARAM) {
+    passed = false;
+    goto done;
+  }
+
+done:
+  test_case("Pruning NULL parameter handling");
+  if (passed) {
+    test_pass();
+  } else {
+    test_fail("NULL param check failed");
+  }
 }
 
 /*
@@ -400,53 +721,18 @@ static void test_pruning_null_params(void) {
 int main(void) {
   test_suite_begin("Pruning Tests");
 
-  test_case("BLOCK_STATUS_PRUNED flag value");
   test_pruned_flag_value();
-  test_pass();
-
-  test_case("PRUNE_TARGET_MIN_MB constant");
   test_prune_target_min();
-  test_pass();
-
-  test_case("Block storage file exists check");
   test_block_storage_file_exists();
-  test_pass();
-
-  test_case("Block storage get file size");
   test_block_storage_get_file_size();
-  test_pass();
-
-  test_case("Block storage get total size");
   test_block_storage_get_total_size();
-  test_pass();
-
-  test_case("Block storage get current file");
   test_block_storage_get_current_file();
-  test_pass();
-
-  test_case("Block storage delete file");
   test_block_storage_delete_file();
-  test_pass();
-
-  test_case("Block index DB mark pruned");
   test_block_index_db_mark_pruned();
-  test_pass();
-
-  test_case("Block index DB get pruned height");
   test_block_index_db_get_pruned_height();
-  test_pass();
-
-  test_case("Block index DB is_pruned check");
   test_block_index_db_is_pruned();
-  test_pass();
-
-  test_case("Node config prune target initialization");
   test_node_config_prune_target();
-  test_pass();
-
-  test_case("Pruning NULL parameter handling");
   test_pruning_null_params();
-  test_pass();
 
   test_suite_end();
   return test_global_summary();
