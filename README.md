@@ -136,6 +136,29 @@ make test
 
 Runs all unit tests for cryptographic primitives, data structures, and script execution.
 
+### E2E Testing with Regtest
+
+For end-to-end testing, you can build a regtest node and mine blocks:
+
+```sh
+# Build for regtest network
+make clean
+make CFLAGS="-std=c11 -Wall -Wextra -Wpedantic -O2 -Iinclude -pthread -DECHO_NETWORK_REGTEST"
+
+# Start the regtest node (uses port 18443 for RPC, 18444 for P2P)
+./echo --network=regtest
+
+# In another terminal, mine blocks using the Python miner
+python3 scripts/regtest_miner.py --blocks 10
+
+# Check chain status
+curl -X POST http://localhost:18443/ \
+  -H "Content-Type: application/json" \
+  -d '{"method":"getblockchaininfo","params":[],"id":1}'
+```
+
+The regtest miner uses trivial proof-of-work difficulty, allowing blocks to be mined instantly for testing purposes.
+
 ## Requirements
 
 - C11 compiler (GCC, Clang, or MSVC)

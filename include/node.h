@@ -23,13 +23,13 @@
 #ifndef ECHO_NODE_H
 #define ECHO_NODE_H
 
+#include "echo_config.h" /* Must be first for network-specific constants */
 #include "block.h"
 #include "block_index_db.h"
 #include "blocks_storage.h"
 #include "chainstate.h"
 #include "consensus.h"
 #include "discovery.h"
-#include "echo_config.h"
 #include "echo_types.h"
 #include "mempool.h"
 #include "peer.h"

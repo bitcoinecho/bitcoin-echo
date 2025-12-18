@@ -45,25 +45,39 @@
  */
 
 /* BIP-16 (P2SH) activation height */
+#ifndef CONSENSUS_BIP16_HEIGHT
 #define CONSENSUS_BIP16_HEIGHT 173805
+#endif
 
 /* BIP-34 (height in coinbase) activation height */
+#ifndef CONSENSUS_BIP34_HEIGHT
 #define CONSENSUS_BIP34_HEIGHT 227931
+#endif
 
 /* BIP-65 (OP_CHECKLOCKTIMEVERIFY) activation height */
+#ifndef CONSENSUS_BIP65_HEIGHT
 #define CONSENSUS_BIP65_HEIGHT 388381
+#endif
 
 /* BIP-66 (strict DER signatures) activation height */
+#ifndef CONSENSUS_BIP66_HEIGHT
 #define CONSENSUS_BIP66_HEIGHT 363725
+#endif
 
 /* BIP-68/112/113 (relative locktimes) activation block */
+#ifndef CONSENSUS_CSV_HEIGHT
 #define CONSENSUS_CSV_HEIGHT 419328
+#endif
 
 /* BIP-141/143/147 (SegWit) activation height */
+#ifndef CONSENSUS_SEGWIT_HEIGHT
 #define CONSENSUS_SEGWIT_HEIGHT 481824
+#endif
 
 /* BIP-341 (Taproot) activation height */
+#ifndef CONSENSUS_TAPROOT_HEIGHT
 #define CONSENSUS_TAPROOT_HEIGHT 709632
+#endif
 
 /*
  * ============================================================================
