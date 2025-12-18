@@ -18,22 +18,12 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and run tests
+      - name: Build and test with AddressSanitizer
         run: |
-          set -e
-          make clean
-          make test 2>&1 | tee test_output.txt
-          exit ${PIPESTATUS[0]}
-
-      - name: Build main binary
-        run: make all
-
-      - name: Run tests with AddressSanitizer
-        run: |
-          set -e
           make clean
           make test \
             CFLAGS="-std=c11 -Wall -Wextra -Wpedantic -O1 -g -fsanitize=address -fno-omit-frame-pointer -Iinclude -pthread" \
-            LDFLAGS="-pthread -fsanitize=address" \
-            2>&1 | tee asan_output.txt
-          exit ${PIPESTATUS[0]}
+            LDFLAGS="-pthread -fsanitize=address"
+
+      - name: Build main binary
+        run: make all
