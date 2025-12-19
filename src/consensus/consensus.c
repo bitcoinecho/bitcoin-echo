@@ -460,9 +460,10 @@ static uint32_t get_block_height(const consensus_engine_t *engine,
   return parent->height + 1;
 }
 
-bool consensus_validate_header(const consensus_engine_t *engine,
-                               const block_header_t *header,
-                               consensus_result_t *result) {
+bool consensus_validate_header_with_hash(const consensus_engine_t *engine,
+                                         const block_header_t *header,
+                                         const hash256_t *precomputed_hash,
+                                         consensus_result_t *result) {
   ECHO_ASSERT(engine != NULL);
   ECHO_ASSERT(header != NULL);
 
@@ -478,9 +479,9 @@ bool consensus_validate_header(const consensus_engine_t *engine,
     return false;
   }
 
-  /* Validate proof of work */
+  /* Validate proof of work (use pre-computed hash if available) */
   block_validation_error_t pow_error;
-  if (!block_validate_pow(header, &pow_error)) {
+  if (!block_validate_pow_with_hash(header, precomputed_hash, &pow_error)) {
     if (result != NULL) {
       result->error = CONSENSUS_ERR_BLOCK_POW;
       result->block_error = pow_error;
@@ -522,6 +523,12 @@ bool consensus_validate_header(const consensus_engine_t *engine,
   }
 
   return true;
+}
+
+bool consensus_validate_header(const consensus_engine_t *engine,
+                               const block_header_t *header,
+                               consensus_result_t *result) {
+  return consensus_validate_header_with_hash(engine, header, NULL, result);
 }
 
 bool consensus_validate_block(const consensus_engine_t *engine,

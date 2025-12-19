@@ -379,6 +379,26 @@ bool consensus_validate_header(const consensus_engine_t *engine,
                                consensus_result_t *result);
 
 /*
+ * Validate a block header with pre-computed hash.
+ *
+ * Same as consensus_validate_header but uses a pre-computed hash
+ * to avoid redundant SHA256d computation during header sync.
+ *
+ * Parameters:
+ *   engine - Consensus engine
+ *   header - Block header to validate
+ *   hash   - Pre-computed block hash (NULL to compute internally)
+ *   result - Output: detailed validation result
+ *
+ * Returns:
+ *   true if header is valid, false otherwise
+ */
+bool consensus_validate_header_with_hash(const consensus_engine_t *engine,
+                                         const block_header_t *header,
+                                         const hash256_t *hash,
+                                         consensus_result_t *result);
+
+/*
  * Validate a complete block (pure function).
  *
  * This is the main validation entry point. It performs:

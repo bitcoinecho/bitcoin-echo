@@ -121,6 +121,7 @@ static echo_result_t sync_cb_get_block(const hash256_t *hash, block_t *block_out
                                        void *ctx);
 static echo_result_t sync_cb_store_block(const block_t *block, void *ctx);
 static echo_result_t sync_cb_validate_header(const block_header_t *header,
+                                             const hash256_t *hash,
                                              const block_index_t *prev_index,
                                              void *ctx);
 static echo_result_t sync_cb_store_header(const block_header_t *header,
@@ -414,7 +415,9 @@ static echo_result_t node_restore_chain_state(node_t *node) {
                 .height = 0,
                 .header = genesis,
                 .chainwork = genesis_index->chainwork,
-                .status = BLOCK_STATUS_VALID_HEADER | BLOCK_STATUS_VALID_CHAIN};
+                .status = BLOCK_STATUS_VALID_HEADER | BLOCK_STATUS_VALID_CHAIN,
+                .data_file = -1,
+                .data_pos = 0};
             echo_result_t db_result =
                 block_index_db_insert(&node->block_index_db, &genesis_entry);
             if (db_result != ECHO_OK && db_result != ECHO_ERR_EXISTS) {
@@ -471,11 +474,16 @@ static echo_result_t node_restore_chain_state(node_t *node) {
       return result;
     }
 
-    /* Update chainwork from database (may differ from calculated if we
-     * have persisted state from previous sessions) */
+    /* Update chainwork and data position from database (may differ from
+     * calculated if we have persisted state from previous sessions) */
     if (index != NULL) {
       index->chainwork = entry.chainwork;
       index->on_main_chain = (entry.status & BLOCK_STATUS_VALID_CHAIN) != 0;
+      /* Restore block data file position (for stored blocks) */
+      if (entry.data_file >= 0) {
+        index->data_file = (uint32_t)entry.data_file;
+        index->data_pos = entry.data_pos;
+      }
     }
 
     loaded_count++;
@@ -909,7 +917,9 @@ static echo_result_t node_accept_transaction(node_t *node, const tx_t *tx,
 /**
  * Get block from storage.
  *
- * Called by sync manager to check if we already have a block.
+ * Called by sync manager to retrieve a previously stored block.
+ * Used to process out-of-order blocks that were stored before their
+ * parent was validated.
  */
 static echo_result_t sync_cb_get_block(const hash256_t *hash, block_t *block_out,
                                        void *ctx) {
@@ -918,9 +928,11 @@ static echo_result_t sync_cb_get_block(const hash256_t *hash, block_t *block_out
     return ECHO_ERR_NULL_PARAM;
   }
 
-  /* Check if block data exists in the database by looking at status flags.
-   * on_main_chain is not sufficient - it's set for all headers on the chain,
-   * but we need to know if we have the actual block DATA. */
+  if (!node->block_storage_init || !node->block_index_db_open) {
+    return ECHO_ERR_NOT_FOUND;
+  }
+
+  /* Look up block position in database */
   block_index_entry_t entry;
   echo_result_t result =
       block_index_db_lookup_by_hash(&node->block_index_db, hash, &entry);
@@ -928,27 +940,120 @@ static echo_result_t sync_cb_get_block(const hash256_t *hash, block_t *block_out
     return result;
   }
 
-  /* Check if we have the block data (not just the header) */
-  if ((entry.status & BLOCK_STATUS_HAVE_DATA) &&
-      !(entry.status & BLOCK_STATUS_PRUNED)) {
-    /* We have unpruned block data */
-    /* TODO: Load from block file storage if needed */
-    return ECHO_OK;
+  /* Check if block data is stored (data_file != -1) */
+  if (entry.data_file < 0) {
+    return ECHO_ERR_NOT_FOUND; /* Header only, no block data */
   }
 
-  return ECHO_ERR_NOT_FOUND;
+  /* Load block data from storage */
+  block_file_pos_t pos;
+  pos.file_index = (uint32_t)entry.data_file;
+  pos.file_offset = entry.data_pos;
+
+  uint8_t *block_data = NULL;
+  uint32_t block_size = 0;
+  result = block_storage_read(&node->block_storage, pos, &block_data, &block_size);
+  if (result != ECHO_OK) {
+    log_warn(LOG_COMP_STORE, "Failed to read block from file %u offset %u: %d",
+             pos.file_index, pos.file_offset, result);
+    return result;
+  }
+
+  /* Parse block data */
+  size_t consumed;
+  result = block_parse(block_data, block_size, block_out, &consumed);
+  free(block_data);
+
+  if (result != ECHO_OK) {
+    log_warn(LOG_COMP_STORE, "Failed to parse stored block: %d", result);
+    return result;
+  }
+
+  return ECHO_OK;
 }
 
 /**
  * Store block data.
  *
  * Called by sync manager to persist a block after download.
- * Note: Actual storage happens in validate_and_apply_block for atomicity.
+ * Stores the block to disk immediately so out-of-order blocks don't need
+ * to be re-downloaded. Records the file position in the database and
+ * in-memory block index for later retrieval.
  */
 static echo_result_t sync_cb_store_block(const block_t *block, void *ctx) {
-  (void)block;
-  (void)ctx;
-  /* Storage is handled atomically in validate_and_apply_block */
+  node_t *node = (node_t *)ctx;
+  if (node == NULL || block == NULL) {
+    return ECHO_ERR_NULL_PARAM;
+  }
+
+  /* Skip if block storage not initialized */
+  if (!node->block_storage_init) {
+    return ECHO_OK;
+  }
+
+  /* Compute block hash */
+  hash256_t block_hash;
+  echo_result_t result = block_header_hash(&block->header, &block_hash);
+  if (result != ECHO_OK) {
+    log_error(LOG_COMP_STORE, "Failed to compute block hash for storage");
+    return result;
+  }
+
+  /* Serialize block to bytes */
+  size_t block_size = block_serialize_size(block);
+  uint8_t *block_data = malloc(block_size);
+  if (block_data == NULL) {
+    log_error(LOG_COMP_STORE, "Failed to allocate %zu bytes for block", block_size);
+    return ECHO_ERR_OUT_OF_MEMORY;
+  }
+
+  size_t written;
+  result = block_serialize(block, block_data, block_size, &written);
+  if (result != ECHO_OK) {
+    free(block_data);
+    log_error(LOG_COMP_STORE, "Failed to serialize block");
+    return result;
+  }
+
+  /* Write to block storage */
+  block_file_pos_t pos;
+  result = block_storage_write(&node->block_storage, block_data,
+                               (uint32_t)written, &pos);
+  free(block_data);
+
+  if (result != ECHO_OK) {
+    log_error(LOG_COMP_STORE, "Failed to write block to storage: %d", result);
+    return result;
+  }
+
+  /* Update block index database with file position */
+  if (node->block_index_db_open) {
+    result = block_index_db_update_data_pos(&node->block_index_db, &block_hash,
+                                            pos.file_index, pos.file_offset);
+    if (result != ECHO_OK && result != ECHO_ERR_NOT_FOUND) {
+      log_warn(LOG_COMP_STORE, "Failed to update block index DB: %d", result);
+      /* Continue anyway - block is stored on disk */
+    }
+  }
+
+  /* Update in-memory block index if available */
+  chainstate_t *chainstate = consensus_get_chainstate(node->consensus);
+  if (chainstate != NULL) {
+    block_index_map_t *index_map = chainstate_get_block_index_map(chainstate);
+    block_index_t *block_index = block_index_map_lookup(index_map, &block_hash);
+    if (block_index != NULL) {
+      block_index->data_file = pos.file_index;
+      block_index->data_pos = pos.file_offset;
+      log_info(LOG_COMP_STORE, "Block stored: height=%u, file=%u, offset=%u",
+               block_index->height, pos.file_index, pos.file_offset);
+    } else {
+      log_warn(LOG_COMP_STORE, "Block stored but no block_index found");
+    }
+  }
+
+  log_debug(LOG_COMP_STORE, "Block stored at file %u offset %u (height lookup pending)",
+            pos.file_index, pos.file_offset);
+
   return ECHO_OK;
 }
 
@@ -958,6 +1063,7 @@ static echo_result_t sync_cb_store_block(const block_t *block, void *ctx) {
  * Called by sync manager during headers-first sync.
  */
 static echo_result_t sync_cb_validate_header(const block_header_t *header,
+                                             const hash256_t *hash,
                                              const block_index_t *prev_index,
                                              void *ctx) {
   node_t *node = (node_t *)ctx;
@@ -965,11 +1071,12 @@ static echo_result_t sync_cb_validate_header(const block_header_t *header,
     return ECHO_ERR_NULL_PARAM;
   }
 
-  /* Use consensus engine header validation */
+  /* Use consensus engine header validation with pre-computed hash */
   consensus_result_t result;
   consensus_result_init(&result);
 
-  bool valid = consensus_validate_header(node->consensus, header, &result);
+  bool valid =
+      consensus_validate_header_with_hash(node->consensus, header, hash, &result);
   if (!valid) {
     log_warn(LOG_COMP_CONS, "Header validation failed: %s",
              consensus_error_str(result.error));
@@ -1017,7 +1124,9 @@ static echo_result_t sync_cb_store_header(const block_header_t *header,
       .height = index->height,
       .header = *header,
       .chainwork = index->chainwork,
-      .status = BLOCK_STATUS_VALID_HEADER | BLOCK_STATUS_VALID_CHAIN};
+      .status = BLOCK_STATUS_VALID_HEADER | BLOCK_STATUS_VALID_CHAIN,
+      .data_file = -1,  /* Not stored yet */
+      .data_pos = 0};
 
   /* Insert into database */
   echo_result_t result = block_index_db_insert(&node->block_index_db, &entry);
@@ -1279,6 +1388,31 @@ static echo_result_t sync_cb_get_block_hash_at_height(uint32_t height,
 }
 
 /**
+ * Begin header batch transaction for performance.
+ *
+ * Batching header inserts in a single transaction is ~100x faster
+ * than individual auto-commit inserts.
+ */
+static void sync_cb_begin_header_batch(void *ctx) {
+  node_t *node = (node_t *)ctx;
+  if (node == NULL || !node->block_index_db_open) {
+    return;
+  }
+  block_index_db_begin(&node->block_index_db);
+}
+
+/**
+ * Commit header batch transaction.
+ */
+static void sync_cb_commit_header_batch(void *ctx) {
+  node_t *node = (node_t *)ctx;
+  if (node == NULL || !node->block_index_db_open) {
+    return;
+  }
+  block_index_db_commit(&node->block_index_db);
+}
+
+/**
  * Initialize sync manager with callbacks.
  *
  * Session 9.6.1: Block Processing Pipeline
@@ -1305,6 +1439,8 @@ static echo_result_t node_init_sync(node_t *node) {
       .send_getheaders = sync_cb_send_getheaders,
       .send_getdata_blocks = sync_cb_send_getdata_blocks,
       .get_block_hash_at_height = sync_cb_get_block_hash_at_height,
+      .begin_header_batch = sync_cb_begin_header_batch,
+      .commit_header_batch = sync_cb_commit_header_batch,
       .ctx = node};
 
   /* Create sync manager */
@@ -2444,7 +2580,9 @@ echo_result_t node_apply_block(node_t *node, const block_t *block) {
         .chainwork = chainwork,
         .status = BLOCK_STATUS_VALID_HEADER | BLOCK_STATUS_VALID_TREE |
                   BLOCK_STATUS_VALID_SCRIPTS | BLOCK_STATUS_VALID_CHAIN |
-                  BLOCK_STATUS_HAVE_DATA};
+                  BLOCK_STATUS_HAVE_DATA,
+        .data_file = -1,
+        .data_pos = 0};
 
     result = block_index_db_insert(&node->block_index_db, &entry);
     if (result != ECHO_OK && result != ECHO_ERR_EXISTS) {

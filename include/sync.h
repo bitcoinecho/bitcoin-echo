@@ -159,12 +159,14 @@ typedef struct {
    * Validate a block header (contextual validation).
    *
    * This should check PoW, timestamp, prev_block reference, difficulty.
+   * The pre-computed hash is provided to avoid redundant SHA256d computation.
    *
    * Returns:
    *   ECHO_OK if valid
    *   ECHO_ERR_INVALID if invalid
    */
   echo_result_t (*validate_header)(const block_header_t *header,
+                                   const hash256_t *hash,
                                    const block_index_t *prev_index, void *ctx);
 
   /**
@@ -245,6 +247,28 @@ typedef struct {
    */
   echo_result_t (*get_block_hash_at_height)(uint32_t height, hash256_t *hash,
                                             void *ctx);
+
+  /**
+   * Begin a header batch transaction.
+   *
+   * Called before processing a batch of headers to enable
+   * database transaction batching for performance.
+   *
+   * Parameters:
+   *   ctx - User context
+   */
+  void (*begin_header_batch)(void *ctx);
+
+  /**
+   * Commit a header batch transaction.
+   *
+   * Called after processing a batch of headers to commit
+   * all inserts in a single transaction.
+   *
+   * Parameters:
+   *   ctx - User context
+   */
+  void (*commit_header_batch)(void *ctx);
 
   /* Context pointer passed to all callbacks */
   void *ctx;
@@ -547,6 +571,23 @@ echo_result_t block_queue_add(block_queue_t *queue, const hash256_t *hash,
  */
 echo_result_t block_queue_next(block_queue_t *queue, hash256_t *hash,
                                uint32_t *height);
+
+/**
+ * Find block in queue by height.
+ *
+ * Searches for a block at the specified height (pending or in-flight).
+ * Used to check if we already have a stored block that can be validated.
+ *
+ * Parameters:
+ *   queue  - The queue
+ *   height - Block height to find
+ *   hash   - Output: hash of block at this height
+ *
+ * Returns:
+ *   ECHO_OK if found, ECHO_ERR_NOT_FOUND otherwise
+ */
+echo_result_t block_queue_find_by_height(block_queue_t *queue, uint32_t height,
+                                         hash256_t *hash);
 
 /**
  * Mark block as assigned to peer for download.

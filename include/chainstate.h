@@ -52,7 +52,18 @@ typedef struct block_index {
   work256_t chainwork;      /* Cumulative work up to and including this block */
   bool on_main_chain;       /* True if on the active chain */
   struct block_index *prev; /* Pointer to previous block index (may be NULL) */
+
+  /*
+   * Block data file position (Session 9.6.7).
+   * Tracks where this block's data is stored on disk.
+   * UINT32_MAX means "not stored" (header-only).
+   */
+  uint32_t data_file;       /* File index (blk*.dat) or UINT32_MAX if not stored */
+  uint32_t data_pos;        /* Byte offset within file */
 } block_index_t;
+
+/* Sentinel value indicating block data is not stored on disk */
+#define BLOCK_DATA_NOT_STORED UINT32_MAX
 
 /**
  * Chain tip info: current best chain head.
@@ -469,6 +480,23 @@ echo_result_t chain_reorganize(chainstate_t *state, chain_reorg_t *reorg,
 echo_result_t chainstate_add_header(chainstate_t *state,
                                     const block_header_t *header,
                                     block_index_t **index_out);
+
+/**
+ * Add a block header with pre-computed hash.
+ *
+ * Same as chainstate_add_header but uses a pre-computed hash
+ * to avoid redundant SHA256d computation during header sync.
+ *
+ * @param state The chain state
+ * @param header The block header to add
+ * @param hash Pre-computed block hash (NULL to compute internally)
+ * @param index_out Output: the created block index (may be NULL)
+ * @return ECHO_OK if added, ECHO_ERR_EXISTS if already known
+ */
+echo_result_t chainstate_add_header_with_hash(chainstate_t *state,
+                                              const block_header_t *header,
+                                              const hash256_t *hash,
+                                              block_index_t **index_out);
 
 /**
  * Get the block index map from chain state.

@@ -33,11 +33,20 @@ static echo_result_t create_schema(db_t *db) {
           "    height      INTEGER NOT NULL,"
           "    header      BLOB NOT NULL,"   /* 80 bytes */
           "    chainwork   BLOB NOT NULL,"   /* 32 bytes, big-endian */
-          "    status      INTEGER NOT NULL" /* validation status flags */
+          "    status      INTEGER NOT NULL," /* validation status flags */
+          "    data_file   INTEGER DEFAULT -1," /* block file index, -1=not stored */
+          "    data_pos    INTEGER DEFAULT 0"   /* byte offset in file */
           ");");
   if (result != ECHO_OK) {
     return result;
   }
+
+  /*
+   * Migration for existing databases: add data_file and data_pos columns.
+   * ALTER TABLE ADD COLUMN silently fails if column already exists in SQLite.
+   */
+  db_exec(db, "ALTER TABLE blocks ADD COLUMN data_file INTEGER DEFAULT -1");
+  db_exec(db, "ALTER TABLE blocks ADD COLUMN data_pos INTEGER DEFAULT 0");
 
   /* Create height index for sequential chain navigation */
   result =
@@ -64,16 +73,16 @@ static echo_result_t prepare_statements(block_index_db_t *bdb) {
 
   /* Lookup by hash */
   result = db_prepare(&bdb->db,
-                      "SELECT hash, height, header, chainwork, status FROM "
-                      "blocks WHERE hash = ?",
+                      "SELECT hash, height, header, chainwork, status, "
+                      "data_file, data_pos FROM blocks WHERE hash = ?",
                       &bdb->lookup_hash_stmt);
   if (result != ECHO_OK)
     return result;
 
   /* Lookup by height */
   result = db_prepare(&bdb->db,
-                      "SELECT hash, height, header, chainwork, status FROM "
-                      "blocks WHERE height = ? LIMIT 1",
+                      "SELECT hash, height, header, chainwork, status, "
+                      "data_file, data_pos FROM blocks WHERE height = ? LIMIT 1",
                       &bdb->lookup_height_stmt);
   if (result != ECHO_OK)
     return result;
@@ -81,7 +90,8 @@ static echo_result_t prepare_statements(block_index_db_t *bdb) {
   /* Insert (OR IGNORE to silently skip duplicates on hash primary key) */
   result = db_prepare(&bdb->db,
                       "INSERT OR IGNORE INTO blocks (hash, height, header, "
-                      "chainwork, status) VALUES (?, ?, ?, ?, ?)",
+                      "chainwork, status, data_file, data_pos) "
+                      "VALUES (?, ?, ?, ?, ?, ?, ?)",
                       &bdb->insert_stmt);
   if (result != ECHO_OK)
     return result;
@@ -89,6 +99,14 @@ static echo_result_t prepare_statements(block_index_db_t *bdb) {
   /* Update status */
   result = db_prepare(&bdb->db, "UPDATE blocks SET status = ? WHERE hash = ?",
                       &bdb->update_status_stmt);
+  if (result != ECHO_OK)
+    return result;
+
+  /* Update block data position (when block is stored to disk) */
+  result = db_prepare(&bdb->db,
+                      "UPDATE blocks SET data_file = ?, data_pos = ? "
+                      "WHERE hash = ?",
+                      &bdb->update_data_pos_stmt);
   if (result != ECHO_OK)
     return result;
 
@@ -104,7 +122,8 @@ static echo_result_t prepare_statements(block_index_db_t *bdb) {
    */
   result =
       db_prepare(&bdb->db,
-                 "SELECT hash, height, header, chainwork, status FROM blocks "
+                 "SELECT hash, height, header, chainwork, status, data_file, "
+                 "data_pos FROM blocks "
                  "WHERE (status & ?) != 0 ORDER BY height DESC LIMIT 1",
                  &bdb->best_chain_stmt);
   if (result != ECHO_OK)
@@ -123,6 +142,7 @@ static void finalize_statements(block_index_db_t *bdb) {
     db_stmt_finalize(&bdb->lookup_height_stmt);
     db_stmt_finalize(&bdb->insert_stmt);
     db_stmt_finalize(&bdb->update_status_stmt);
+    db_stmt_finalize(&bdb->update_data_pos_stmt);
     db_stmt_finalize(&bdb->best_chain_stmt);
     bdb->stmts_prepared = false;
   }
@@ -227,6 +247,12 @@ static void populate_entry_from_row(db_stmt_t *stmt,
 
   /* status (column 4) */
   entry->status = (uint32_t)db_column_int(stmt, 4);
+
+  /* data_file (column 5) - may be NULL/-1 for header-only entries */
+  entry->data_file = db_column_int(stmt, 5);
+
+  /* data_pos (column 6) */
+  entry->data_pos = (uint32_t)db_column_int(stmt, 6);
 }
 
 /* ========================================================================
@@ -269,6 +295,20 @@ void block_index_db_close(block_index_db_t *bdb) {
     db_close(&bdb->db);
     memset(bdb, 0, sizeof(block_index_db_t));
   }
+}
+
+echo_result_t block_index_db_begin(block_index_db_t *bdb) {
+  if (!bdb) {
+    return ECHO_ERR_NULL_PARAM;
+  }
+  return db_begin(&bdb->db);
+}
+
+echo_result_t block_index_db_commit(block_index_db_t *bdb) {
+  if (!bdb) {
+    return ECHO_ERR_NULL_PARAM;
+  }
+  return db_commit(&bdb->db);
 }
 
 /* ========================================================================
@@ -388,8 +428,53 @@ echo_result_t block_index_db_insert(block_index_db_t *bdb,
   if (result != ECHO_OK)
     return result;
 
+  /* Bind data_file (parameter 6) */
+  result = db_bind_int(&bdb->insert_stmt, 6, entry->data_file);
+  if (result != ECHO_OK)
+    return result;
+
+  /* Bind data_pos (parameter 7) */
+  result = db_bind_int(&bdb->insert_stmt, 7, (int)entry->data_pos);
+  if (result != ECHO_OK)
+    return result;
+
   /* Execute insert */
   result = db_step(&bdb->insert_stmt);
+  if (result == ECHO_DONE) {
+    return ECHO_OK;
+  }
+
+  return result;
+}
+
+echo_result_t block_index_db_update_data_pos(block_index_db_t *bdb,
+                                             const hash256_t *hash,
+                                             uint32_t data_file,
+                                             uint32_t data_pos) {
+  echo_result_t result;
+
+  /* Reset statement */
+  result = db_stmt_reset(&bdb->update_data_pos_stmt);
+  if (result != ECHO_OK)
+    return result;
+
+  /* Bind data_file (parameter 1) */
+  result = db_bind_int(&bdb->update_data_pos_stmt, 1, (int)data_file);
+  if (result != ECHO_OK)
+    return result;
+
+  /* Bind data_pos (parameter 2) */
+  result = db_bind_int(&bdb->update_data_pos_stmt, 2, (int)data_pos);
+  if (result != ECHO_OK)
+    return result;
+
+  /* Bind hash (parameter 3) */
+  result = db_bind_blob(&bdb->update_data_pos_stmt, 3, hash->bytes, 32);
+  if (result != ECHO_OK)
+    return result;
+
+  /* Execute update */
+  result = db_step(&bdb->update_data_pos_stmt);
   if (result == ECHO_DONE) {
     return ECHO_OK;
   }
@@ -473,7 +558,8 @@ echo_result_t block_index_db_get_chain_block(block_index_db_t *bdb,
   /* Prepare query for blocks on best chain at this height */
   result =
       db_prepare(&bdb->db,
-                 "SELECT hash, height, header, chainwork, status FROM blocks "
+                 "SELECT hash, height, header, chainwork, status, data_file, "
+                 "data_pos FROM blocks "
                  "WHERE height = ? AND (status & ?) != 0 LIMIT 1",
                  &stmt);
   if (result != ECHO_OK)

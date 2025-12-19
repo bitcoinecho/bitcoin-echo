@@ -179,6 +179,24 @@ echo_bool_t block_validate_pow(const block_header_t *header,
                                block_validation_error_t *error);
 
 /*
+ * Validate proof-of-work with pre-computed hash.
+ *
+ * Same as block_validate_pow but uses a pre-computed hash to avoid
+ * redundant SHA256d computation during header sync.
+ *
+ * Parameters:
+ *   header - Block header to validate
+ *   hash   - Pre-computed block hash (NULL to compute internally)
+ *   error  - Output: specific error if validation fails (may be NULL)
+ *
+ * Returns:
+ *   ECHO_TRUE if PoW is valid, ECHO_FALSE otherwise
+ */
+echo_bool_t block_validate_pow_with_hash(const block_header_t *header,
+                                         const hash256_t *hash,
+                                         block_validation_error_t *error);
+
+/*
  * Validate a block header's timestamp.
  *
  * Checks:

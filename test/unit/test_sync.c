@@ -80,10 +80,12 @@ static echo_result_t mock_store_block(const block_t *block, void *ctx) {
 
 /* Mock callback: validate header */
 static echo_result_t mock_validate_header(const block_header_t *header,
+                                          const hash256_t *hash,
                                           const block_index_t *prev_index,
                                           void *ctx) {
   test_ctx_t *tctx = (test_ctx_t *)ctx;
   (void)header;
+  (void)hash;
   (void)prev_index;
 
   tctx->headers_validated++;

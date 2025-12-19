@@ -189,6 +189,23 @@ echo_result_t block_queue_next(block_queue_t *queue, hash256_t *hash,
   return ECHO_OK;
 }
 
+echo_result_t block_queue_find_by_height(block_queue_t *queue, uint32_t height,
+                                         hash256_t *hash) {
+  if (!queue || !hash) {
+    return ECHO_ERR_NULL_PARAM;
+  }
+
+  /* Find block at specified height (pending or in-flight) */
+  for (size_t i = 0; i < queue->capacity; i++) {
+    if (queue->entries[i].valid && queue->entries[i].height == height) {
+      *hash = queue->entries[i].hash;
+      return ECHO_OK;
+    }
+  }
+
+  return ECHO_ERR_NOT_FOUND;
+}
+
 void block_queue_assign(block_queue_t *queue, const hash256_t *hash,
                         peer_t *peer) {
   if (!queue || !hash || !peer) {
@@ -677,6 +694,11 @@ echo_result_t sync_handle_headers(sync_manager_t *mgr, peer_t *peer,
       chainstate_get_block_index_map(mgr->chainstate);
   block_index_t *prev_index = NULL;
 
+  /* Begin database transaction for batch insert */
+  if (mgr->callbacks.begin_header_batch) {
+    mgr->callbacks.begin_header_batch(mgr->callbacks.ctx);
+  }
+
   for (size_t i = 0; i < count; i++) {
     const block_header_t *header = &headers[i];
 
@@ -703,19 +725,19 @@ echo_result_t sync_handle_headers(sync_manager_t *mgr, peer_t *peer,
       return ECHO_ERR_INVALID;
     }
 
-    /* Validate header if callback provided */
+    /* Validate header if callback provided (pass pre-computed hash) */
     if (mgr->callbacks.validate_header) {
-      echo_result_t result = mgr->callbacks.validate_header(header, prev_index,
-                                                            mgr->callbacks.ctx);
+      echo_result_t result = mgr->callbacks.validate_header(
+          header, &header_hash, prev_index, mgr->callbacks.ctx);
       if (result != ECHO_OK) {
         return ECHO_ERR_INVALID;
       }
     }
 
-    /* Add header to chain state */
+    /* Add header to chain state (pass pre-computed hash) */
     block_index_t *new_index = NULL;
-    echo_result_t result =
-        chainstate_add_header(mgr->chainstate, header, &new_index);
+    echo_result_t result = chainstate_add_header_with_hash(
+        mgr->chainstate, header, &header_hash, &new_index);
 
     if (result == ECHO_ERR_EXISTS) {
       /* Already have it - continue with next */
@@ -746,6 +768,11 @@ echo_result_t sync_handle_headers(sync_manager_t *mgr, peer_t *peer,
     prev_index = new_index;
     mgr->headers_received_total++;
     ps->headers_received++;
+  }
+
+  /* Commit database transaction for batch insert */
+  if (mgr->callbacks.commit_header_batch) {
+    mgr->callbacks.commit_header_batch(mgr->callbacks.ctx);
   }
 
   ps->last_header_hash = headers[count - 1].prev_hash;
@@ -818,18 +845,117 @@ echo_result_t sync_handle_block(sync_manager_t *mgr, peer_t *peer,
 
   /* Validate and apply if callback provided */
   if (mgr->callbacks.validate_and_apply_block && block_index) {
+    /*
+     * Check if this block connects to the validated tip before attempting
+     * validation. This avoids expensive validation attempts and noisy error
+     * logging for out-of-order blocks during parallel download.
+     *
+     * NOTE: We can't use on_main_chain because headers-first sync sets that
+     * flag on all headers during header download. Instead, check if this
+     * block's parent height equals the current validated tip height.
+     */
+    uint32_t validated_height = chainstate_get_height(mgr->chainstate);
+    uint32_t block_height = block_index->height;
+    bool can_connect =
+        (block_height == 0) || /* Genesis can always connect */
+        (block_height == validated_height + 1); /* Next block after tip */
+
+    if (!can_connect) {
+      /* Block doesn't connect to current tip - re-queue for later */
+      block_queue_unassign(mgr->block_queue, &block_hash);
+      return ECHO_ERR_WOULD_BLOCK; /* Not an error, just waiting for parent */
+    }
+
     echo_result_t result = mgr->callbacks.validate_and_apply_block(
         block, block_index, mgr->callbacks.ctx);
     if (result != ECHO_OK) {
       /*
-       * Block validation failed - likely out of order (parent not yet applied).
-       * Re-queue the block to try again later instead of discarding.
-       * The block_queue_unassign() puts it back in pending state.
+       * Block validation failed for a reason other than ordering.
+       * Re-queue to try again later.
        */
       block_queue_unassign(mgr->block_queue, &block_hash);
       return ECHO_ERR_INVALID;
     }
     mgr->blocks_validated_total++;
+
+    /*
+     * After successful validation, check if we have the next block already
+     * stored on disk (from out-of-order download). If so, load and validate
+     * it immediately without waiting for another network round-trip.
+     */
+    if (mgr->callbacks.get_block) {
+      uint32_t next_height = chainstate_get_height(mgr->chainstate) + 1;
+
+      while (next_height <= mgr->best_header->height) {
+        /* Find block index at next height */
+        block_index_t *next_index = NULL;
+        block_index_map_t *idx_map =
+            chainstate_get_block_index_map(mgr->chainstate);
+
+        /* Search for a block at next_height with stored data */
+        /* Note: We need to find BY HEIGHT which requires scanning */
+        /* For now, check if we have any pending blocks at this height */
+        hash256_t next_hash;
+        if (block_queue_find_by_height(mgr->block_queue, next_height,
+                                       &next_hash) == ECHO_OK) {
+          next_index = block_index_map_lookup(idx_map, &next_hash);
+          log_debug(LOG_COMP_SYNC,
+                    "Found block at height %u in queue, index=%p, data_file=%u",
+                    next_height, (void *)next_index,
+                    next_index ? next_index->data_file : 0xFFFFFFFF);
+        } else {
+          /* Block not in queue - might already be validated or not known */
+          log_debug(LOG_COMP_SYNC,
+                    "Block at height %u not found in queue", next_height);
+          break;
+        }
+
+        if (next_index == NULL ||
+            next_index->data_file == BLOCK_DATA_NOT_STORED) {
+          log_debug(LOG_COMP_SYNC,
+                    "Block at height %u not stored yet (data_file=%u)",
+                    next_height,
+                    next_index ? next_index->data_file : 0xFFFFFFFF);
+          break; /* Next block not stored yet */
+        }
+
+        /* Load block from storage */
+        block_t stored_block;
+        echo_result_t load_result =
+            mgr->callbacks.get_block(&next_index->hash, &stored_block,
+                                     mgr->callbacks.ctx);
+        if (load_result != ECHO_OK) {
+          log_debug(LOG_COMP_SYNC,
+                    "Failed to load stored block at height %u: %d",
+                    next_height, load_result);
+          break;
+        }
+
+        /* Validate and apply the stored block */
+        echo_result_t val_result = mgr->callbacks.validate_and_apply_block(
+            &stored_block, next_index, mgr->callbacks.ctx);
+
+        block_free(&stored_block);
+
+        if (val_result != ECHO_OK) {
+          log_warn(LOG_COMP_SYNC,
+                   "Stored block at height %u failed validation: %d",
+                   next_height, val_result);
+          break;
+        }
+
+        /* Success! Remove from queue and continue */
+        block_queue_complete(mgr->block_queue, &next_index->hash);
+        mgr->blocks_validated_total++;
+        mgr->last_progress_time = plat_time_ms();
+
+        log_info(LOG_COMP_SYNC,
+                 "Validated stored block at height %u (from disk)",
+                 next_height);
+
+        next_height++;
+      }
+    }
   }
 
   /* Only mark complete in queue AFTER successful validation */
@@ -1019,6 +1145,17 @@ static void request_blocks(sync_manager_t *mgr) {
              mgr->peer_count, pending, inflight);
   }
 
+  /*
+   * Only request blocks within a small window of the validated tip.
+   * This prevents downloading blocks far ahead that will arrive out of order,
+   * get re-queued (because parent isn't validated), and need re-downloading.
+   *
+   * With 8 peers and 16 blocks per peer, we can have 128 in flight.
+   * A window of 16 gives enough parallelism while minimizing re-downloads.
+   */
+  uint32_t validated_height = chainstate_get_height(mgr->chainstate);
+  uint32_t max_request_height = validated_height + 16;
+
   /* Request blocks from queue */
   size_t iteration = 0;
   while (block_queue_pending_count(mgr->block_queue) > 0 &&
@@ -1053,6 +1190,14 @@ static void request_blocks(sync_manager_t *mgr) {
     hash256_t hash;
     uint32_t height;
     if (block_queue_next(mgr->block_queue, &hash, &height) != ECHO_OK) {
+      break;
+    }
+
+    /* Don't request blocks too far ahead of validated tip */
+    if (height > max_request_height) {
+      log_debug(LOG_COMP_SYNC,
+                "request_blocks: block at height %u exceeds window (tip=%u)",
+                height, validated_height);
       break;
     }
 

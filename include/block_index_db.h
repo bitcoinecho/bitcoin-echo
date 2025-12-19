@@ -64,6 +64,8 @@ typedef struct {
   block_header_t header; /* Full 80-byte header */
   work256_t chainwork;   /* Accumulated proof-of-work (32 bytes) */
   uint32_t status;       /* Validation status flags */
+  int32_t data_file;     /* Block data file index (-1 = not stored) */
+  uint32_t data_pos;     /* Byte offset within file */
 } block_index_entry_t;
 
 /*
@@ -71,13 +73,14 @@ typedef struct {
  * Wraps a SQLite database configured for block index storage.
  */
 typedef struct {
-  db_t db;                      /* Underlying database handle */
-  db_stmt_t lookup_hash_stmt;   /* Prepared statement for lookup by hash */
-  db_stmt_t lookup_height_stmt; /* Prepared statement for lookup by height */
-  db_stmt_t insert_stmt;        /* Prepared statement for inserts */
-  db_stmt_t update_status_stmt; /* Prepared statement for status updates */
-  db_stmt_t best_chain_stmt;    /* Prepared statement for best chain query */
-  bool stmts_prepared;          /* Whether statements are prepared */
+  db_t db;                        /* Underlying database handle */
+  db_stmt_t lookup_hash_stmt;     /* Prepared statement for lookup by hash */
+  db_stmt_t lookup_height_stmt;   /* Prepared statement for lookup by height */
+  db_stmt_t insert_stmt;          /* Prepared statement for inserts */
+  db_stmt_t update_status_stmt;   /* Prepared statement for status updates */
+  db_stmt_t update_data_pos_stmt; /* Prepared statement for data position */
+  db_stmt_t best_chain_stmt;      /* Prepared statement for best chain query */
+  bool stmts_prepared;            /* Whether statements are prepared */
 } block_index_db_t;
 
 /* ========================================================================
@@ -114,6 +117,32 @@ echo_result_t block_index_db_open(block_index_db_t *bdb, const char *path);
  *   - Safe to call on already-closed database
  */
 void block_index_db_close(block_index_db_t *bdb);
+
+/**
+ * Begin a transaction for batch operations.
+ *
+ * Parameters:
+ *   bdb - Block index database handle
+ *
+ * Returns:
+ *   ECHO_OK on success, error code on failure
+ *
+ * Notes:
+ *   - Use for batching multiple inserts (e.g., header sync)
+ *   - Call block_index_db_commit() to commit changes
+ */
+echo_result_t block_index_db_begin(block_index_db_t *bdb);
+
+/**
+ * Commit a transaction.
+ *
+ * Parameters:
+ *   bdb - Block index database handle
+ *
+ * Returns:
+ *   ECHO_OK on success, error code on failure
+ */
+echo_result_t block_index_db_commit(block_index_db_t *bdb);
 
 /* ========================================================================
  * Block Index Operations
@@ -206,6 +235,25 @@ echo_result_t block_index_db_insert(block_index_db_t *bdb,
 echo_result_t block_index_db_update_status(block_index_db_t *bdb,
                                            const hash256_t *hash,
                                            uint32_t status);
+
+/**
+ * Update the block data file position.
+ *
+ * Called when a block is stored to disk to record where it was written.
+ *
+ * Parameters:
+ *   bdb       - Block index database handle
+ *   hash      - Block hash to update
+ *   data_file - File index (blk*.dat number)
+ *   data_pos  - Byte offset within file
+ *
+ * Returns:
+ *   ECHO_OK on success, ECHO_ERR_NOT_FOUND if not found, error code on failure
+ */
+echo_result_t block_index_db_update_data_pos(block_index_db_t *bdb,
+                                             const hash256_t *hash,
+                                             uint32_t data_file,
+                                             uint32_t data_pos);
 
 /* ========================================================================
  * Chain Queries

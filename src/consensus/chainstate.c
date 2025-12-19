@@ -283,6 +283,10 @@ block_index_t *block_index_create(const block_header_t *header,
     work256_add(&prev->chainwork, &block_work, &index->chainwork);
   }
 
+  /* Block data not stored yet (header only) */
+  index->data_file = BLOCK_DATA_NOT_STORED;
+  index->data_pos = 0;
+
   return index;
 }
 
@@ -1135,21 +1139,29 @@ echo_result_t chain_reorganize(chainstate_t *state, chain_reorg_t *reorg,
   return ECHO_OK;
 }
 
-echo_result_t chainstate_add_header(chainstate_t *state,
-                                    const block_header_t *header,
-                                    block_index_t **index_out) {
+echo_result_t chainstate_add_header_with_hash(chainstate_t *state,
+                                              const block_header_t *header,
+                                              const hash256_t *precomputed_hash,
+                                              block_index_t **index_out) {
   ECHO_ASSERT(state != NULL);
   ECHO_ASSERT(header != NULL);
 
-  /* Compute block hash */
-  hash256_t hash;
-  echo_result_t result = block_header_hash(header, &hash);
-  if (result != ECHO_OK) {
-    return result;
+  /* Use pre-computed hash if provided, otherwise compute */
+  hash256_t local_hash;
+  const hash256_t *hash_ptr;
+
+  if (precomputed_hash != NULL) {
+    hash_ptr = precomputed_hash;
+  } else {
+    echo_result_t result = block_header_hash(header, &local_hash);
+    if (result != ECHO_OK) {
+      return result;
+    }
+    hash_ptr = &local_hash;
   }
 
   /* Check if already known */
-  if (block_index_map_lookup(state->block_map, &hash) != NULL) {
+  if (block_index_map_lookup(state->block_map, hash_ptr) != NULL) {
     return ECHO_ERR_EXISTS;
   }
 
@@ -1175,7 +1187,7 @@ echo_result_t chainstate_add_header(chainstate_t *state,
   }
 
   /* Insert into map */
-  result = block_index_map_insert(state->block_map, index);
+  echo_result_t result = block_index_map_insert(state->block_map, index);
   if (result != ECHO_OK) {
     block_index_destroy(index);
     return result;
@@ -1186,6 +1198,12 @@ echo_result_t chainstate_add_header(chainstate_t *state,
   }
 
   return ECHO_OK;
+}
+
+echo_result_t chainstate_add_header(chainstate_t *state,
+                                    const block_header_t *header,
+                                    block_index_t **index_out) {
+  return chainstate_add_header_with_hash(state, header, NULL, index_out);
 }
 
 block_index_map_t *chainstate_get_block_index_map(chainstate_t *state) {

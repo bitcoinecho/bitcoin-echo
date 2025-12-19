@@ -101,13 +101,15 @@ uint32_t block_validate_mtp(const block_validation_ctx_t *ctx) {
 }
 
 /*
- * Validate proof-of-work.
+ * Validate proof-of-work with optional pre-computed hash.
  */
-echo_bool_t block_validate_pow(const block_header_t *header,
-                               block_validation_error_t *error) {
-  hash256_t hash;
+echo_bool_t block_validate_pow_with_hash(const block_header_t *header,
+                                         const hash256_t *precomputed_hash,
+                                         block_validation_error_t *error) {
+  hash256_t local_hash;
   hash256_t target;
   echo_result_t result;
+  const hash256_t *hash_ptr;
 
   if (header == NULL) {
     if (error)
@@ -115,12 +117,17 @@ echo_bool_t block_validate_pow(const block_header_t *header,
     return ECHO_FALSE;
   }
 
-  /* Compute block hash */
-  result = block_header_hash(header, &hash);
-  if (result != ECHO_OK) {
-    if (error)
-      *error = BLOCK_ERR_POW_FAILED;
-    return ECHO_FALSE;
+  /* Use pre-computed hash if provided, otherwise compute */
+  if (precomputed_hash != NULL) {
+    hash_ptr = precomputed_hash;
+  } else {
+    result = block_header_hash(header, &local_hash);
+    if (result != ECHO_OK) {
+      if (error)
+        *error = BLOCK_ERR_POW_FAILED;
+      return ECHO_FALSE;
+    }
+    hash_ptr = &local_hash;
   }
 
   /* Convert bits to target */
@@ -140,13 +147,21 @@ echo_bool_t block_validate_pow(const block_header_t *header,
   }
 
   /* Check hash <= target */
-  if (!block_hash_meets_target(&hash, &target)) {
+  if (!block_hash_meets_target(hash_ptr, &target)) {
     if (error)
       *error = BLOCK_ERR_POW_FAILED;
     return ECHO_FALSE;
   }
 
   return ECHO_TRUE;
+}
+
+/*
+ * Validate proof-of-work (computes hash internally).
+ */
+echo_bool_t block_validate_pow(const block_header_t *header,
+                               block_validation_error_t *error) {
+  return block_validate_pow_with_hash(header, NULL, error);
 }
 
 /*
