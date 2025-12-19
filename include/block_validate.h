@@ -394,6 +394,9 @@ echo_result_t difficulty_compute_next(const difficulty_ctx_t *ctx,
 /*
  * Validate that a block's difficulty bits match the expected value.
  *
+ * On testnet, this also accepts minimum difficulty if the 20-minute rule
+ * applies (block timestamp > parent timestamp + 20 minutes).
+ *
  * Parameters:
  *   header - Block header to validate
  *   ctx    - Difficulty context
@@ -405,6 +408,26 @@ echo_result_t difficulty_compute_next(const difficulty_ctx_t *ctx,
 echo_bool_t block_validate_difficulty(const block_header_t *header,
                                       const difficulty_ctx_t *ctx,
                                       block_validation_error_t *error);
+
+/*
+ * Check if the testnet 20-minute difficulty reset rule applies.
+ *
+ * On testnet, if no block is found within 20 minutes of the previous block,
+ * the next block is allowed to use minimum difficulty (powlimit).
+ *
+ * This function is only meaningful on testnet; on mainnet/regtest it
+ * always returns ECHO_FALSE.
+ *
+ * Parameters:
+ *   block_timestamp  - Timestamp of the block being validated
+ *   parent_timestamp - Timestamp of the parent block
+ *
+ * Returns:
+ *   ECHO_TRUE if the 20-minute rule applies (testnet only)
+ *   ECHO_FALSE on mainnet/regtest or if rule doesn't apply
+ */
+echo_bool_t difficulty_testnet_20min_rule_applies(uint32_t block_timestamp,
+                                                  uint32_t parent_timestamp);
 
 /*
  * Compute the actual time span of a difficulty period.

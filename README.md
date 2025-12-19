@@ -88,6 +88,51 @@ build.bat
 echo.exe
 ```
 
+## Command Line Options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--help` | Show help message and exit | — |
+| `--datadir=<path>` | Data directory for blocks, chainstate, logs | `~/.bitcoin-echo` |
+| `--observe` | Observer mode: connect to network without validation | Off (full validation) |
+| `--prune=<MB>` | Prune old blocks to keep disk under `<MB>` | `0` (no pruning) |
+| `--port=<port>` | P2P listening port | Network-specific (see below) |
+| `--rpcport=<port>` | JSON-RPC server port | Network-specific (see below) |
+| `--testnet` | Use testnet3 network (requires testnet build) | — |
+| `--regtest` | Use regtest network (requires regtest build) | — |
+
+**Network-specific defaults:**
+
+| Network | P2P Port | RPC Port |
+|---------|----------|----------|
+| Mainnet | 8333 | 8332 |
+| Testnet | 18333 | 18332 |
+| Regtest | 18444 | 18443 |
+
+**Flag combinations:**
+
+```sh
+# Full validating node (archival)
+./echo
+
+# Full validating node with pruning (~10 GB disk)
+./echo --prune=10000
+
+# Observer mode (no validation, no storage)
+./echo --observe
+
+# Custom data directory
+./echo --datadir=/mnt/bitcoin-data
+
+# All flags can be combined (except --observe with --prune)
+./echo --datadir=/tmp/echo --prune=1000 --rpcport=9332
+```
+
+**Notes:**
+- `--prune` minimum is 550 MB (required for reorg safety)
+- `--observe` and `--prune` are mutually exclusive (observer doesn't store blocks)
+- `--testnet` and `--regtest` require the binary to be compiled with the matching network flag
+
 ## Running Observer Mode
 
 Observer mode connects to Bitcoin mainnet and watches live network traffic without validation or chain sync. The "Pinocchio moment."
@@ -100,11 +145,6 @@ This starts the node in observer mode with:
 - RPC server on `localhost:8332`
 - P2P port on `8333`
 - Data directory at `~/.bitcoin-echo`
-
-**Optional flags:**
-```sh
-./echo --observe --datadir /path/to/data --port 8333 --rpcport 8332
-```
 
 **Testing the RPC API:**
 ```sh
@@ -136,17 +176,42 @@ make test
 
 Runs all unit tests for cryptographic primitives, data structures, and script execution.
 
+### Building for Different Networks
+
+Bitcoin Echo supports three networks via compile-time selection:
+
+| Network | Build Flag | Default Ports | Use Case |
+|---------|------------|---------------|----------|
+| **Mainnet** | (default) | RPC: 8332, P2P: 8333 | Production Bitcoin network |
+| **Testnet3** | `-DECHO_NETWORK_TESTNET` | RPC: 18332, P2P: 18333 | Public test network |
+| **Regtest** | `-DECHO_NETWORK_REGTEST` | RPC: 18443, P2P: 18444 | Local testing |
+
+```sh
+# Mainnet (default)
+make
+
+# Testnet
+make clean
+make CFLAGS="-std=c11 -Wall -Wextra -Wpedantic -O2 -Iinclude -pthread -DECHO_NETWORK_TESTNET"
+
+# Regtest
+make clean
+make CFLAGS="-std=c11 -Wall -Wextra -Wpedantic -O2 -Iinclude -pthread -DECHO_NETWORK_REGTEST"
+```
+
+Each network has its own genesis block, difficulty rules, and DNS seeds. Testnet includes the 20-minute minimum difficulty rule for testing when hash power is low.
+
 ### E2E Testing with Regtest
 
-For end-to-end testing, you can build a regtest node and mine blocks:
+For end-to-end testing, build a regtest node and mine blocks:
 
 ```sh
 # Build for regtest network
 make clean
 make CFLAGS="-std=c11 -Wall -Wextra -Wpedantic -O2 -Iinclude -pthread -DECHO_NETWORK_REGTEST"
 
-# Start the regtest node (uses port 18443 for RPC, 18444 for P2P)
-./echo --network=regtest
+# Start the regtest node
+./echo
 
 # In another terminal, mine blocks using the Python miner
 python3 scripts/regtest_miner.py --blocks 10

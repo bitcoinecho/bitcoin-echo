@@ -323,6 +323,26 @@ void block_template_init(block_template_t *tmpl) {
  * ============================================================================
  */
 
+void block_genesis_header_testnet(block_header_t *header) {
+  if (header == NULL)
+    return;
+
+  /* Clear header */
+  memset(header, 0, sizeof(block_header_t));
+
+  /* Same prev_hash as mainnet (all zeros) */
+  /* header->prev_hash already zeroed */
+
+  /* Same merkle root as mainnet (genesis coinbase txid) */
+  memcpy(header->merkle_root.bytes, GENESIS_MERKLE_ROOT, 32);
+
+  /* Testnet-specific values */
+  header->version = TESTNET_GENESIS_VERSION;
+  header->timestamp = TESTNET_GENESIS_TIMESTAMP;
+  header->bits = TESTNET_GENESIS_BITS;
+  header->nonce = TESTNET_GENESIS_NONCE;
+}
+
 void block_genesis_header_regtest(block_header_t *header) {
   if (header == NULL)
     return;

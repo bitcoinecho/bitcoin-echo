@@ -8,8 +8,11 @@
 
 #include "block_validate.h"
 #include "block.h"
+#include "echo_config.h"
 #include "echo_types.h"
 #include "merkle.h"
+// NOLINTNEXTLINE(misc-include-cleaner) - used for testnet/regtest genesis
+#include "mining.h"
 #include "tx.h"
 #include <stdint.h>
 #include <stdlib.h>
@@ -370,6 +373,9 @@ echo_bool_t block_validate_header(const block_header_t *header,
 
 /*
  * Validate genesis block.
+ *
+ * Network-aware validation: uses compile-time network selection to determine
+ * which genesis block parameters and hash to expect.
  */
 echo_bool_t block_validate_genesis(const block_header_t *header,
                                    block_validation_error_t *error) {
@@ -382,8 +388,14 @@ echo_bool_t block_validate_genesis(const block_header_t *header,
     return ECHO_FALSE;
   }
 
-  /* Get expected genesis header */
+  /* Get expected genesis header based on network */
+#if defined(ECHO_NETWORK_MAINNET)
   block_genesis_header(&expected);
+#elif defined(ECHO_NETWORK_TESTNET)
+  block_genesis_header_testnet(&expected);
+#elif defined(ECHO_NETWORK_REGTEST)
+  block_genesis_header_regtest(&expected);
+#endif
 
   /* Check all fields match */
   if (header->version != expected.version) {
@@ -431,17 +443,28 @@ echo_bool_t block_validate_genesis(const block_header_t *header,
   block_header_hash(header, &hash);
 
   /*
-   * Known mainnet genesis hash (little-endian):
-   * 000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f
+   * Network-specific genesis hashes (little-endian internal representation).
    *
-   * In byte order (reversed for internal representation):
-   * 6f e2 8c 0a b6 f1 b3 72 c1 a6 a2 46 ae 63 f7 4f
-   * 93 1e 83 65 e1 5a 08 9c 68 d6 19 00 00 00 00 00
+   * Mainnet: 000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f
+   * Testnet: 000000000933ea01ad0ee984209779baaec3ced90fa3f408719526f8d77f4943
+   * Regtest: 0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206
    */
+#if defined(ECHO_NETWORK_MAINNET)
   static const uint8_t genesis_hash[32] = {
       0x6f, 0xe2, 0x8c, 0x0a, 0xb6, 0xf1, 0xb3, 0x72, 0xc1, 0xa6, 0xa2,
       0x46, 0xae, 0x63, 0xf7, 0x4f, 0x93, 0x1e, 0x83, 0x65, 0xe1, 0x5a,
       0x08, 0x9c, 0x68, 0xd6, 0x19, 0x00, 0x00, 0x00, 0x00, 0x00};
+#elif defined(ECHO_NETWORK_TESTNET)
+  static const uint8_t genesis_hash[32] = {
+      0x43, 0x49, 0x7f, 0xd7, 0xf8, 0x26, 0x95, 0x71, 0x08, 0xf4, 0xa3,
+      0x0f, 0xd9, 0xce, 0xc3, 0xae, 0xba, 0x79, 0x97, 0x20, 0x84, 0xe9,
+      0x0e, 0xad, 0x01, 0xea, 0x33, 0x09, 0x00, 0x00, 0x00, 0x00};
+#elif defined(ECHO_NETWORK_REGTEST)
+  static const uint8_t genesis_hash[32] = {
+      0x06, 0x22, 0x6e, 0x46, 0x11, 0x1a, 0x0b, 0x59, 0xca, 0xaf, 0x12,
+      0x60, 0x43, 0xeb, 0x5b, 0xbf, 0x28, 0xc3, 0x4f, 0x3a, 0x5e, 0x33,
+      0x2a, 0x1f, 0xc7, 0xb2, 0xb7, 0x3c, 0xf1, 0x88, 0x91, 0x0f};
+#endif
 
   if (memcmp(hash.bytes, genesis_hash, 32) != 0) {
     if (error)
@@ -753,7 +776,30 @@ echo_result_t difficulty_compute_next(const difficulty_ctx_t *ctx,
 }
 
 /*
+ * Check if the testnet 20-minute difficulty reset rule applies.
+ *
+ * On testnet only: if more than 20 minutes have passed since the parent block,
+ * the block is allowed to use minimum difficulty (powlimit).
+ */
+echo_bool_t difficulty_testnet_20min_rule_applies(uint32_t block_timestamp,
+                                                  uint32_t parent_timestamp) {
+#if defined(ECHO_NETWORK_TESTNET)
+  /* 20 minutes = 1200 seconds */
+  if (block_timestamp > parent_timestamp + TESTNET_20MIN_RULE_SECONDS) {
+    return ECHO_TRUE;
+  }
+#else
+  /* Suppress unused parameter warnings on non-testnet builds */
+  (void)block_timestamp;
+  (void)parent_timestamp;
+#endif
+  return ECHO_FALSE;
+}
+
+/*
  * Validate that a block's difficulty bits match the expected value.
+ *
+ * On testnet, also accepts minimum difficulty if the 20-minute rule applies.
  */
 echo_bool_t block_validate_difficulty(const block_header_t *header,
                                       const difficulty_ctx_t *ctx,
@@ -776,13 +822,30 @@ echo_bool_t block_validate_difficulty(const block_header_t *header,
   }
 
   /* Compare with block's bits */
-  if (header->bits != expected_bits) {
-    if (error)
-      *error = BLOCK_ERR_DIFFICULTY_MISMATCH;
-    return ECHO_FALSE;
+  if (header->bits == expected_bits) {
+    return ECHO_TRUE;
   }
 
-  return ECHO_TRUE;
+#if defined(ECHO_NETWORK_TESTNET)
+  /*
+   * Testnet 20-minute rule: if more than 20 minutes have passed since
+   * the parent block, the block is allowed to use minimum difficulty.
+   *
+   * period_end_time is the parent block's timestamp.
+   */
+  if (difficulty_testnet_20min_rule_applies(header->timestamp,
+                                            ctx->period_end_time)) {
+    /* Accept minimum difficulty (powlimit) */
+    if (header->bits == TESTNET_POWLIMIT_BITS) {
+      return ECHO_TRUE;
+    }
+  }
+#endif
+
+  /* Bits don't match expected and don't qualify for testnet rule */
+  if (error)
+    *error = BLOCK_ERR_DIFFICULTY_MISMATCH;
+  return ECHO_FALSE;
 }
 
 /*

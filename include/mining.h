@@ -35,6 +35,35 @@
 
 /*
  * ============================================================================
+ * TESTNET GENESIS BLOCK (testnet3)
+ * ============================================================================
+ * Testnet3 genesis block uses the same merkle root as mainnet (same coinbase),
+ * but with different timestamp, nonce, and bits (same as mainnet bits).
+ *
+ * Genesis hash: 000000000933ea01ad0ee984209779baaec3ced90fa3f408719526f8d77f4943
+ */
+
+/* Testnet genesis block constants */
+#define TESTNET_GENESIS_VERSION 1
+#define TESTNET_GENESIS_TIMESTAMP 1296688602
+#define TESTNET_GENESIS_BITS 0x1d00ffff /* Same as mainnet */
+#define TESTNET_GENESIS_NONCE 414098458
+
+/* Testnet proof-of-work limit (same as mainnet) */
+#define TESTNET_POWLIMIT_BITS 0x1d00ffff
+
+/*
+ * Testnet special difficulty rule (20-minute rule).
+ * If no block is found within 20 minutes, the difficulty drops to minimum.
+ * This allows testing to continue even if hash power disappears.
+ *
+ * The rule: If block.timestamp > prev_block.timestamp + 20 minutes,
+ * the required PoW is the minimum difficulty (powlimit).
+ */
+#define TESTNET_20MIN_RULE_SECONDS (20 * 60)
+
+/*
+ * ============================================================================
  * REGTEST GENESIS BLOCK
  * ============================================================================
  */
@@ -172,6 +201,17 @@ typedef struct {
  *   tmpl - Template to initialize
  */
 void block_template_init(block_template_t *tmpl);
+
+/**
+ * Get the testnet3 genesis block header.
+ *
+ * The testnet3 genesis block uses the same merkle root as mainnet but
+ * with different timestamp and nonce.
+ *
+ * Parameters:
+ *   header - Output: testnet genesis block header
+ */
+void block_genesis_header_testnet(block_header_t *header);
 
 /**
  * Get the regtest genesis block header.
