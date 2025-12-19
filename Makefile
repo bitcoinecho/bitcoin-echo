@@ -198,7 +198,7 @@ $(TEST_DISCOVERY): test/unit/test_discovery.c src/protocol/discovery.c src/platf
 $(TEST_RELAY): test/unit/test_relay.c src/protocol/relay.c src/protocol/peer.c src/protocol/serialize.c src/protocol/messages.c src/consensus/serialize.c src/consensus/block.c src/consensus/tx.c src/crypto/sha256.c src/platform/posix.c  $(TEST_UTILS_OBJ)
 	$(CC) $(CFLAGS) -o $@ $^
 
-$(TEST_SYNC): test/unit/test_sync.c src/protocol/sync.c src/protocol/peer.c src/protocol/serialize.c src/protocol/messages.c src/consensus/chainstate.c src/consensus/utxo.c src/consensus/block.c src/consensus/tx.c src/consensus/serialize.c src/crypto/sha256.c src/platform/posix.c  $(TEST_UTILS_OBJ)
+$(TEST_SYNC): test/unit/test_sync.c src/protocol/sync.c src/protocol/peer.c src/protocol/serialize.c src/protocol/messages.c src/consensus/chainstate.c src/consensus/utxo.c src/consensus/block.c src/consensus/tx.c src/consensus/serialize.c src/crypto/sha256.c src/platform/posix.c src/app/log.c $(TEST_UTILS_OBJ)
 	$(CC) $(CFLAGS) -o $@ $^
 
 $(TEST_MEMPOOL): test/unit/test_mempool.c src/protocol/mempool.c src/consensus/tx_validate.c src/consensus/script.c src/consensus/sig_verify.c src/consensus/utxo.c src/consensus/block.c src/consensus/tx.c src/consensus/serialize.c src/crypto/sha256.c src/crypto/sha1.c src/crypto/ripemd160.c src/crypto/secp256k1.c  $(TEST_UTILS_OBJ)
