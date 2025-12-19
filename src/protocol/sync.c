@@ -454,12 +454,22 @@ static peer_sync_state_t *find_best_block_peer(sync_manager_t *mgr) {
   peer_sync_state_t *best = NULL;
   size_t min_inflight = SIZE_MAX;
   size_t candidates = 0;
+  size_t not_sync_candidate = 0;
+  size_t not_ready = 0;
+  size_t no_capacity = 0;
 
   for (size_t i = 0; i < mgr->peer_count; i++) {
     peer_sync_state_t *ps = &mgr->peers[i];
     bool ready = peer_is_ready(ps->peer);
     bool has_capacity = ps->blocks_in_flight_count < SYNC_MAX_BLOCKS_PER_PEER;
-    if (ps->sync_candidate && ready && has_capacity) {
+
+    if (!ps->sync_candidate) {
+      not_sync_candidate++;
+    } else if (!ready) {
+      not_ready++;
+    } else if (!has_capacity) {
+      no_capacity++;
+    } else {
       candidates++;
       if (ps->blocks_in_flight_count < min_inflight) {
         min_inflight = ps->blocks_in_flight_count;
@@ -469,8 +479,10 @@ static peer_sync_state_t *find_best_block_peer(sync_manager_t *mgr) {
   }
 
   if (candidates == 0) {
-    log_debug(LOG_COMP_SYNC, "find_best_block_peer: no candidates (peers=%zu)",
-              mgr->peer_count);
+    log_info(LOG_COMP_SYNC,
+             "find_best_block_peer: no candidates (peers=%zu, "
+             "not_sync_candidate=%zu, not_ready=%zu, no_capacity=%zu)",
+             mgr->peer_count, not_sync_candidate, not_ready, no_capacity);
   }
   return best;
 }
@@ -921,18 +933,28 @@ static void request_blocks(sync_manager_t *mgr) {
   size_t pending = block_queue_pending_count(mgr->block_queue);
   size_t inflight = block_queue_inflight_count(mgr->block_queue);
   if (pending > 0 && inflight < SYNC_MAX_PARALLEL_BLOCKS) {
-    log_debug(LOG_COMP_SYNC, "request_blocks: pending=%zu, inflight=%zu, max=%d",
-              pending, inflight, SYNC_MAX_PARALLEL_BLOCKS);
+    log_info(LOG_COMP_SYNC,
+             "request_blocks entry: peer_count=%zu, pending=%zu, inflight=%zu",
+             mgr->peer_count, pending, inflight);
   }
 
   /* Request blocks from queue */
+  size_t iteration = 0;
   while (block_queue_pending_count(mgr->block_queue) > 0 &&
          block_queue_inflight_count(mgr->block_queue) <
              SYNC_MAX_PARALLEL_BLOCKS) {
+    iteration++;
+    size_t cur_pending = block_queue_pending_count(mgr->block_queue);
+    size_t cur_inflight = block_queue_inflight_count(mgr->block_queue);
+    log_debug(LOG_COMP_SYNC,
+              "request_blocks iter=%zu: pending=%zu, inflight=%zu, blocks_count=%zu",
+              iteration, cur_pending, cur_inflight, blocks_count);
+
     /* Find peer with capacity */
     peer_sync_state_t *ps = find_best_block_peer(mgr);
     if (!ps) {
-      log_debug(LOG_COMP_SYNC, "request_blocks: no peer with capacity");
+      log_info(LOG_COMP_SYNC,
+               "request_blocks: no peer with capacity at iter=%zu", iteration);
       break;
     }
 
