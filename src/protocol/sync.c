@@ -84,6 +84,9 @@ struct sync_manager {
 
   /* Best known header chain */
   block_index_t *best_header;
+
+  /* Adaptive stalling timeout (in ms) - starts at 2s, grows on stalls */
+  uint64_t stalling_timeout_ms;
 };
 
 /* ============================================================================
@@ -543,6 +546,9 @@ sync_manager_t *sync_create(chainstate_t *chainstate,
   mgr->mode = SYNC_MODE_IDLE;
   mgr->peer_count = 0;
 
+  /* Initialize adaptive stalling timeout to 2 seconds */
+  mgr->stalling_timeout_ms = SYNC_BLOCK_STALLING_TIMEOUT_MS;
+
   /* Initialize best header to current tip */
   mgr->best_header = chainstate_get_tip_index(chainstate);
 
@@ -878,6 +884,13 @@ echo_result_t sync_handle_block(sync_manager_t *mgr, peer_t *peer,
     }
     mgr->blocks_validated_total++;
 
+    /* Decay stalling timeout on successful validation (0.85x) */
+    mgr->stalling_timeout_ms =
+        (uint64_t)(mgr->stalling_timeout_ms * SYNC_STALLING_TIMEOUT_DECAY);
+    if (mgr->stalling_timeout_ms < SYNC_BLOCK_STALLING_TIMEOUT_MS) {
+      mgr->stalling_timeout_ms = SYNC_BLOCK_STALLING_TIMEOUT_MS;
+    }
+
     /*
      * After successful validation, check if we have the next block already
      * stored on disk (from out-of-order download). If so, load and validate
@@ -1001,11 +1014,23 @@ void sync_process_timeouts(sync_manager_t *mgr) {
       ps->timeout_count++;
     }
 
-    /* Process block timeouts */
+    /* Process block timeouts with adaptive timeout */
     for (size_t j = 0; j < ps->blocks_in_flight_count;) {
-      if (now - ps->block_request_time[j] > SYNC_BLOCK_TIMEOUT_MS) {
-        /* Timeout - unassign block */
-        block_queue_unassign(mgr->block_queue, &ps->blocks_in_flight[j]);
+      if (now - ps->block_request_time[j] > mgr->stalling_timeout_ms) {
+        /* Timeout - unassign block and re-queue */
+        hash256_t stalled_hash = ps->blocks_in_flight[j];
+        block_queue_unassign(mgr->block_queue, &stalled_hash);
+
+        log_info(LOG_COMP_SYNC,
+                 "Block stalled after %llu ms, re-queuing (timeout was %llu ms)",
+                 (unsigned long long)(now - ps->block_request_time[j]),
+                 (unsigned long long)mgr->stalling_timeout_ms);
+
+        /* Increase timeout for next stall (exponential backoff) */
+        mgr->stalling_timeout_ms *= 2;
+        if (mgr->stalling_timeout_ms > SYNC_BLOCK_STALLING_TIMEOUT_MAX_MS) {
+          mgr->stalling_timeout_ms = SYNC_BLOCK_STALLING_TIMEOUT_MAX_MS;
+        }
 
         /* Remove from peer's in-flight list */
         for (size_t k = j; k < ps->blocks_in_flight_count - 1; k++) {
@@ -1082,8 +1107,38 @@ static void queue_blocks_from_headers(sync_manager_t *mgr) {
           if (h <= 5) {
             log_info(LOG_COMP_SYNC, "queue_blocks: queuing height %u", h);
           }
-        } else if (h <= 5) {
-          log_info(LOG_COMP_SYNC, "queue_blocks: height %u already in storage", h);
+        } else {
+          /*
+           * Block is already in storage. If it's the next block to validate,
+           * validate it immediately to kickstart the stored-block chain.
+           * This handles the restart case where validated_height = 0 but
+           * we have blocks stored from a previous run.
+           */
+          uint32_t validated_height = chainstate_get_height(mgr->chainstate);
+          if (h == validated_height + 1 && mgr->callbacks.validate_and_apply_block) {
+            block_index_map_t *idx_map = chainstate_get_block_index_map(mgr->chainstate);
+            block_index_t *block_idx = block_index_map_lookup(idx_map, &hash);
+
+            if (block_idx != NULL) {
+              log_info(LOG_COMP_SYNC,
+                       "Validating stored block at height %u (kickstart)", h);
+
+              echo_result_t val_result = mgr->callbacks.validate_and_apply_block(
+                  &stored, block_idx, mgr->callbacks.ctx);
+
+              if (val_result == ECHO_OK) {
+                mgr->blocks_validated_total++;
+                mgr->last_progress_time = plat_time_ms();
+                log_info(LOG_COMP_SYNC,
+                         "Validated stored block at height %u (kickstart success)", h);
+              } else {
+                log_warn(LOG_COMP_SYNC,
+                         "Stored block at height %u failed validation: %d", h, val_result);
+              }
+            }
+          } else if (h <= 5) {
+            log_info(LOG_COMP_SYNC, "queue_blocks: height %u already in storage", h);
+          }
         }
         block_free(&stored);
       } else if (h <= 5) {
@@ -1148,6 +1203,53 @@ static void request_blocks(sync_manager_t *mgr) {
   size_t blocks_count = 0;
   peer_sync_state_t *current_peer = NULL;
 
+  uint32_t validated_height = chainstate_get_height(mgr->chainstate);
+
+  /*
+   * CRITICAL PATH OPTIMIZATION: If the next needed block (validated_height+1)
+   * is in-flight and taking >1 second, request it from ALL other peers too.
+   * First response wins. This dramatically reduces stall time.
+   */
+  uint32_t next_needed = validated_height + 1;
+  hash256_t next_hash;
+  if (block_queue_find_by_height(mgr->block_queue, next_needed, &next_hash) ==
+      ECHO_OK) {
+    uint64_t now = plat_time_ms();
+
+    /* Find if this block is in-flight and stalling */
+    for (size_t i = 0; i < mgr->peer_count; i++) {
+      peer_sync_state_t *ps = &mgr->peers[i];
+      for (size_t j = 0; j < ps->blocks_in_flight_count; j++) {
+        if (memcmp(&ps->blocks_in_flight[j], &next_hash, sizeof(hash256_t)) ==
+            0) {
+          /* Found it - check if stalling (>1 second) */
+          if (now - ps->block_request_time[j] > 1000) {
+            /* Request from ALL other peers immediately */
+            for (size_t k = 0; k < mgr->peer_count; k++) {
+              if (k == i)
+                continue; /* Skip the original peer */
+              peer_sync_state_t *other = &mgr->peers[k];
+              if (other->peer && other->peer->state == PEER_STATE_READY &&
+                  other->blocks_in_flight_count < SYNC_MAX_BLOCKS_PER_PEER) {
+                /* Request the blocking block from this peer too */
+                if (mgr->callbacks.send_getdata_blocks) {
+                  log_info(
+                      LOG_COMP_SYNC,
+                      "Parallel request for blocking block %u from extra peer",
+                      next_needed);
+                  mgr->callbacks.send_getdata_blocks(other->peer, &next_hash, 1,
+                                                     mgr->callbacks.ctx);
+                }
+              }
+            }
+          }
+          goto done_parallel_check;
+        }
+      }
+    }
+  }
+done_parallel_check:;  /* Empty statement after label */
+
   /* Log entry state */
   size_t pending = block_queue_pending_count(mgr->block_queue);
   size_t inflight = block_queue_inflight_count(mgr->block_queue);
@@ -1158,12 +1260,10 @@ static void request_blocks(sync_manager_t *mgr) {
   }
 
   /*
-   * Request blocks within a tight window of the validated tip.
-   * 64 = 8² gives good parallelism (8 blocks per peer average) while
-   * keeping blocks sequential enough for efficient stored-block chaining.
+   * Request blocks within the download window of the validated tip.
+   * SYNC_BLOCK_DOWNLOAD_WINDOW (1024) matches Bitcoin Core.
    */
-  uint32_t validated_height = chainstate_get_height(mgr->chainstate);
-  uint32_t max_request_height = validated_height + 64;
+  uint32_t max_request_height = validated_height + SYNC_BLOCK_DOWNLOAD_WINDOW;
 
   /* Request blocks from queue */
   size_t iteration = 0;

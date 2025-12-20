@@ -46,8 +46,14 @@
 /* Timeout for getheaders response (30 seconds) */
 #define SYNC_HEADERS_TIMEOUT_MS 30000
 
-/* Timeout for block download (120 seconds) */
-#define SYNC_BLOCK_TIMEOUT_MS 120000
+/* Initial block stalling timeout (2 seconds - matches Bitcoin Core) */
+#define SYNC_BLOCK_STALLING_TIMEOUT_MS 2000
+
+/* Maximum block stalling timeout (64 seconds - matches Bitcoin Core) */
+#define SYNC_BLOCK_STALLING_TIMEOUT_MAX_MS 64000
+
+/* Timeout decay factor when blocks connect successfully (0.85) */
+#define SYNC_STALLING_TIMEOUT_DECAY 0.85
 
 /* Minimum time between header sync attempts with same peer (5 seconds) */
 #define SYNC_HEADER_RETRY_INTERVAL_MS 5000
