@@ -24,6 +24,7 @@
 #define ECHO_DB_H
 
 #include "echo_types.h"
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -402,5 +403,23 @@ int db_changes(db_t *db);
  *   - Valid until next database operation
  */
 const char *db_errmsg(db_t *db);
+
+/**
+ * Set IBD (Initial Block Download) mode for performance optimization.
+ *
+ * Parameters:
+ *   db       - Database handle
+ *   ibd_mode - true to enable IBD mode (fast, less safe),
+ *              false for normal mode (balanced safety/speed)
+ *
+ * Returns:
+ *   ECHO_OK on success
+ *
+ * Notes:
+ *   - IBD mode uses synchronous=OFF for maximum write speed
+ *   - Normal mode uses synchronous=NORMAL
+ *   - Only use IBD mode during initial sync (can re-sync if crash)
+ */
+echo_result_t db_set_ibd_mode(db_t *db, bool ibd_mode);
 
 #endif /* ECHO_DB_H */

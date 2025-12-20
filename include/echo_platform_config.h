@@ -26,8 +26,11 @@
  * more bandwidth and memory.
  */
 
-/* Maximum outbound connections (connections we initiate) */
-#define PLATFORM_MAX_OUTBOUND_PEERS 8
+/* Maximum outbound connections (connections we initiate)
+ * During IBD, we use many more peers for faster parallel downloads.
+ * Bitcoin Core uses 8, but we're more aggressive during sync.
+ */
+#define PLATFORM_MAX_OUTBOUND_PEERS 32
 
 /* Maximum inbound connections (connections others initiate to us) */
 #define PLATFORM_MAX_INBOUND_PEERS 117

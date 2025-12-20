@@ -59,6 +59,30 @@ echo_result_t db_open(db_t *db, const char *path) {
     return ECHO_ERR_IO;
   }
 
+  /* Performance optimizations: larger cache and memory-mapped I/O */
+  sqlite3_exec(db->handle, "PRAGMA cache_size=-65536", NULL, NULL,
+               NULL); /* 64MB cache */
+  sqlite3_exec(db->handle, "PRAGMA mmap_size=268435456", NULL, NULL,
+               NULL); /* 256MB mmap */
+  sqlite3_exec(db->handle, "PRAGMA temp_store=MEMORY", NULL, NULL,
+               NULL); /* Temp tables in RAM */
+
+  return ECHO_OK;
+}
+
+echo_result_t db_set_ibd_mode(db_t *db, bool ibd_mode) {
+  if (!db || !db->handle) {
+    return ECHO_ERR_NULL_PARAM;
+  }
+
+  if (ibd_mode) {
+    /* IBD mode: maximum speed, less safety (can re-sync if crash) */
+    sqlite3_exec(db->handle, "PRAGMA synchronous=OFF", NULL, NULL, NULL);
+  } else {
+    /* Normal mode: balance of speed and safety */
+    sqlite3_exec(db->handle, "PRAGMA synchronous=NORMAL", NULL, NULL, NULL);
+  }
+
   return ECHO_OK;
 }
 

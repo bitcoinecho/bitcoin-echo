@@ -37,11 +37,16 @@
 /* Maximum block locator hashes to include in getheaders */
 #define SYNC_MAX_LOCATOR_HASHES 32
 
-/* Maximum parallel block downloads per peer */
-#define SYNC_MAX_BLOCKS_PER_PEER 16
+/* Maximum parallel block downloads per peer
+ * Increased from 16 to 128 for faster IBD.
+ * Libbitcoin uses 500, Bitcoin Core uses 16.
+ */
+#define SYNC_MAX_BLOCKS_PER_PEER 128
 
-/* Maximum total parallel block downloads */
-#define SYNC_MAX_PARALLEL_BLOCKS 128
+/* Maximum total parallel block downloads
+ * Increased from 128 to 1024 for faster IBD.
+ */
+#define SYNC_MAX_PARALLEL_BLOCKS 1024
 
 /* Timeout for getheaders response (30 seconds) */
 #define SYNC_HEADERS_TIMEOUT_MS 30000
@@ -49,8 +54,10 @@
 /* Initial block stalling timeout (2 seconds - matches Bitcoin Core) */
 #define SYNC_BLOCK_STALLING_TIMEOUT_MS 2000
 
-/* Maximum block stalling timeout (64 seconds - matches Bitcoin Core) */
-#define SYNC_BLOCK_STALLING_TIMEOUT_MAX_MS 64000
+/* Maximum block stalling timeout (16 seconds - more aggressive than Bitcoin Core's 64s)
+ * Lower timeout = faster recovery from slow/unresponsive peers during IBD.
+ */
+#define SYNC_BLOCK_STALLING_TIMEOUT_MAX_MS 16000
 
 /* Timeout decay factor when blocks connect successfully (0.85) */
 #define SYNC_STALLING_TIMEOUT_DECAY 0.85
@@ -61,8 +68,11 @@
 /* Periodic header refresh during block sync to catch new blocks (30 seconds) */
 #define SYNC_HEADER_REFRESH_INTERVAL_MS 30000
 
-/* Block download window - how far ahead of validated tip to download */
-#define SYNC_BLOCK_DOWNLOAD_WINDOW 1024
+/* Block download window - how far ahead of validated tip to download.
+ * Larger window = more parallelism but more memory usage.
+ * Bitcoin Core: 1024, Libbitcoin: 50000. We use 16384 as a balance.
+ */
+#define SYNC_BLOCK_DOWNLOAD_WINDOW 16384
 
 /* Stale tip threshold - consider sync stalled if no progress in this time */
 #define SYNC_STALE_TIP_THRESHOLD_MS (30ULL * 60 * 1000) /* 30 minutes */

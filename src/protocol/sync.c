@@ -884,13 +884,6 @@ echo_result_t sync_handle_block(sync_manager_t *mgr, peer_t *peer,
     }
     mgr->blocks_validated_total++;
 
-    /* Decay stalling timeout on successful validation (0.85x) */
-    mgr->stalling_timeout_ms =
-        (uint64_t)(mgr->stalling_timeout_ms * SYNC_STALLING_TIMEOUT_DECAY);
-    if (mgr->stalling_timeout_ms < SYNC_BLOCK_STALLING_TIMEOUT_MS) {
-      mgr->stalling_timeout_ms = SYNC_BLOCK_STALLING_TIMEOUT_MS;
-    }
-
     /*
      * After successful validation, check if we have the next block already
      * stored on disk (from out-of-order download). If so, load and validate
@@ -1014,23 +1007,18 @@ void sync_process_timeouts(sync_manager_t *mgr) {
       ps->timeout_count++;
     }
 
-    /* Process block timeouts with adaptive timeout */
+    /* Process block timeouts - fixed timeout, track per-peer stalls */
     for (size_t j = 0; j < ps->blocks_in_flight_count;) {
-      if (now - ps->block_request_time[j] > mgr->stalling_timeout_ms) {
+      if (now - ps->block_request_time[j] > SYNC_BLOCK_STALLING_TIMEOUT_MS) {
         /* Timeout - unassign block and re-queue */
         hash256_t stalled_hash = ps->blocks_in_flight[j];
         block_queue_unassign(mgr->block_queue, &stalled_hash);
 
+        ps->timeout_count++;
         log_info(LOG_COMP_SYNC,
-                 "Block stalled after %llu ms, re-queuing (timeout was %llu ms)",
+                 "Block stalled from peer after %llu ms (peer stalls: %u)",
                  (unsigned long long)(now - ps->block_request_time[j]),
-                 (unsigned long long)mgr->stalling_timeout_ms);
-
-        /* Increase timeout for next stall (exponential backoff) */
-        mgr->stalling_timeout_ms *= 2;
-        if (mgr->stalling_timeout_ms > SYNC_BLOCK_STALLING_TIMEOUT_MAX_MS) {
-          mgr->stalling_timeout_ms = SYNC_BLOCK_STALLING_TIMEOUT_MAX_MS;
-        }
+                 ps->timeout_count);
 
         /* Remove from peer's in-flight list */
         for (size_t k = j; k < ps->blocks_in_flight_count - 1; k++) {
@@ -1038,7 +1026,17 @@ void sync_process_timeouts(sync_manager_t *mgr) {
           ps->block_request_time[k] = ps->block_request_time[k + 1];
         }
         ps->blocks_in_flight_count--;
-        ps->timeout_count++;
+
+        /* After 3 stalls, disconnect this slow peer - we have thousands more!
+         * Don't waste time with unresponsive peers during IBD.
+         */
+        if (ps->timeout_count >= 3 && ps->peer) {
+          log_info(LOG_COMP_SYNC,
+                   "Disconnecting slow peer after %u stalls - plenty more available",
+                   ps->timeout_count);
+          peer_disconnect(ps->peer, PEER_DISCONNECT_MISBEHAVING,
+                          "Too many block stalls during IBD");
+        }
       } else {
         j++;
       }
@@ -1222,8 +1220,8 @@ static void request_blocks(sync_manager_t *mgr) {
       for (size_t j = 0; j < ps->blocks_in_flight_count; j++) {
         if (memcmp(&ps->blocks_in_flight[j], &next_hash, sizeof(hash256_t)) ==
             0) {
-          /* Found it - check if stalling (>1 second) */
-          if (now - ps->block_request_time[j] > 1000) {
+          /* Found it - check if stalling (>500ms) */
+          if (now - ps->block_request_time[j] > 500) {
             /* Request from ALL other peers immediately */
             for (size_t k = 0; k < mgr->peer_count; k++) {
               if (k == i)
