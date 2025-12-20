@@ -1595,11 +1595,28 @@ echo_result_t node_stop(node_t *node) {
 
   /*
    * Shutdown sequence:
-   * 1. Stop accepting new connections
-   * 2. Disconnect all peers
-   * 3. Stop sync manager
-   * 4. Databases will be closed in node_destroy()
+   * 1. Save validated tip (so we don't re-validate on restart)
+   * 2. Stop accepting new connections
+   * 3. Disconnect all peers
+   * 4. Stop sync manager
+   * 5. Databases will be closed in node_destroy()
    */
+
+  /* Save validated tip on graceful shutdown */
+  if (node->consensus != NULL && node->block_index_db_open) {
+    uint32_t validated_height = consensus_get_height(node->consensus);
+    if (validated_height > 0) {
+      echo_result_t result = block_index_db_set_validated_tip(
+          &node->block_index_db, validated_height, NULL);
+      if (result == ECHO_OK) {
+        log_info(LOG_COMP_DB, "Saved validated tip at height %u on shutdown",
+                 validated_height);
+      } else {
+        log_warn(LOG_COMP_DB, "Failed to save validated tip on shutdown: %d",
+                 result);
+      }
+    }
+  }
 
   /* Stop listening socket */
   if (node->is_listening && node->listen_socket != NULL) {
