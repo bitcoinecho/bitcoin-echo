@@ -112,6 +112,7 @@ struct node {
  */
 
 static echo_result_t node_init_directories(node_t *node);
+static echo_result_t node_flush_utxo_set_to_db(node_t *node, uint32_t height);
 static echo_result_t node_init_databases(node_t *node);
 static echo_result_t node_init_consensus(node_t *node);
 static echo_result_t node_restore_chain_state(node_t *node);
@@ -2911,36 +2912,41 @@ echo_result_t node_apply_block(node_t *node, const block_t *block) {
     }
 
     /*
-     * IBD OPTIMIZATION: Skip UTXO persistence during initial sync except at
-     * checkpoints. The in-memory UTXO set is sufficient for validation.
-     * We persist every 5,000 blocks to limit crash recovery time.
+     * IBD OPTIMIZATION: Skip per-block UTXO persistence during initial sync.
+     * The in-memory UTXO set is sufficient for validation.
      *
-     * This gives ~10x speedup during IBD by eliminating SQLite writes.
-     * On graceful shutdown, we also save the exact validated tip (see node_stop).
+     * At checkpoint intervals (every 5,000 blocks), we flush the ENTIRE
+     * in-memory UTXO set to the database. This ensures all accumulated
+     * UTXOs are persisted, not just the current block's changes.
+     *
+     * This gives ~10x speedup during IBD by eliminating per-block SQLite writes.
      */
 #define UTXO_PERSIST_INTERVAL 5000
-    bool should_persist =
-        !node->ibd_mode ||
-        (height - node->last_utxo_persist_height >= UTXO_PERSIST_INTERVAL);
 
-    if (should_persist) {
+    if (!node->ibd_mode) {
+      /* Normal operation: persist every block */
       result = utxo_db_apply_block(&node->utxo_db, new_utxos, new_count,
                                    spent_outpoints, spent_count);
+      if (result != ECHO_OK) {
+        log_error(LOG_COMP_DB, "Failed to apply block to UTXO database: %d",
+                  result);
+      }
+    } else if (height % UTXO_PERSIST_INTERVAL == 0) {
+      /* IBD checkpoint: flush entire UTXO set to database */
+      result = node_flush_utxo_set_to_db(node, height);
 
       if (result == ECHO_OK) {
         node->last_utxo_persist_height = height;
 
-        /* Also persist validated tip when we checkpoint UTXOs */
+        /* Also persist validated tip */
         if (node->block_index_db_open) {
           block_index_db_set_validated_tip(&node->block_index_db, height, NULL);
         }
 
-        if (node->ibd_mode && height % UTXO_PERSIST_INTERVAL == 0) {
-          log_info(LOG_COMP_DB, "Checkpoint at height %u (UTXO + validated tip)",
-                   height);
-        }
+        log_info(LOG_COMP_DB, "Checkpoint at height %u (UTXO + validated tip)",
+                 height);
       } else {
-        log_error(LOG_COMP_DB, "Failed to apply block to UTXO database: %d",
+        log_error(LOG_COMP_DB, "Failed to flush UTXO set at checkpoint: %d",
                   result);
       }
     }
@@ -2952,6 +2958,111 @@ echo_result_t node_apply_block(node_t *node, const block_t *block) {
 
   log_info(LOG_COMP_CONS, "Block applied: height=%u txs=%zu", height,
            block->tx_count);
+
+  return ECHO_OK;
+}
+
+/*
+ * ============================================================================
+ * UTXO FLUSH (Session 9.6.7+)
+ * ============================================================================
+ */
+
+/* Context for UTXO flush callback */
+typedef struct {
+  utxo_db_t *udb;
+  size_t inserted;
+  size_t skipped;
+  echo_result_t result;
+} utxo_flush_ctx_t;
+
+/* Callback to insert each UTXO into the database */
+static bool utxo_flush_callback(const utxo_entry_t *entry, void *user_data) {
+  utxo_flush_ctx_t *ctx = (utxo_flush_ctx_t *)user_data;
+  if (ctx == NULL || entry == NULL) {
+    return false;
+  }
+
+  /* Try to insert (INSERT OR IGNORE handles duplicates) */
+  echo_result_t result = utxo_db_insert(ctx->udb, entry);
+  if (result == ECHO_OK) {
+    ctx->inserted++;
+  } else if (result == ECHO_ERR_EXISTS) {
+    ctx->skipped++;
+  } else {
+    ctx->result = result;
+    return false; /* Stop iteration on error */
+  }
+
+  return true; /* Continue iteration */
+}
+
+/**
+ * Flush entire in-memory UTXO set to database.
+ *
+ * This iterates over all UTXOs in memory and inserts them into the database.
+ * Used at checkpoints to persist the complete UTXO state.
+ */
+static echo_result_t node_flush_utxo_set_to_db(node_t *node, uint32_t height) {
+  if (node == NULL || node->consensus == NULL) {
+    return ECHO_ERR_NULL_PARAM;
+  }
+
+  /* Get the chainstate UTXO set */
+  chainstate_t *chainstate = consensus_get_chainstate(node->consensus);
+  if (chainstate == NULL) {
+    return ECHO_ERR_INVALID;
+  }
+
+  const utxo_set_t *utxo_set = chainstate_get_utxo_set(chainstate);
+  if (utxo_set == NULL) {
+    return ECHO_ERR_INVALID;
+  }
+
+  size_t utxo_count = utxo_set_size(utxo_set);
+  log_info(LOG_COMP_DB, "Flushing %zu in-memory UTXOs to database (height=%u)",
+           utxo_count, height);
+
+  if (utxo_count == 0) {
+    /* Nothing to flush */
+    return ECHO_OK;
+  }
+
+  /* Begin transaction for bulk insert */
+  echo_result_t result = db_begin(&node->utxo_db.db);
+  if (result != ECHO_OK) {
+    log_error(LOG_COMP_DB, "Failed to begin UTXO flush transaction: %d",
+              result);
+    return result;
+  }
+
+  /* Iterate and insert all UTXOs */
+  utxo_flush_ctx_t ctx = {
+      .udb = &node->utxo_db,
+      .inserted = 0,
+      .skipped = 0,
+      .result = ECHO_OK,
+  };
+
+  utxo_set_foreach(utxo_set, utxo_flush_callback, &ctx);
+
+  if (ctx.result != ECHO_OK) {
+    log_error(LOG_COMP_DB, "UTXO flush failed: %d", ctx.result);
+    (void)db_rollback(&node->utxo_db.db);
+    return ctx.result;
+  }
+
+  /* Commit transaction */
+  result = db_commit(&node->utxo_db.db);
+  if (result != ECHO_OK) {
+    log_error(LOG_COMP_DB, "Failed to commit UTXO flush transaction: %d",
+              result);
+    return result;
+  }
+
+  log_info(LOG_COMP_DB,
+           "UTXO flush complete: %zu inserted, %zu skipped (already in DB)",
+           ctx.inserted, ctx.skipped);
 
   return ECHO_OK;
 }
