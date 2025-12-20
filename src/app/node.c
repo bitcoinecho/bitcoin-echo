@@ -65,6 +65,7 @@ struct node {
   node_state_t state;
   volatile bool shutdown_requested; /* Signal-safe shutdown flag */
   uint64_t start_time;              /* When node started (plat_time_ms) */
+  uint32_t start_height;            /* Validated height when node started */
 
   /* Storage layer (NULL if in observer mode) */
   utxo_db_t utxo_db;
@@ -234,6 +235,9 @@ node_t *node_create(const node_config_t *config) {
       free(node);
       return NULL;
     }
+
+    /* Record starting height for "blocks this session" metric */
+    node->start_height = consensus_get_height(node->consensus);
 
     /* Step 4: Initialize mempool (full node only) */
     result = node_init_mempool(node);
@@ -1934,6 +1938,7 @@ void node_get_stats(const node_t *node, node_stats_t *stats) {
   if (node->state == NODE_STATE_RUNNING) {
     stats->uptime_ms = plat_time_ms() - node->start_time;
   }
+  stats->start_height = node->start_height;
 }
 
 const char *node_state_string(node_state_t state) {

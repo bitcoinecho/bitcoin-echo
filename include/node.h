@@ -118,6 +118,7 @@ typedef struct {
   /* Timing */
   uint64_t start_time;        /* Node start time (plat_time_ms) */
   uint64_t uptime_ms;         /* Uptime in milliseconds */
+  uint32_t start_height;      /* Validated height when node started */
 } node_stats_t;
 
 /*

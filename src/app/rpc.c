@@ -2361,6 +2361,11 @@ static echo_result_t rpc_getobserverstats(node_t *node,
   json_builder_uint(builder, (uint64_t)node_stats.peer_count);
   json_builder_append(builder, ",");
 
+  /* Starting height (for "blocks this session" calculation) */
+  json_builder_append(builder, "\"start_height\":");
+  json_builder_uint(builder, (uint64_t)node_stats.start_height);
+  json_builder_append(builder, ",");
+
   /* Message counts */
   json_builder_append(builder, "\"messages_received\":{");
   json_builder_append(builder, "\"version\":");
