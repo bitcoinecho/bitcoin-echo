@@ -16,7 +16,6 @@
 #include "mempool.h"
 #include "protocol.h"
 #include "sync.h"
-#include <assert.h>
 #include <stdio.h>
 #include <string.h>
 #include "test_utils.h"
