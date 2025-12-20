@@ -1608,11 +1608,17 @@ echo_result_t rpc_getblockchaininfo(node_t *node, const json_value_t *params,
   json_builder_string(builder, ECHO_NETWORK_NAME);
 
   /*
-   * blocks = number of blocks fully validated (with transaction data)
-   * During headers-first sync, this is 0 until block download begins.
+   * blocks = height of last fully validated block (with transaction data)
+   * This is the chainstate tip height, which persists across restarts.
+   * Note: sync_progress.blocks_validated is a session counter, not the height.
    */
+  uint32_t validated_height = consensus_get_height(consensus);
+  /* consensus_get_height returns UINT32_MAX if not initialized */
+  if (validated_height == UINT32_MAX) {
+    validated_height = 0;
+  }
   json_builder_append(builder, ",\"blocks\":");
-  json_builder_uint(builder, sync_progress.blocks_validated);
+  json_builder_uint(builder, validated_height);
 
   /*
    * headers = height of best header chain

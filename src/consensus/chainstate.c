@@ -475,6 +475,11 @@ const utxo_set_t *chainstate_get_utxo_set(const chainstate_t *state) {
   return state->utxo_set;
 }
 
+utxo_set_t *chainstate_get_utxo_set_mutable(chainstate_t *state) {
+  ECHO_ASSERT(state != NULL);
+  return state->utxo_set;
+}
+
 /**
  * Internal helper: grow height index if needed
  */

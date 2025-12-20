@@ -366,6 +366,37 @@ static echo_result_t node_init_databases(node_t *node) {
 }
 
 /**
+ * Context for UTXO restoration iterator callback.
+ */
+typedef struct {
+  utxo_set_t *utxo_set;
+  size_t loaded;
+  echo_result_t result;
+} utxo_restore_ctx_t;
+
+/**
+ * Iterator callback for loading UTXOs from database into memory.
+ * Returns true to continue iteration, false to stop on error.
+ */
+static bool utxo_restore_callback(const utxo_entry_t *entry, void *user_data) {
+  utxo_restore_ctx_t *ctx = (utxo_restore_ctx_t *)user_data;
+
+  echo_result_t result = utxo_set_insert(ctx->utxo_set, entry);
+  if (result == ECHO_OK) {
+    ctx->loaded++;
+  } else if (result == ECHO_ERR_EXISTS) {
+    /* Duplicate - shouldn't happen but harmless, skip */
+    ctx->loaded++;
+  } else {
+    /* Actual error - stop iteration */
+    ctx->result = result;
+    return false;
+  }
+
+  return true;
+}
+
+/**
  * Restore chain state from persistent storage.
  *
  * This function loads the blockchain state from the databases into the
@@ -374,7 +405,8 @@ static echo_result_t node_init_databases(node_t *node) {
  *   1. Query block_index_db for the best chain tip
  *   2. Load all block headers from genesis to tip into the block index map
  *   3. Restore the chain tip in the consensus engine
- *   4. Verify UTXO database consistency (count check)
+ *   4. Restore UTXO set from database into memory
+ *   5. Verify UTXO database consistency (count check)
  *
  * Session 9.6.0: Storage Foundation & Chain Restoration
  */
@@ -534,27 +566,57 @@ static echo_result_t node_restore_chain_state(node_t *node) {
   uint32_t validated_height = 0;
   result = block_index_db_get_validated_tip(&node->block_index_db,
                                             &validated_height, NULL);
+  log_info(LOG_COMP_MAIN, "get_validated_tip result=%d, height=%u",
+           result, validated_height);
+
   if (result == ECHO_OK && validated_height > 0) {
     /* Find the block index for the validated tip */
     block_index_entry_t validated_entry;
     result = block_index_db_get_chain_block(&node->block_index_db,
                                             validated_height, &validated_entry);
+    log_info(LOG_COMP_MAIN, "get_chain_block(height=%u) result=%d",
+             validated_height, result);
+
     if (result == ECHO_OK) {
       block_index_t *validated_index =
           block_index_map_lookup(map, &validated_entry.hash);
+      log_info(LOG_COMP_MAIN, "block_index_map_lookup: %s (entry.height=%u)",
+               validated_index ? "FOUND" : "NOT FOUND", validated_entry.height);
+
       if (validated_index != NULL) {
+        log_info(LOG_COMP_MAIN,
+                 "validated_index->height=%u before chainstate_set_tip_index",
+                 validated_index->height);
+
         /* Set the chainstate validated tip (also modifies tip_index) */
         chainstate_set_tip_index(chainstate, validated_index);
+
+        /* Verify the tip was set correctly */
+        uint32_t check_height = chainstate_get_height(chainstate);
+        log_info(LOG_COMP_MAIN,
+                 "After chainstate_set_tip_index: chainstate_get_height=%u",
+                 check_height);
 
         /* Mark consensus engine as initialized so consensus_get_height works */
         consensus_mark_initialized(node->consensus);
 
         log_info(LOG_COMP_MAIN, "Validated tip restored: height=%u",
                  validated_height);
+      } else {
+        log_error(LOG_COMP_MAIN,
+                  "Failed to find validated block in index map at height %u",
+                  validated_height);
       }
+    } else {
+      log_error(LOG_COMP_MAIN,
+                "Failed to get chain block at height %u: result=%d",
+                validated_height, result);
     }
   } else {
-    log_info(LOG_COMP_MAIN, "No validated tip found, will start validation from genesis");
+    log_info(LOG_COMP_MAIN,
+             "No validated tip found (result=%d, height=%u), "
+             "will start validation from genesis",
+             result, validated_height);
   }
 
   /*
@@ -566,11 +628,53 @@ static echo_result_t node_restore_chain_state(node_t *node) {
     chainstate_set_best_header_index(chainstate, tip_index);
   }
 
-  /* Verify UTXO database consistency - check count */
-  size_t utxo_count = 0;
-  result = utxo_db_count(&node->utxo_db, &utxo_count);
-  if (result == ECHO_OK) {
-    log_info(LOG_COMP_MAIN, "UTXO database: %zu entries", utxo_count);
+  /*
+   * Restore UTXO set from database into memory.
+   *
+   * During IBD, UTXOs are flushed to the database on graceful shutdown.
+   * We need to restore them so validation can continue from the validated tip.
+   * Without this, validation would fail with "Missing input UTXO" errors
+   * because the in-memory UTXO set would be empty.
+   */
+  if (node->utxo_db_open && validated_height > 0) {
+    size_t utxo_count = 0;
+    result = utxo_db_count(&node->utxo_db, &utxo_count);
+
+    if (result == ECHO_OK && utxo_count > 0) {
+      log_info(LOG_COMP_MAIN,
+               "Restoring %zu UTXOs from database into memory...", utxo_count);
+
+      /* Get the mutable UTXO set from chainstate */
+      utxo_set_t *utxo_set = chainstate_get_utxo_set_mutable(chainstate);
+      if (utxo_set != NULL) {
+        utxo_restore_ctx_t ctx = {
+            .utxo_set = utxo_set,
+            .loaded = 0,
+            .result = ECHO_OK,
+        };
+
+        result = utxo_db_foreach(&node->utxo_db, utxo_restore_callback, &ctx);
+
+        if (result == ECHO_OK && ctx.result == ECHO_OK) {
+          log_info(LOG_COMP_MAIN, "UTXO restoration complete: %zu entries loaded",
+                   ctx.loaded);
+        } else {
+          log_error(LOG_COMP_MAIN,
+                    "UTXO restoration failed: db_result=%d, ctx_result=%d",
+                    result, ctx.result);
+          /* Non-fatal: validation will re-build UTXO set from blocks */
+        }
+      } else {
+        log_warn(LOG_COMP_MAIN, "Could not get mutable UTXO set for restoration");
+      }
+    } else if (result == ECHO_OK) {
+      log_info(LOG_COMP_MAIN, "UTXO database empty, nothing to restore");
+    } else {
+      log_warn(LOG_COMP_MAIN, "Failed to count UTXOs in database: %d", result);
+    }
+  } else if (validated_height == 0) {
+    log_info(LOG_COMP_MAIN,
+             "No validated tip, skipping UTXO restoration (will build from genesis)");
   }
 
   log_info(LOG_COMP_MAIN,
@@ -1581,6 +1685,121 @@ echo_result_t node_start(node_t *node) {
 
 /*
  * ============================================================================
+ * UTXO FLUSH (Session 9.6.x: IBD Optimization)
+ * ============================================================================
+ */
+
+/**
+ * Context for UTXO flush iterator callback.
+ */
+typedef struct {
+  utxo_db_t *udb;
+  size_t inserted;
+  size_t skipped; /* Already in database (INSERT OR IGNORE) */
+  echo_result_t result;
+} utxo_flush_ctx_t;
+
+/**
+ * Iterator callback for flushing UTXOs to database.
+ * Returns true to continue iteration, false to stop on error.
+ */
+static bool utxo_flush_callback(const utxo_entry_t *entry, void *user_data) {
+  utxo_flush_ctx_t *ctx = (utxo_flush_ctx_t *)user_data;
+
+  /* Try to insert - uses INSERT OR IGNORE so duplicates are fine */
+  echo_result_t result = utxo_db_insert(ctx->udb, entry);
+
+  if (result == ECHO_OK) {
+    ctx->inserted++;
+  } else if (result == ECHO_ERR_EXISTS) {
+    /* Already in database from previous checkpoint, skip */
+    ctx->skipped++;
+  } else {
+    /* Actual error - stop iteration */
+    ctx->result = result;
+    return false;
+  }
+
+  return true;
+}
+
+/**
+ * Flush in-memory UTXO set to database.
+ *
+ * During IBD, UTXOs are only persisted every 5000 blocks for performance.
+ * This function flushes all remaining in-memory UTXOs to ensure the database
+ * matches the validated tip on graceful shutdown.
+ *
+ * @param node The node instance
+ * @param validated_height Current validated height (for logging)
+ * @return ECHO_OK on success, error code on failure
+ */
+static echo_result_t node_flush_utxo_set_to_db(node_t *node,
+                                                uint32_t validated_height) {
+  if (node == NULL || node->consensus == NULL) {
+    return ECHO_ERR_NULL_PARAM;
+  }
+
+  /* Get the chainstate UTXO set */
+  chainstate_t *chainstate = consensus_get_chainstate(node->consensus);
+  if (chainstate == NULL) {
+    return ECHO_ERR_INVALID;
+  }
+
+  const utxo_set_t *utxo_set = chainstate_get_utxo_set(chainstate);
+  if (utxo_set == NULL) {
+    return ECHO_ERR_INVALID;
+  }
+
+  size_t utxo_count = utxo_set_size(utxo_set);
+  log_info(LOG_COMP_DB, "Flushing %zu in-memory UTXOs to database (height=%u)",
+           utxo_count, validated_height);
+
+  if (utxo_count == 0) {
+    /* Nothing to flush */
+    return ECHO_OK;
+  }
+
+  /* Begin transaction for bulk insert */
+  echo_result_t result = db_begin(&node->utxo_db.db);
+  if (result != ECHO_OK) {
+    log_error(LOG_COMP_DB, "Failed to begin UTXO flush transaction: %d", result);
+    return result;
+  }
+
+  /* Iterate and insert all UTXOs */
+  utxo_flush_ctx_t ctx = {
+      .udb = &node->utxo_db,
+      .inserted = 0,
+      .skipped = 0,
+      .result = ECHO_OK,
+  };
+
+  utxo_set_foreach(utxo_set, utxo_flush_callback, &ctx);
+
+  if (ctx.result != ECHO_OK) {
+    log_error(LOG_COMP_DB, "UTXO flush failed: %d", ctx.result);
+    (void)db_rollback(&node->utxo_db.db);
+    return ctx.result;
+  }
+
+  /* Commit transaction */
+  result = db_commit(&node->utxo_db.db);
+  if (result != ECHO_OK) {
+    log_error(LOG_COMP_DB, "Failed to commit UTXO flush transaction: %d",
+              result);
+    return result;
+  }
+
+  log_info(LOG_COMP_DB,
+           "UTXO flush complete: %zu inserted, %zu skipped (already in DB)",
+           ctx.inserted, ctx.skipped);
+
+  return ECHO_OK;
+}
+
+/*
+ * ============================================================================
  * NODE STOP
  * ============================================================================
  */
@@ -1606,7 +1825,7 @@ echo_result_t node_stop(node_t *node) {
    * 5. Databases will be closed in node_destroy()
    */
 
-  /* Save validated tip on graceful shutdown */
+  /* Save validated tip and UTXO set on graceful shutdown */
   if (node->consensus != NULL && node->block_index_db_open) {
     uint32_t validated_height = consensus_get_height(node->consensus);
     if (validated_height > 0) {
@@ -1618,6 +1837,23 @@ echo_result_t node_stop(node_t *node) {
       } else {
         log_warn(LOG_COMP_DB, "Failed to save validated tip on shutdown: %d",
                  result);
+      }
+
+      /*
+       * Flush in-memory UTXO set to database.
+       * During IBD, UTXOs are only persisted at checkpoints (every 5000 blocks).
+       * On graceful shutdown, we flush all remaining UTXOs so validation can
+       * resume from the exact validated tip on restart.
+       */
+      if (node->utxo_db_open) {
+        log_info(LOG_COMP_DB, "Flushing UTXO set to database on shutdown...");
+        echo_result_t flush_result =
+            node_flush_utxo_set_to_db(node, validated_height);
+        if (flush_result == ECHO_OK) {
+          log_info(LOG_COMP_DB, "UTXO flush complete");
+        } else {
+          log_warn(LOG_COMP_DB, "UTXO flush failed: %d", flush_result);
+        }
       }
     }
   }

@@ -244,6 +244,14 @@ uint32_t chainstate_get_height(const chainstate_t *state);
 const utxo_set_t *chainstate_get_utxo_set(const chainstate_t *state);
 
 /**
+ * Get the UTXO set (mutable).
+ * Used for restoring UTXOs from database during startup.
+ * @param state The chain state
+ * @return Mutable pointer to the UTXO set
+ */
+utxo_set_t *chainstate_get_utxo_set_mutable(chainstate_t *state);
+
+/**
  * Apply a block to the chain state.
  *
  * This function:

@@ -566,8 +566,15 @@ sync_manager_t *sync_create(chainstate_t *chainstate,
   /* Initialize adaptive stalling timeout to 2 seconds */
   mgr->stalling_timeout_ms = SYNC_BLOCK_STALLING_TIMEOUT_MS;
 
-  /* Initialize best header to current tip */
+  /* Initialize best header to current tip_index (which should be the best
+   * header after restoration, not the validated tip) */
   mgr->best_header = chainstate_get_tip_index(chainstate);
+
+  log_info(LOG_COMP_SYNC,
+           "sync_create: best_header=%p (height=%u), chainstate_height=%u",
+           (void *)mgr->best_header,
+           mgr->best_header ? mgr->best_header->height : 0,
+           chainstate_get_height(chainstate));
 
   return mgr;
 }
@@ -648,9 +655,32 @@ echo_result_t sync_start(sync_manager_t *mgr) {
     return ECHO_ERR_INVALID_STATE;
   }
 
-  mgr->mode = SYNC_MODE_HEADERS;
   mgr->start_time = plat_time_ms();
   mgr->last_progress_time = mgr->start_time;
+
+  /*
+   * If we already have headers beyond the validated tip (e.g., from a previous
+   * session), skip straight to BLOCKS mode. Otherwise start with HEADERS.
+   */
+  uint32_t validated_height = chainstate_get_height(mgr->chainstate);
+  uint32_t best_header_height = mgr->best_header ? mgr->best_header->height : 0;
+
+  log_info(LOG_COMP_SYNC,
+           "sync_start: best_header=%p (height=%u), validated_height=%u",
+           (void *)mgr->best_header, best_header_height, validated_height);
+
+  if (mgr->best_header != NULL && best_header_height > validated_height) {
+    log_info(LOG_COMP_SYNC,
+             "Starting sync in BLOCKS mode (already have headers: "
+             "best_header=%u, validated=%u)",
+             best_header_height, validated_height);
+    mgr->mode = SYNC_MODE_BLOCKS;
+  } else {
+    log_info(LOG_COMP_SYNC,
+             "Starting sync in HEADERS mode (best_header=%u, validated=%u)",
+             best_header_height, validated_height);
+    mgr->mode = SYNC_MODE_HEADERS;
+  }
 
   return ECHO_OK;
 }
@@ -1084,8 +1114,14 @@ static void queue_blocks_from_headers(sync_manager_t *mgr) {
     end_height = mgr->best_header->height;
   }
 
+  log_info(LOG_COMP_SYNC,
+           "queue_blocks: tip=%u, start=%u, end=%u, window=%u, best=%u",
+           tip_height, start_height, end_height, mgr->download_window,
+           mgr->best_header->height);
+
   if (start_height > end_height) {
     /* Already fully synced */
+    log_info(LOG_COMP_SYNC, "queue_blocks: already synced (start > end)");
     return;
   }
 
@@ -1102,14 +1138,18 @@ static void queue_blocks_from_headers(sync_manager_t *mgr) {
 
   if (mgr->callbacks.get_block_hash_at_height) {
     /* Fast path: query database by height directly */
+    uint32_t lookup_failures = 0;
     for (uint32_t h = start_height;
          h <= end_height && to_queue_count < mgr->download_window; h++) {
       hash256_t hash;
       echo_result_t cb_result = mgr->callbacks.get_block_hash_at_height(
           h, &hash, mgr->callbacks.ctx);
       if (cb_result != ECHO_OK) {
-        if (h <= 5) {
-          log_warn(LOG_COMP_SYNC, "queue_blocks: height %u hash lookup failed: %d",
+        lookup_failures++;
+        /* Log first few failures to help debug */
+        if (lookup_failures <= 3) {
+          log_warn(LOG_COMP_SYNC,
+                   "queue_blocks: height %u hash lookup failed: %d",
                    h, cb_result);
         }
         continue;
@@ -1123,11 +1163,17 @@ static void queue_blocks_from_headers(sync_manager_t *mgr) {
                           mgr->callbacks.get_block(&hash, &stored,
                                                    mgr->callbacks.ctx) ==
                               ECHO_OK;
+        /* Log first iteration to debug */
+        if (h == start_height) {
+          log_info(LOG_COMP_SYNC,
+                   "queue_blocks: first block h=%u in_storage=%s",
+                   h, in_storage ? "YES" : "NO");
+        }
         if (!in_storage) {
           to_queue[to_queue_count] = hash;
           heights[to_queue_count] = h;
           to_queue_count++;
-          if (h <= 5) {
+          if (h == start_height) {
             log_info(LOG_COMP_SYNC, "queue_blocks: queuing height %u", h);
           }
         } else {
@@ -1138,9 +1184,23 @@ static void queue_blocks_from_headers(sync_manager_t *mgr) {
            * we have blocks stored from a previous run.
            */
           uint32_t validated_height = chainstate_get_height(mgr->chainstate);
-          if (h == validated_height + 1 && mgr->callbacks.validate_and_apply_block) {
+          bool is_next = (h == validated_height + 1);
+          bool has_callback = (mgr->callbacks.validate_and_apply_block != NULL);
+
+          if (h == start_height) {
+            log_info(LOG_COMP_SYNC,
+                     "queue_blocks: kickstart check h=%u, validated=%u, "
+                     "is_next=%s, has_callback=%s",
+                     h, validated_height, is_next ? "YES" : "NO",
+                     has_callback ? "YES" : "NO");
+          }
+
+          if (is_next && has_callback) {
             block_index_map_t *idx_map = chainstate_get_block_index_map(mgr->chainstate);
             block_index_t *block_idx = block_index_map_lookup(idx_map, &hash);
+
+            log_info(LOG_COMP_SYNC,
+                     "queue_blocks: kickstart block_idx=%p", (void *)block_idx);
 
             if (block_idx != NULL) {
               log_info(LOG_COMP_SYNC,
@@ -1168,6 +1228,9 @@ static void queue_blocks_from_headers(sync_manager_t *mgr) {
         log_info(LOG_COMP_SYNC, "queue_blocks: height %u already in queue", h);
       }
     }
+    log_info(LOG_COMP_SYNC,
+             "queue_blocks: fast path done - queued=%zu, failures=%u",
+             to_queue_count, lookup_failures);
   } else {
     /* Slow path: walk back from best_header (for very old code) */
     block_index_t *idx = mgr->best_header;

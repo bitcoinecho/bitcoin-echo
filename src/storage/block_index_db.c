@@ -1022,7 +1022,8 @@ echo_result_t block_index_db_set_validated_tip(block_index_db_t *bdb,
     return result;
   }
   result = db_step(&stmt);
-  if (result != ECHO_OK && result != ECHO_ERR_NOT_FOUND) {
+  /* INSERT returns ECHO_DONE on success, not ECHO_OK */
+  if (result != ECHO_OK && result != ECHO_DONE && result != ECHO_ERR_NOT_FOUND) {
     db_stmt_finalize(&stmt);
     return result;
   }
@@ -1045,7 +1046,8 @@ echo_result_t block_index_db_set_validated_tip(block_index_db_t *bdb,
       return result;
     }
     result = db_step(&stmt);
-    if (result != ECHO_OK && result != ECHO_ERR_NOT_FOUND) {
+    /* INSERT returns ECHO_DONE on success, not ECHO_OK */
+    if (result != ECHO_OK && result != ECHO_DONE && result != ECHO_ERR_NOT_FOUND) {
       db_stmt_finalize(&stmt);
       return result;
     }
