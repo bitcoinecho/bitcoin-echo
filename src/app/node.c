@@ -527,6 +527,9 @@ static echo_result_t node_restore_chain_state(node_t *node) {
    * Restore validated tip from database.
    * This tells us how far we've actually validated blocks (with UTXO updates),
    * not just how many headers we have.
+   *
+   * NOTE: chainstate_set_tip_index() modifies tip_index, which would overwrite
+   * the best header we just set. We re-set the best header after this.
    */
   uint32_t validated_height = 0;
   result = block_index_db_get_validated_tip(&node->block_index_db,
@@ -540,7 +543,7 @@ static echo_result_t node_restore_chain_state(node_t *node) {
       block_index_t *validated_index =
           block_index_map_lookup(map, &validated_entry.hash);
       if (validated_index != NULL) {
-        /* Set the chainstate tip to the validated height */
+        /* Set the chainstate validated tip (also modifies tip_index) */
         chainstate_set_tip_index(chainstate, validated_index);
         log_info(LOG_COMP_MAIN, "Validated tip restored: height=%u",
                  validated_height);
@@ -548,6 +551,15 @@ static echo_result_t node_restore_chain_state(node_t *node) {
     }
   } else {
     log_info(LOG_COMP_MAIN, "No validated tip found, will start validation from genesis");
+  }
+
+  /*
+   * Re-set best header index AFTER validated tip restoration.
+   * This ensures tip_index points to our best known header (for sync locator
+   * building) rather than the validated tip.
+   */
+  if (tip_index != NULL) {
+    chainstate_set_best_header_index(chainstate, tip_index);
   }
 
   /* Verify UTXO database consistency - check count */
