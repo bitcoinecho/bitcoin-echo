@@ -520,9 +520,34 @@ static echo_result_t node_restore_chain_state(node_t *node) {
 
   if (tip_index != NULL) {
     chainstate_set_best_header_index(chainstate, tip_index);
-    log_info(LOG_COMP_MAIN,
-             "Best header restored: height=%u (validated blocks=0)",
-             tip_index->height);
+    log_info(LOG_COMP_MAIN, "Best header restored: height=%u", tip_index->height);
+  }
+
+  /*
+   * Restore validated tip from database.
+   * This tells us how far we've actually validated blocks (with UTXO updates),
+   * not just how many headers we have.
+   */
+  uint32_t validated_height = 0;
+  result = block_index_db_get_validated_tip(&node->block_index_db,
+                                            &validated_height, NULL);
+  if (result == ECHO_OK && validated_height > 0) {
+    /* Find the block index for the validated tip */
+    block_index_entry_t validated_entry;
+    result = block_index_db_get_chain_block(&node->block_index_db,
+                                            validated_height, &validated_entry);
+    if (result == ECHO_OK) {
+      block_index_t *validated_index =
+          block_index_map_lookup(map, &validated_entry.hash);
+      if (validated_index != NULL) {
+        /* Set the chainstate tip to the validated height */
+        chainstate_set_tip_index(chainstate, validated_index);
+        log_info(LOG_COMP_MAIN, "Validated tip restored: height=%u",
+                 validated_height);
+      }
+    }
+  } else {
+    log_info(LOG_COMP_MAIN, "No validated tip found, will start validation from genesis");
   }
 
   /* Verify UTXO database consistency - check count */
@@ -533,8 +558,8 @@ static echo_result_t node_restore_chain_state(node_t *node) {
   }
 
   log_info(LOG_COMP_MAIN,
-           "Chain state restoration complete: %u headers loaded, tip height=%u",
-           loaded_count, best_entry.height);
+           "Chain state restoration complete: %u headers loaded, validated=%u",
+           loaded_count, validated_height);
 
   return ECHO_OK;
 }
@@ -2697,8 +2722,15 @@ echo_result_t node_apply_block(node_t *node, const block_t *block) {
 
       if (result == ECHO_OK) {
         node->last_utxo_persist_height = height;
+
+        /* Also persist validated tip when we checkpoint UTXOs */
+        if (node->block_index_db_open) {
+          block_index_db_set_validated_tip(&node->block_index_db, height, NULL);
+        }
+
         if (node->ibd_mode && height % UTXO_PERSIST_INTERVAL == 0) {
-          log_info(LOG_COMP_DB, "UTXO checkpoint at height %u", height);
+          log_info(LOG_COMP_DB, "Checkpoint at height %u (UTXO + validated tip)",
+                   height);
         }
       } else {
         log_error(LOG_COMP_DB, "Failed to apply block to UTXO database: %d",

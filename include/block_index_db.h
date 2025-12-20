@@ -476,4 +476,42 @@ echo_result_t block_index_db_is_pruned(block_index_db_t *bdb,
                                        const hash256_t *hash,
                                        bool *pruned);
 
+/**
+ * Persist the validated chain tip to the database.
+ *
+ * This stores the height (and optionally hash) of the last fully validated
+ * block so it can be restored on node restart. Should be called after each
+ * successful block validation.
+ *
+ * Parameters:
+ *   bdb    - Block index database handle
+ *   height - Validated tip height
+ *   hash   - Validated tip hash (optional, can be NULL)
+ *
+ * Returns:
+ *   ECHO_OK on success
+ */
+echo_result_t block_index_db_set_validated_tip(block_index_db_t *bdb,
+                                                uint32_t height,
+                                                const hash256_t *hash);
+
+/**
+ * Retrieve the persisted validated chain tip.
+ *
+ * Returns the last validated block height/hash stored by
+ * block_index_db_set_validated_tip(). Used on startup to restore
+ * the chainstate validated tip.
+ *
+ * Parameters:
+ *   bdb    - Block index database handle
+ *   height - Output: validated tip height
+ *   hash   - Output: validated tip hash (optional, can be NULL)
+ *
+ * Returns:
+ *   ECHO_OK on success, ECHO_ERR_NOT_FOUND if no validated tip stored
+ */
+echo_result_t block_index_db_get_validated_tip(block_index_db_t *bdb,
+                                                uint32_t *height,
+                                                hash256_t *hash);
+
 #endif /* ECHO_BLOCK_INDEX_DB_H */

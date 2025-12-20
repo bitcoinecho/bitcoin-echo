@@ -62,6 +62,18 @@ static echo_result_t create_schema(db_t *db) {
     return result;
   }
 
+  /*
+   * Create metadata table for chainstate persistence.
+   * Stores key-value pairs like 'validated_tip_height' for restart recovery.
+   */
+  result = db_exec(db, "CREATE TABLE IF NOT EXISTS metadata ("
+                       "    key   TEXT PRIMARY KEY,"
+                       "    value BLOB"
+                       ");");
+  if (result != ECHO_OK) {
+    return result;
+  }
+
   return ECHO_OK;
 }
 
@@ -973,5 +985,130 @@ echo_result_t block_index_db_is_pruned(block_index_db_t *bdb,
 
   /* A block is considered pruned if BLOCK_STATUS_PRUNED is set */
   *pruned = (entry.status & BLOCK_STATUS_PRUNED) != 0;
+  return ECHO_OK;
+}
+
+/* ========================================================================
+ * Validated Tip Persistence
+ * ======================================================================== */
+
+echo_result_t block_index_db_set_validated_tip(block_index_db_t *bdb,
+                                                uint32_t height,
+                                                const hash256_t *hash) {
+  if (bdb == NULL) {
+    return ECHO_ERR_NULL_PARAM;
+  }
+
+  echo_result_t result;
+  db_stmt_t stmt;
+
+  /* Prepare insert/replace statement */
+  result = db_prepare(
+      &bdb->db,
+      "INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)", &stmt);
+  if (result != ECHO_OK) {
+    return result;
+  }
+
+  /* Store height */
+  result = db_bind_text(&stmt, 1, "validated_tip_height");
+  if (result != ECHO_OK) {
+    db_stmt_finalize(&stmt);
+    return result;
+  }
+  result = db_bind_int(&stmt, 2, (int)height);
+  if (result != ECHO_OK) {
+    db_stmt_finalize(&stmt);
+    return result;
+  }
+  result = db_step(&stmt);
+  if (result != ECHO_OK && result != ECHO_ERR_NOT_FOUND) {
+    db_stmt_finalize(&stmt);
+    return result;
+  }
+
+  /* Store hash if provided */
+  if (hash != NULL) {
+    result = db_stmt_reset(&stmt);
+    if (result != ECHO_OK) {
+      db_stmt_finalize(&stmt);
+      return result;
+    }
+    result = db_bind_text(&stmt, 1, "validated_tip_hash");
+    if (result != ECHO_OK) {
+      db_stmt_finalize(&stmt);
+      return result;
+    }
+    result = db_bind_blob(&stmt, 2, hash->bytes, 32);
+    if (result != ECHO_OK) {
+      db_stmt_finalize(&stmt);
+      return result;
+    }
+    result = db_step(&stmt);
+    if (result != ECHO_OK && result != ECHO_ERR_NOT_FOUND) {
+      db_stmt_finalize(&stmt);
+      return result;
+    }
+  }
+
+  db_stmt_finalize(&stmt);
+  return ECHO_OK;
+}
+
+echo_result_t block_index_db_get_validated_tip(block_index_db_t *bdb,
+                                                uint32_t *height,
+                                                hash256_t *hash) {
+  if (bdb == NULL || height == NULL) {
+    return ECHO_ERR_NULL_PARAM;
+  }
+
+  echo_result_t result;
+  db_stmt_t stmt;
+
+  result = db_prepare(&bdb->db, "SELECT value FROM metadata WHERE key = ?",
+                      &stmt);
+  if (result != ECHO_OK) {
+    return result;
+  }
+
+  /* Get height */
+  result = db_bind_text(&stmt, 1, "validated_tip_height");
+  if (result != ECHO_OK) {
+    db_stmt_finalize(&stmt);
+    return result;
+  }
+  result = db_step(&stmt);
+  if (result == ECHO_OK) {
+    *height = (uint32_t)db_column_int(&stmt, 0);
+  } else {
+    /* No validated tip stored yet */
+    db_stmt_finalize(&stmt);
+    *height = 0;
+    return ECHO_ERR_NOT_FOUND;
+  }
+
+  /* Get hash if requested */
+  if (hash != NULL) {
+    result = db_stmt_reset(&stmt);
+    if (result != ECHO_OK) {
+      db_stmt_finalize(&stmt);
+      return ECHO_OK; /* Height was found, hash is optional */
+    }
+    result = db_bind_text(&stmt, 1, "validated_tip_hash");
+    if (result != ECHO_OK) {
+      db_stmt_finalize(&stmt);
+      return ECHO_OK;
+    }
+    result = db_step(&stmt);
+    if (result == ECHO_OK) {
+      const void *blob = db_column_blob(&stmt, 0);
+      int blob_size = db_column_bytes(&stmt, 0);
+      if (blob != NULL && blob_size == 32) {
+        memcpy(hash->bytes, blob, 32);
+      }
+    }
+  }
+
+  db_stmt_finalize(&stmt);
   return ECHO_OK;
 }

@@ -820,23 +820,26 @@ echo_result_t sync_handle_block(sync_manager_t *mgr, peer_t *peer,
     return ECHO_ERR_INVALID;
   }
 
-  /* Check if this block was requested */
-  bool found = false;
-  for (size_t i = 0; i < ps->blocks_in_flight_count; i++) {
-    if (memcmp(&ps->blocks_in_flight[i], &block_hash, sizeof(hash256_t)) == 0) {
-      /* Remove from in-flight list */
-      for (size_t j = i; j < ps->blocks_in_flight_count - 1; j++) {
-        ps->blocks_in_flight[j] = ps->blocks_in_flight[j + 1];
-        ps->block_request_time[j] = ps->block_request_time[j + 1];
+  /*
+   * Remove this block from ALL peers' in-flight lists, not just the sender.
+   * This is critical for parallel requests: we may have requested the same
+   * block from multiple peers, and whichever responds first wins. We must
+   * clear the request from all peers to avoid false timeout detection.
+   */
+  for (size_t p = 0; p < mgr->peer_count; p++) {
+    peer_sync_state_t *check_ps = &mgr->peers[p];
+    for (size_t i = 0; i < check_ps->blocks_in_flight_count; i++) {
+      if (memcmp(&check_ps->blocks_in_flight[i], &block_hash,
+                 sizeof(hash256_t)) == 0) {
+        /* Remove from this peer's in-flight list */
+        for (size_t j = i; j < check_ps->blocks_in_flight_count - 1; j++) {
+          check_ps->blocks_in_flight[j] = check_ps->blocks_in_flight[j + 1];
+          check_ps->block_request_time[j] = check_ps->block_request_time[j + 1];
+        }
+        check_ps->blocks_in_flight_count--;
+        break; /* Each peer has at most one entry for this block */
       }
-      ps->blocks_in_flight_count--;
-      found = true;
-      break;
     }
-  }
-
-  if (!found) {
-    /* Unsolicited block - might still be useful */
   }
 
   /* Store block if callback provided (before validation - we need the data) */
@@ -1007,18 +1010,14 @@ void sync_process_timeouts(sync_manager_t *mgr) {
       ps->timeout_count++;
     }
 
-    /* Process block timeouts - fixed timeout, track per-peer stalls */
+    /* Process block timeouts - count stalls per peer per tick, not per block */
+    size_t stalled_this_tick = 0;
     for (size_t j = 0; j < ps->blocks_in_flight_count;) {
       if (now - ps->block_request_time[j] > SYNC_BLOCK_STALLING_TIMEOUT_MS) {
         /* Timeout - unassign block and re-queue */
         hash256_t stalled_hash = ps->blocks_in_flight[j];
         block_queue_unassign(mgr->block_queue, &stalled_hash);
-
-        ps->timeout_count++;
-        log_info(LOG_COMP_SYNC,
-                 "Block stalled from peer after %llu ms (peer stalls: %u)",
-                 (unsigned long long)(now - ps->block_request_time[j]),
-                 ps->timeout_count);
+        stalled_this_tick++;
 
         /* Remove from peer's in-flight list */
         for (size_t k = j; k < ps->blocks_in_flight_count - 1; k++) {
@@ -1026,19 +1025,25 @@ void sync_process_timeouts(sync_manager_t *mgr) {
           ps->block_request_time[k] = ps->block_request_time[k + 1];
         }
         ps->blocks_in_flight_count--;
-
-        /* After 3 stalls, disconnect this slow peer - we have thousands more!
-         * Don't waste time with unresponsive peers during IBD.
-         */
-        if (ps->timeout_count >= 3 && ps->peer) {
-          log_info(LOG_COMP_SYNC,
-                   "Disconnecting slow peer after %u stalls - plenty more available",
-                   ps->timeout_count);
-          peer_disconnect(ps->peer, PEER_DISCONNECT_MISBEHAVING,
-                          "Too many block stalls during IBD");
-        }
       } else {
         j++;
+      }
+    }
+
+    /* Only count ONE stall event per peer per tick, not one per block */
+    if (stalled_this_tick > 0) {
+      ps->timeout_count++;
+      log_info(LOG_COMP_SYNC,
+               "Peer stall: %zu blocks timed out (total stall events: %u)",
+               stalled_this_tick, ps->timeout_count);
+
+      /* After 3 stall EVENTS (not blocks), disconnect slow peer */
+      if (ps->timeout_count >= 3 && ps->peer) {
+        log_info(LOG_COMP_SYNC,
+                 "Disconnecting slow peer after %u stall events",
+                 ps->timeout_count);
+        peer_disconnect(ps->peer, PEER_DISCONNECT_MISBEHAVING,
+                        "Too many block stalls during IBD");
       }
     }
   }
