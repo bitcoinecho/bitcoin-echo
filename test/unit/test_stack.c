@@ -14,17 +14,6 @@
 #include "test_utils.h"
 
 /*
- * Print a byte array as hex.
- */
-static void print_hex(const uint8_t *data, size_t len)
-{
-    size_t i;
-    for (i = 0; i < len; i++) {
-        printf("%02x", data[i]);
-    }
-}
-
-/*
  * Test stack initialization and basic operations.
  */
 static void test_stack_init(const char *name)

@@ -16,6 +16,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* Print bytes as hex string (for debugging output) */
+void print_hex(const uint8_t *data, size_t len);
+
 /* Compare two byte arrays (returns 1 if equal, 0 otherwise) */
 int bytes_equal(const uint8_t *a, const uint8_t *b, size_t len);
 

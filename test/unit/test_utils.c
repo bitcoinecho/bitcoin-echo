@@ -46,7 +46,7 @@ static const char *current_test = NULL;
  */
 
 /* Print bytes as hex (for failure output) */
-static void print_hex(const uint8_t *data, size_t len)
+void print_hex(const uint8_t *data, size_t len)
 {
     size_t i;
     for (i = 0; i < len; i++) {

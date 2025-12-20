@@ -12,14 +12,6 @@
 #include <stdio.h>
 #include <string.h>
 
-static void print_hex(const uint8_t *data, size_t len)
-{
-    size_t i;
-    for (i = 0; i < len; i++) {
-        printf("%02x", data[i]);
-    }
-}
-
 static int hex_to_bytes(uint8_t *out, const char *hex, size_t len)
 {
     size_t i;
