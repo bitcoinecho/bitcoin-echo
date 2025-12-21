@@ -639,6 +639,23 @@ bool consensus_validate_block(const consensus_engine_t *engine,
    */
   bool assume_valid = (height <= ECHO_ASSUME_VALID_HEIGHT);
 
+  /*
+   * PRE-COMPUTE ALL TXIDS ONCE
+   *
+   * Same-block dependency lookups were O(n²) with SHA256d per comparison.
+   * By pre-computing all txids upfront, lookups become O(n) with just memcmp.
+   * For a 1000-tx block with 100 same-block deps, this saves ~50,000 SHA256d ops.
+   */
+  hash256_t *block_txids = NULL;
+  if (block->tx_count > 1) {
+    block_txids = malloc(block->tx_count * sizeof(hash256_t));
+    if (block_txids != NULL) {
+      for (size_t i = 0; i < block->tx_count; i++) {
+        tx_compute_txid(&block->txs[i], &block_txids[i]);
+      }
+    }
+  }
+
   for (size_t tx_idx = 1; tx_idx < block->tx_count; tx_idx++) {
     const tx_t *tx = &block->txs[tx_idx];
 
@@ -652,6 +669,7 @@ bool consensus_validate_block(const consensus_engine_t *engine,
         result->failing_index = tx_idx;
         result->tx_error = tx_result.error;
       }
+      free(block_txids);
       return false;
     }
 
@@ -667,14 +685,22 @@ bool consensus_validate_block(const consensus_engine_t *engine,
       memset(&utxo_info, 0, sizeof(utxo_info));
 
       if (utxo == NULL) {
-        /* Check if this input references an output from earlier in this block
+        /* Check if this input references an output from earlier in this block.
+         * Use pre-computed txids for O(n) scan with memcmp only (no SHA256d).
          */
         uint64_t sameblock_start = plat_monotonic_ms();
         bool found_in_block = false;
         for (size_t prev_tx = 0; prev_tx < tx_idx; prev_tx++) {
-          hash256_t prev_txid;
-          tx_compute_txid(&block->txs[prev_tx], &prev_txid);
-          if (memcmp(outpoint->txid.bytes, prev_txid.bytes, 32) == 0 &&
+          /* Use pre-computed txid if available, else compute on the fly */
+          const hash256_t *prev_txid_ptr;
+          hash256_t prev_txid_computed;
+          if (block_txids != NULL) {
+            prev_txid_ptr = &block_txids[prev_tx];
+          } else {
+            tx_compute_txid(&block->txs[prev_tx], &prev_txid_computed);
+            prev_txid_ptr = &prev_txid_computed;
+          }
+          if (memcmp(outpoint->txid.bytes, prev_txid_ptr->bytes, 32) == 0 &&
               outpoint->vout < block->txs[prev_tx].output_count) {
             /* Found it in this block */
             const tx_output_t *prev_out =
@@ -700,6 +726,7 @@ bool consensus_validate_block(const consensus_engine_t *engine,
             result->failing_index = tx_idx;
             result->failing_input_index = in_idx;
           }
+          free(block_txids);
           return false;
         }
       } else {
@@ -711,6 +738,7 @@ bool consensus_validate_block(const consensus_engine_t *engine,
               result->failing_index = tx_idx;
               result->failing_input_index = in_idx;
             }
+            free(block_txids);
             return false;
           }
         }
@@ -744,6 +772,7 @@ bool consensus_validate_block(const consensus_engine_t *engine,
             result->failing_input_index = in_idx;
             result->script_error = script_result.script_error;
           }
+          free(block_txids);
           return false;
         }
       }
@@ -762,6 +791,7 @@ bool consensus_validate_block(const consensus_engine_t *engine,
         result->error = CONSENSUS_ERR_TX_VALUE_MISMATCH;
         result->failing_index = tx_idx;
       }
+      free(block_txids);
       return false;
     }
 
@@ -779,6 +809,7 @@ bool consensus_validate_block(const consensus_engine_t *engine,
       result->error = CONSENSUS_ERR_BLOCK_COINBASE;
       result->block_error = cb_error;
     }
+    free(block_txids);
     return false;
   }
 
@@ -790,6 +821,7 @@ bool consensus_validate_block(const consensus_engine_t *engine,
         result->error = CONSENSUS_ERR_BLOCK_WITNESS;
         result->block_error = wit_error;
       }
+      free(block_txids);
       return false;
     }
   }
@@ -814,6 +846,7 @@ bool consensus_validate_block(const consensus_engine_t *engine,
     }
   }
 
+  free(block_txids);
   return true;
 }
 
