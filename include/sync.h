@@ -707,4 +707,30 @@ const char *sync_mode_string(sync_mode_t mode);
  */
 uint64_t sync_estimate_remaining_time(const sync_progress_t *progress);
 
+/**
+ * Sync metrics for RPC exposure
+ *
+ * Contains derived performance metrics calculated from internal sync state.
+ * These are the "source of truth" metrics the GUI should display.
+ */
+typedef struct {
+  float blocks_per_second;          /* Current sync rate (blk/s) */
+  uint64_t eta_seconds;             /* Estimated time remaining */
+  uint64_t network_median_latency;  /* Network baseline latency (ms) */
+  uint32_t active_sync_peers;       /* Peers actively contributing blocks */
+  const char *mode_string;          /* Human-readable sync mode */
+} sync_metrics_t;
+
+/**
+ * Get derived sync metrics for RPC.
+ *
+ * This provides calculated metrics (rate, ETA) that the GUI should use
+ * instead of calculating them client-side.
+ *
+ * Parameters:
+ *   mgr     - The sync manager
+ *   metrics - Output metrics structure
+ */
+void sync_get_metrics(const sync_manager_t *mgr, sync_metrics_t *metrics);
+
 #endif /* ECHO_SYNC_H */

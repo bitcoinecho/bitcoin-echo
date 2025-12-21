@@ -1067,6 +1067,10 @@ static echo_result_t rpc_getobservedtxs(node_t *node, const json_value_t *params
 static echo_result_t rpc_pruneblockchain(node_t *node, const json_value_t *params,
                                          json_builder_t *builder);
 
+/* Forward declaration for sync status RPC method */
+static echo_result_t rpc_getsyncstatus(node_t *node, const json_value_t *params,
+                                       json_builder_t *builder);
+
 /* Method dispatch table */
 static const rpc_method_entry_t rpc_methods[] = {
     {"getblockchaininfo", rpc_getblockchaininfo},
@@ -1080,6 +1084,7 @@ static const rpc_method_entry_t rpc_methods[] = {
     {"getobservedblocks", rpc_getobservedblocks}, /* Session 9.5 */
     {"getobservedtxs", rpc_getobservedtxs},       /* Session 9.5 */
     {"pruneblockchain", rpc_pruneblockchain},     /* Session 9.6.2 */
+    {"getsyncstatus", rpc_getsyncstatus},         /* IBD performance */
     {NULL, NULL}};
 
 /* Find method handler */
@@ -2582,5 +2587,115 @@ static echo_result_t rpc_pruneblockchain(node_t *node, const json_value_t *param
 
   /* Return the actual height pruned to */
   json_builder_uint(builder, actual_height);
+  return ECHO_OK;
+}
+
+/*
+ * ============================================================================
+ * SYNC STATUS RPC METHOD
+ * ============================================================================
+ */
+
+/**
+ * RPC: getsyncstatus
+ *
+ * Returns detailed sync metrics including rate and ETA.
+ * This is the "source of truth" for sync progress that the GUI should display.
+ *
+ * Response:
+ * {
+ *   "mode": "blocks",
+ *   "blocks_validated": 180000,
+ *   "best_header_height": 875000,
+ *   "tip_height": 180000,
+ *   "blocks_pending": 695000,
+ *   "blocks_in_flight": 512,
+ *   "sync_percentage": 20.57,
+ *   "blocks_per_second": 48.5,
+ *   "eta_seconds": 14320,
+ *   "network_median_latency_ms": 450,
+ *   "active_sync_peers": 6,
+ *   "total_peers": 8,
+ *   "initialblockdownload": true
+ * }
+ */
+static echo_result_t rpc_getsyncstatus(node_t *node, const json_value_t *params,
+                                       json_builder_t *builder) {
+  (void)params; /* Unused */
+
+  if (node == NULL || builder == NULL) {
+    return ECHO_ERR_NULL_PARAM;
+  }
+
+  /* Get sync manager and progress */
+  sync_manager_t *sync_mgr = node_get_sync_manager(node);
+  if (sync_mgr == NULL) {
+    /* No sync manager - return minimal response */
+    json_builder_append(builder, "{\"mode\":\"idle\",\"initialblockdownload\":false}");
+    return ECHO_OK;
+  }
+
+  /* Get progress and metrics */
+  sync_progress_t progress = {0};
+  sync_get_progress(sync_mgr, &progress);
+
+  sync_metrics_t metrics = {0};
+  sync_get_metrics(sync_mgr, &metrics);
+
+  /* Get node stats for peer count */
+  node_stats_t node_stats;
+  node_get_stats(node, &node_stats);
+
+  /* Build JSON response */
+  json_builder_append(builder, "{");
+
+  /* Sync mode */
+  json_builder_append(builder, "\"mode\":");
+  json_builder_string(builder, metrics.mode_string);
+
+  /* Block heights */
+  json_builder_append(builder, ",\"blocks_validated\":");
+  json_builder_uint(builder, progress.blocks_validated);
+
+  json_builder_append(builder, ",\"best_header_height\":");
+  json_builder_uint(builder, progress.best_header_height);
+
+  json_builder_append(builder, ",\"tip_height\":");
+  json_builder_uint(builder, progress.tip_height);
+
+  json_builder_append(builder, ",\"blocks_pending\":");
+  json_builder_uint(builder, progress.blocks_pending);
+
+  json_builder_append(builder, ",\"blocks_in_flight\":");
+  json_builder_uint(builder, (uint64_t)progress.blocks_in_flight);
+
+  /* Sync percentage */
+  json_builder_append(builder, ",\"sync_percentage\":");
+  json_builder_number(builder, progress.sync_percentage);
+
+  /* Performance metrics from node (source of truth) */
+  json_builder_append(builder, ",\"blocks_per_second\":");
+  json_builder_number(builder, metrics.blocks_per_second);
+
+  json_builder_append(builder, ",\"eta_seconds\":");
+  json_builder_uint(builder, metrics.eta_seconds);
+
+  /* Network baseline for diagnostics */
+  json_builder_append(builder, ",\"network_median_latency_ms\":");
+  json_builder_uint(builder, metrics.network_median_latency);
+
+  /* Peer info */
+  json_builder_append(builder, ",\"active_sync_peers\":");
+  json_builder_uint(builder, metrics.active_sync_peers);
+
+  json_builder_append(builder, ",\"total_peers\":");
+  json_builder_uint(builder, (uint64_t)node_stats.peer_count);
+
+  /* IBD flag */
+  json_builder_append(builder, ",\"initialblockdownload\":");
+  json_builder_bool(builder, node_stats.is_syncing);
+
+  json_builder_append(builder, "}");
+
   return ECHO_OK;
 }

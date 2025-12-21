@@ -2075,3 +2075,53 @@ uint64_t sync_estimate_remaining_time(const sync_progress_t *progress) {
 
   return (uint64_t)((float)remaining / blocks_per_ms);
 }
+
+void sync_get_metrics(const sync_manager_t *mgr, sync_metrics_t *metrics) {
+  if (!metrics) {
+    return;
+  }
+
+  /* Initialize with defaults */
+  metrics->blocks_per_second = 0.0f;
+  metrics->eta_seconds = 0;
+  metrics->network_median_latency = 0;
+  metrics->active_sync_peers = 0;
+  metrics->mode_string = "idle";
+
+  if (!mgr) {
+    return;
+  }
+
+  /* Get current progress for calculations */
+  sync_progress_t progress;
+  sync_get_progress(mgr, &progress);
+
+  /* Mode string */
+  metrics->mode_string = sync_mode_string(progress.mode);
+
+  /* Calculate blocks per second (same as IBD logging) */
+  uint64_t now = plat_time_ms();  /* Must match start_time timebase */
+  uint64_t elapsed_ms = now - mgr->start_time;
+  if (elapsed_ms > 0 && progress.blocks_validated > 0) {
+    metrics->blocks_per_second =
+        (float)progress.blocks_validated / ((float)elapsed_ms / 1000.0f);
+  }
+
+  /* ETA in seconds */
+  uint64_t eta_ms = sync_estimate_remaining_time(&progress);
+  if (eta_ms != UINT64_MAX) {
+    metrics->eta_seconds = eta_ms / 1000;
+  }
+
+  /* Network median latency from peer quality system */
+  metrics->network_median_latency = mgr->network_median_latency_ms;
+
+  /* Count active sync peers (those with blocks received) */
+  uint32_t active = 0;
+  for (size_t i = 0; i < mgr->peer_count; i++) {
+    if (mgr->peers[i].blocks_received > 0 || mgr->peers[i].latency_samples > 0) {
+      active++;
+    }
+  }
+  metrics->active_sync_peers = active;
+}
