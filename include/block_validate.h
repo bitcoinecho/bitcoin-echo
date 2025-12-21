@@ -760,6 +760,24 @@ echo_bool_t block_validate_merkle_root(const block_t *block,
                                        block_validation_error_t *error);
 
 /*
+ * Verify merkle root using pre-computed TXIDs.
+ *
+ * Same as block_validate_merkle_root but accepts pre-computed TXIDs
+ * to avoid redundant SHA256d computation during block validation.
+ *
+ * Parameters:
+ *   block - Block to validate
+ *   txids - Pre-computed TXIDs (NULL to compute internally)
+ *   error - Output: specific error (may be NULL)
+ *
+ * Returns:
+ *   ECHO_TRUE if merkle root matches, ECHO_FALSE otherwise
+ */
+echo_bool_t block_validate_merkle_root_with_txids(const block_t *block,
+                                                  const hash256_t *txids,
+                                                  block_validation_error_t *error);
+
+/*
  * Validate block size and weight limits.
  *
  * Checks:

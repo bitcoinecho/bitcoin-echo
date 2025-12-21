@@ -1439,6 +1439,57 @@ static void test_merkle_root_invalid(void) {
   free_coinbase_tx(&coinbase);
 }
 
+/*
+ * Test that block_validate_merkle_root_with_txids() actually uses
+ * the pre-computed TXIDs rather than recomputing them.
+ */
+static void test_merkle_root_with_precomputed_txids(void) {
+  block_t block;
+  tx_t coinbase;
+  hash256_t merkle_root;
+  hash256_t txid;
+  block_validation_error_t error = BLOCK_VALID;
+
+  create_coinbase_tx(&coinbase, 100, 5000000000LL);
+
+  /* Compute the correct merkle root and TXID */
+  tx_compute_txid(&coinbase, &txid);
+  merkle_root_txids(&coinbase, 1, &merkle_root);
+
+  memset(&block, 0, sizeof(block));
+  block.tx_count = 1;
+  block.txs = &coinbase;
+  memcpy(block.header.merkle_root.bytes, merkle_root.bytes, 32);
+
+  /* Test 1: Correct pre-computed TXID should pass */
+  error = BLOCK_VALID;
+  if (block_validate_merkle_root_with_txids(&block, &txid, &error)) {
+    test_case("Merkle validation with correct pre-computed TXID passes");
+    test_pass();
+  } else {
+    test_case("Merkle validation with correct pre-computed TXID passes");
+    test_fail("Should have passed with correct TXID");
+  }
+
+  /* Test 2: Corrupted pre-computed TXID should fail
+   * This proves we actually USE the passed txids rather than recomputing */
+  hash256_t bad_txid;
+  memcpy(&bad_txid, &txid, sizeof(hash256_t));
+  bad_txid.bytes[0] ^= 0xFF; /* Flip bits to corrupt */
+
+  error = BLOCK_VALID;
+  if (!block_validate_merkle_root_with_txids(&block, &bad_txid, &error) &&
+      error == BLOCK_ERR_MERKLE_MISMATCH) {
+    test_case("Merkle validation with wrong pre-computed TXID fails");
+    test_pass();
+  } else {
+    test_case("Merkle validation with wrong pre-computed TXID fails");
+    test_fail("Should have failed - proves we use passed txids");
+  }
+
+  free_coinbase_tx(&coinbase);
+}
+
 static void test_duplicate_txids_none(void) {
   block_t block;
   tx_t txs[2];
@@ -1636,6 +1687,7 @@ int main(void) {
   test_tx_structure_valid_with_regular_tx();
   test_merkle_root_valid();
   test_merkle_root_invalid();
+  test_merkle_root_with_precomputed_txids();
   test_duplicate_txids_none();
   test_block_size_valid();
   test_block_validate_basic_valid();

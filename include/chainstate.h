@@ -277,6 +277,26 @@ echo_result_t chainstate_apply_block(chainstate_t *state,
                                      block_delta_t **delta);
 
 /**
+ * Apply a block with pre-computed TXIDs.
+ *
+ * Same as chainstate_apply_block but accepts pre-computed TXIDs
+ * to avoid redundant SHA256d computation during block application.
+ *
+ * @param state The chain state
+ * @param header The block header being applied
+ * @param txs Array of transactions in the block
+ * @param tx_count Number of transactions
+ * @param precomputed_txids Pre-computed TXIDs (NULL to compute internally)
+ * @param delta Output: delta for reverting (caller owns, may be NULL)
+ * @return ECHO_OK on success, error code on failure
+ */
+echo_result_t chainstate_apply_block_with_txids(chainstate_t *state,
+                                                const block_header_t *header,
+                                                const tx_t *txs, size_t tx_count,
+                                                const hash256_t *precomputed_txids,
+                                                block_delta_t **delta);
+
+/**
  * Revert a block from the chain state.
  *
  * This function reverses the effect of chainstate_apply_block(),

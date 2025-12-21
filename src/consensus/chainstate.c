@@ -519,10 +519,11 @@ static echo_result_t chainstate_ensure_height_capacity(chainstate_t *state,
   return ECHO_OK;
 }
 
-echo_result_t chainstate_apply_block(chainstate_t *state,
-                                     const block_header_t *header,
-                                     const tx_t *txs, size_t tx_count,
-                                     block_delta_t **delta_out) {
+echo_result_t chainstate_apply_block_with_txids(chainstate_t *state,
+                                                const block_header_t *header,
+                                                const tx_t *txs, size_t tx_count,
+                                                const hash256_t *precomputed_txids,
+                                                block_delta_t **delta_out) {
   ECHO_ASSERT(state != NULL);
   ECHO_ASSERT(header != NULL);
   ECHO_ASSERT(txs != NULL || tx_count == 0);
@@ -598,9 +599,13 @@ echo_result_t chainstate_apply_block(chainstate_t *state,
       }
     }
 
-    /* Create outputs */
+    /* Use pre-computed TXID if available, otherwise compute */
     hash256_t txid;
-    tx_compute_txid(tx, &txid);
+    if (precomputed_txids != NULL) {
+      txid = precomputed_txids[tx_idx];
+    } else {
+      tx_compute_txid(tx, &txid);
+    }
 
     for (size_t out_idx = 0; out_idx < tx->output_count; out_idx++) {
       const tx_output_t *output = &tx->outputs[out_idx];
@@ -660,6 +665,14 @@ echo_result_t chainstate_apply_block(chainstate_t *state,
   }
 
   return ECHO_OK;
+}
+
+echo_result_t chainstate_apply_block(chainstate_t *state,
+                                     const block_header_t *header,
+                                     const tx_t *txs, size_t tx_count,
+                                     block_delta_t **delta_out) {
+  return chainstate_apply_block_with_txids(state, header, txs, tx_count, NULL,
+                                           delta_out);
 }
 
 echo_result_t chainstate_revert_block(chainstate_t *state,

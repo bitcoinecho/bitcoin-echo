@@ -1432,9 +1432,11 @@ echo_bool_t block_has_duplicate_txids(const block_t *block, size_t *dup_idx) {
 
 /*
  * Verify the merkle root in a block header matches the transactions.
+ * Uses pre-computed TXIDs if provided, otherwise computes them.
  */
-echo_bool_t block_validate_merkle_root(const block_t *block,
-                                       block_validation_error_t *error) {
+echo_bool_t block_validate_merkle_root_with_txids(const block_t *block,
+                                                  const hash256_t *txids,
+                                                  block_validation_error_t *error) {
   hash256_t computed_root;
   echo_result_t result;
 
@@ -1450,8 +1452,13 @@ echo_bool_t block_validate_merkle_root(const block_t *block,
     return ECHO_FALSE;
   }
 
-  /* Compute merkle root from transactions */
-  result = merkle_root_txids(block->txs, block->tx_count, &computed_root);
+  /* Use pre-computed TXIDs if provided, otherwise compute them */
+  if (txids != NULL) {
+    result = merkle_root(txids, block->tx_count, &computed_root);
+  } else {
+    result = merkle_root_txids(block->txs, block->tx_count, &computed_root);
+  }
+
   if (result != ECHO_OK) {
     if (error)
       *error = BLOCK_ERR_MERKLE_MISMATCH;
@@ -1466,6 +1473,14 @@ echo_bool_t block_validate_merkle_root(const block_t *block,
   }
 
   return ECHO_TRUE;
+}
+
+/*
+ * Verify the merkle root (computes TXIDs internally).
+ */
+echo_bool_t block_validate_merkle_root(const block_t *block,
+                                       block_validation_error_t *error) {
+  return block_validate_merkle_root_with_txids(block, NULL, error);
 }
 
 /*
