@@ -1229,6 +1229,34 @@ void chainstate_set_tip_index(chainstate_t *state, block_index_t *index) {
     state->tip.hash = index->hash;
     state->tip.height = index->height;
     state->tip.chainwork = index->chainwork;
+
+    /*
+     * Rebuild height_index by walking backwards from tip.
+     *
+     * This is needed when restoring from a checkpoint, where we set the tip
+     * directly without having applied blocks one by one (which normally
+     * populates height_index incrementally via chainstate_apply_block).
+     *
+     * Without this, consensus_build_validation_ctx fails to look up
+     * timestamps for MTP calculation, causing blocks to fail validation.
+     */
+    if (index->height + 1 > state->height_index_capacity) {
+      /* Resize height_index if needed */
+      size_t new_capacity = index->height + 1024;
+      hash256_t *new_index =
+          realloc(state->height_index, new_capacity * sizeof(hash256_t));
+      if (new_index != NULL) {
+        state->height_index = new_index;
+        state->height_index_capacity = new_capacity;
+      }
+    }
+
+    /* Walk backwards from tip and populate height_index */
+    block_index_t *walk = index;
+    while (walk != NULL && walk->height < state->height_index_capacity) {
+      state->height_index[walk->height] = walk->hash;
+      walk = walk->prev;
+    }
   }
 }
 
