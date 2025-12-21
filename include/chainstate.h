@@ -27,6 +27,17 @@
 #include <stdint.h>
 
 /**
+ * Maximum reorg depth for delta retention.
+ *
+ * Deltas (undo data) are kept for this many blocks from the tip to support
+ * chain reorganizations. Deltas older than this are pruned to bound memory
+ * usage. This matches the disk pruning safety margin (550 blocks).
+ *
+ * Memory impact: 550 blocks × ~50KB/delta = ~27MB max delta memory
+ */
+#define DELTA_REORG_DEPTH 550
+
+/**
  * Work (chain difficulty) represented as 256-bit unsigned integer.
  * Stored little-endian for consistency with hash256_t.
  *
@@ -308,6 +319,23 @@ echo_result_t chainstate_apply_block_with_txids(chainstate_t *state,
  */
 echo_result_t chainstate_revert_block(chainstate_t *state,
                                       const block_delta_t *delta);
+
+/**
+ * Prune deltas for blocks below a given height.
+ *
+ * This function frees the memory used by block deltas (undo data) for
+ * blocks that are too old to be involved in a reorganization. Once a
+ * delta is pruned, the block cannot be reverted.
+ *
+ * Called automatically after each block is applied to the chain, pruning
+ * deltas older than DELTA_REORG_DEPTH blocks from the tip. This bounds
+ * memory usage to ~27MB regardless of chain height.
+ *
+ * @param state The chain state
+ * @param below_height Prune deltas for blocks with height < below_height
+ * @return Number of deltas pruned
+ */
+size_t chainstate_prune_deltas(chainstate_t *state, uint32_t below_height);
 
 /**
  * Check if a block is on the main chain.

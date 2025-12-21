@@ -723,6 +723,23 @@ echo_result_t chainstate_revert_block(chainstate_t *state,
   return ECHO_OK;
 }
 
+size_t chainstate_prune_deltas(chainstate_t *state, uint32_t below_height) {
+  ECHO_ASSERT(state != NULL);
+
+  size_t pruned_count = 0;
+
+  /* Prune all deltas for heights below the threshold */
+  for (uint32_t h = 0; h < below_height && h < state->deltas_capacity; h++) {
+    if (state->deltas[h] != NULL) {
+      block_delta_destroy(state->deltas[h]);
+      state->deltas[h] = NULL;
+      pruned_count++;
+    }
+  }
+
+  return pruned_count;
+}
+
 bool chainstate_is_on_main_chain(const chainstate_t *state,
                                  const hash256_t *hash) {
   ECHO_ASSERT(state != NULL);

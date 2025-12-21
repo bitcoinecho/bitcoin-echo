@@ -975,6 +975,12 @@ echo_result_t consensus_apply_block(consensus_engine_t *engine,
     chainstate_set_tip_index(engine->chainstate, index);
   }
 
+  /* Prune old deltas to bound memory usage */
+  uint32_t tip_height = chainstate_get_height(engine->chainstate);
+  if (tip_height > DELTA_REORG_DEPTH) {
+    chainstate_prune_deltas(engine->chainstate, tip_height - DELTA_REORG_DEPTH);
+  }
+
   engine->initialized = true;
 
   return ECHO_OK;
