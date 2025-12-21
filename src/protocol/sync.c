@@ -97,6 +97,9 @@ struct sync_manager {
 
   /* Last time we checked for stored blocks to validate */
   uint64_t last_stored_block_check_time;
+
+  /* IBD profiling: Rate-limited progress logging (every 30s) */
+  uint64_t last_progress_log_time;
 };
 
 /* ============================================================================
@@ -877,6 +880,13 @@ echo_result_t sync_handle_block(sync_manager_t *mgr, peer_t *peer,
   }
 
   /*
+   * IBD profiling: Capture download time before clearing from in-flight.
+   * We look for the earliest request time across all peers (for parallel reqs).
+   */
+  uint64_t download_start_time = 0;
+  uint64_t now = plat_time_ms();
+
+  /*
    * Remove this block from ALL peers' in-flight lists, not just the sender.
    * This is critical for parallel requests: we may have requested the same
    * block from multiple peers, and whichever responds first wins. We must
@@ -887,6 +897,11 @@ echo_result_t sync_handle_block(sync_manager_t *mgr, peer_t *peer,
     for (size_t i = 0; i < check_ps->blocks_in_flight_count; i++) {
       if (memcmp(&check_ps->blocks_in_flight[i], &block_hash,
                  sizeof(hash256_t)) == 0) {
+        /* Capture earliest request time for download timing */
+        if (download_start_time == 0 ||
+            check_ps->block_request_time[i] < download_start_time) {
+          download_start_time = check_ps->block_request_time[i];
+        }
         /* Remove from this peer's in-flight list */
         for (size_t j = i; j < check_ps->blocks_in_flight_count - 1; j++) {
           check_ps->blocks_in_flight[j] = check_ps->blocks_in_flight[j + 1];
@@ -1029,6 +1044,17 @@ echo_result_t sync_handle_block(sync_manager_t *mgr, peer_t *peer,
   mgr->blocks_received_total++;
   ps->blocks_received++;
   mgr->last_progress_time = plat_time_ms();
+
+  /* IBD profiling: Log download timing for slow blocks or every 1000 blocks */
+  if (download_start_time > 0) {
+    uint64_t download_ms = now - download_start_time;
+    if (download_ms > 500 || mgr->blocks_received_total % 1000 == 0) {
+      log_info(LOG_COMP_SYNC,
+               "Block downloaded in %lums (%zu txs, peer=%s)",
+               (unsigned long)download_ms, block->tx_count,
+               peer->address);
+    }
+  }
 
   /* Check if sync is complete */
   if (mgr->mode == SYNC_MODE_BLOCKS &&
@@ -1492,13 +1518,32 @@ void sync_tick(sync_manager_t *mgr) {
   }
 
   case SYNC_MODE_BLOCKS: {
-    log_info(LOG_COMP_SYNC,
-             "SYNC_MODE_BLOCKS: best_header=%p, pending=%zu, inflight=%zu",
-             (void *)mgr->best_header,
-             block_queue_pending_count(mgr->block_queue),
-             block_queue_inflight_count(mgr->block_queue));
-
     uint64_t now = plat_time_ms();
+
+    /* IBD profiling: Rate-limited progress log every 30 seconds */
+    if (now - mgr->last_progress_log_time >= 30000) {
+      mgr->last_progress_log_time = now;
+
+      sync_progress_t progress;
+      sync_get_progress(mgr, &progress);
+
+      uint64_t elapsed_sec = (now - mgr->start_time) / 1000;
+      float blocks_per_sec = elapsed_sec > 0
+                                 ? (float)progress.blocks_validated / elapsed_sec
+                                 : 0.0f;
+
+      uint64_t eta_sec = sync_estimate_remaining_time(&progress) / 1000;
+      uint32_t eta_hours = (uint32_t)(eta_sec / 3600);
+      uint32_t eta_mins = (uint32_t)((eta_sec % 3600) / 60);
+
+      log_info(LOG_COMP_SYNC,
+               "[IBD] height=%u/%u (%.1f%%) | %.1f blk/s | "
+               "pending=%zu inflight=%zu | ETA=%uh%02um",
+               progress.tip_height, progress.best_header_height,
+               progress.sync_percentage, blocks_per_sec,
+               (size_t)progress.blocks_pending,
+               (size_t)progress.blocks_in_flight, eta_hours, eta_mins);
+    }
     uint32_t our_best_height =
         mgr->best_header ? mgr->best_header->height : 0;
 

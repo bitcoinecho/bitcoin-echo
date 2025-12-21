@@ -3074,6 +3074,9 @@ static echo_result_t node_flush_utxo_set_to_db(node_t *node, uint32_t height) {
     return ECHO_ERR_NULL_PARAM;
   }
 
+  /* IBD profiling - track flush timing */
+  uint64_t flush_start = plat_monotonic_ms();
+
   /* Get the chainstate UTXO set */
   chainstate_t *chainstate = consensus_get_chainstate(node->consensus);
   if (chainstate == NULL) {
@@ -3126,9 +3129,13 @@ static echo_result_t node_flush_utxo_set_to_db(node_t *node, uint32_t height) {
     return result;
   }
 
+  /* IBD profiling - log flush timing */
+  uint64_t flush_elapsed = plat_monotonic_ms() - flush_start;
   log_info(LOG_COMP_DB,
-           "UTXO flush complete: %zu inserted, %zu skipped (already in DB)",
-           ctx.inserted, ctx.skipped);
+           "UTXO flush complete in %lums: %zu inserted, %zu skipped "
+           "(rate=%.1f/ms)",
+           (unsigned long)flush_elapsed, ctx.inserted, ctx.skipped,
+           flush_elapsed > 0 ? (double)ctx.inserted / flush_elapsed : 0.0);
 
   return ECHO_OK;
 }

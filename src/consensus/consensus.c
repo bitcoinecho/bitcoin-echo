@@ -29,6 +29,12 @@
 #include "tx.h"
 #include "tx_validate.h"
 #include "utxo.h"
+
+/* IBD profiling - Session 9.6.7+ Phase 2 */
+#define LOG_COMPONENT LOG_COMP_CONS
+#include "log.h"
+#include "platform.h"
+
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -543,6 +549,14 @@ bool consensus_validate_block(const consensus_engine_t *engine,
   ECHO_ASSERT(engine != NULL);
   ECHO_ASSERT(block != NULL);
 
+  /* IBD profiling - track validation timing */
+  uint64_t block_start = plat_monotonic_ms();
+  uint64_t script_time_total = 0;
+  uint64_t sameblock_time_total = 0;
+  size_t total_inputs = 0;
+  size_t scripts_verified = 0;
+  size_t sameblock_lookups = 0;
+
   if (result != NULL) {
     consensus_result_init(result);
   }
@@ -655,6 +669,7 @@ bool consensus_validate_block(const consensus_engine_t *engine,
       if (utxo == NULL) {
         /* Check if this input references an output from earlier in this block
          */
+        uint64_t sameblock_start = plat_monotonic_ms();
         bool found_in_block = false;
         for (size_t prev_tx = 0; prev_tx < tx_idx; prev_tx++) {
           hash256_t prev_txid;
@@ -676,6 +691,8 @@ bool consensus_validate_block(const consensus_engine_t *engine,
             break;
           }
         }
+        sameblock_time_total += plat_monotonic_ms() - sameblock_start;
+        sameblock_lookups++;
 
         if (!found_in_block) {
           if (result != NULL) {
@@ -710,12 +727,16 @@ bool consensus_validate_block(const consensus_engine_t *engine,
 
       /* Script validation (skip for AssumeValid blocks) */
       if (!assume_valid) {
+        uint64_t script_start = plat_monotonic_ms();
         tx_validate_result_t script_result;
         tx_validate_result_init(&script_result);
 
         echo_result_t script_res =
             tx_validate_input(tx, in_idx, &utxo_info, script_flags,
                               &script_result);
+        script_time_total += plat_monotonic_ms() - script_start;
+        scripts_verified++;
+
         if (script_res != ECHO_OK) {
           if (result != NULL) {
             result->error = CONSENSUS_ERR_TX_SCRIPT;
@@ -726,6 +747,7 @@ bool consensus_validate_block(const consensus_engine_t *engine,
           return false;
         }
       }
+      total_inputs++;
     }
 
     /* Calculate output total */
@@ -769,6 +791,26 @@ bool consensus_validate_block(const consensus_engine_t *engine,
         result->block_error = wit_error;
       }
       return false;
+    }
+  }
+
+  /* IBD profiling - log validation timing */
+  uint64_t block_elapsed = plat_monotonic_ms() - block_start;
+
+  /* Only log detailed timing for blocks that take >10ms or every 1000 blocks */
+  if (block_elapsed > 10 || height % 1000 == 0) {
+    if (assume_valid) {
+      log_info(LOG_COMP_CONS,
+               "Block %u validated in %lums (%zu txs, %zu inputs) [AssumeValid]",
+               height, (unsigned long)block_elapsed, block->tx_count,
+               total_inputs);
+    } else {
+      log_info(LOG_COMP_CONS,
+               "Block %u validated in %lums (%zu txs, %zu inputs, "
+               "scripts=%lums/%zu, sameblock=%lums/%zu)",
+               height, (unsigned long)block_elapsed, block->tx_count,
+               total_inputs, (unsigned long)script_time_total, scripts_verified,
+               (unsigned long)sameblock_time_total, sameblock_lookups);
     }
   }
 
