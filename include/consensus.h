@@ -515,6 +515,29 @@ echo_result_t consensus_apply_block(consensus_engine_t *engine,
                                     consensus_result_t *result);
 
 /*
+ * Validate and apply a block in one operation (performance optimization).
+ *
+ * This function combines consensus_validate_block() and consensus_apply_block()
+ * into a single operation, computing TXIDs only once instead of twice.
+ *
+ * During IBD, this saves ~50% of SHA256 operations for TXID computation:
+ *   - Validation needs TXIDs for: merkle root, same-block dependency checks
+ *   - Application needs TXIDs for: UTXO outpoint creation
+ *   - Combined: compute once, use for all three
+ *
+ * Parameters:
+ *   engine - The consensus engine
+ *   block  - Block to validate and apply
+ *   result - Output: detailed validation result
+ *
+ * Returns:
+ *   ECHO_OK on success, error code on failure
+ */
+echo_result_t consensus_validate_and_apply_block(consensus_engine_t *engine,
+                                                  const block_t *block,
+                                                  consensus_result_t *result);
+
+/*
  * Check if a block would trigger a chain reorganization.
  *
  * Returns true if the block (when applied) would have more accumulated

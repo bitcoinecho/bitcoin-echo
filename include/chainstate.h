@@ -321,15 +321,22 @@ echo_result_t chainstate_revert_block(chainstate_t *state,
                                       const block_delta_t *delta);
 
 /**
+ * Prune a single delta at a specific height.
+ *
+ * O(1) operation to free the delta for a single block. Called after each
+ * block is applied to prune the delta that just aged out of the reorg window.
+ *
+ * @param state The chain state
+ * @param height Height of the delta to prune
+ * @return true if a delta was pruned, false if none existed at that height
+ */
+bool chainstate_prune_delta_at(chainstate_t *state, uint32_t height);
+
+/**
  * Prune deltas for blocks below a given height.
  *
- * This function frees the memory used by block deltas (undo data) for
- * blocks that are too old to be involved in a reorganization. Once a
- * delta is pruned, the block cannot be reverted.
- *
- * Called automatically after each block is applied to the chain, pruning
- * deltas older than DELTA_REORG_DEPTH blocks from the tip. This bounds
- * memory usage to ~27MB regardless of chain height.
+ * O(n) operation to free deltas for multiple blocks. Used during startup
+ * to clean up any stale deltas, not during normal block processing.
  *
  * @param state The chain state
  * @param below_height Prune deltas for blocks with height < below_height

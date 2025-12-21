@@ -723,6 +723,18 @@ echo_result_t chainstate_revert_block(chainstate_t *state,
   return ECHO_OK;
 }
 
+bool chainstate_prune_delta_at(chainstate_t *state, uint32_t height) {
+  ECHO_ASSERT(state != NULL);
+
+  if (height >= state->deltas_capacity || state->deltas[height] == NULL) {
+    return false;
+  }
+
+  block_delta_destroy(state->deltas[height]);
+  state->deltas[height] = NULL;
+  return true;
+}
+
 size_t chainstate_prune_deltas(chainstate_t *state, uint32_t below_height) {
   ECHO_ASSERT(state != NULL);
 

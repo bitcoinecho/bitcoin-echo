@@ -1503,14 +1503,21 @@ static echo_result_t sync_cb_validate_and_apply_block(const block_t *block,
     return ECHO_ERR_INVALID;
   }
 
-  /* Step 2: Validate block via consensus engine */
+  /*
+   * Step 2+3: Validate and apply block in one operation.
+   *
+   * This uses consensus_validate_and_apply_block() which computes TXIDs once
+   * and reuses them for both merkle/same-block validation AND UTXO creation.
+   * This saves ~50% of SHA256 operations compared to separate validate+apply.
+   */
   consensus_result_t validation_result;
   consensus_result_init(&validation_result);
 
-  bool valid = consensus_validate_block(node->consensus, block, &validation_result);
+  result = consensus_validate_and_apply_block(node->consensus, block,
+                                              &validation_result);
 
-  if (!valid) {
-    /* Step 4: Mark as invalid and log error */
+  if (result == ECHO_ERR_INVALID) {
+    /* Validation failed - mark as invalid and log error */
     node_mark_block_invalid(node, &block_hash);
 
     /* Log detailed error information */
@@ -1536,11 +1543,42 @@ static echo_result_t sync_cb_validate_and_apply_block(const block_t *block,
     return ECHO_ERR_INVALID;
   }
 
-  /* Step 3: Apply to chain state and storage */
-  result = node_apply_block(node, block);
   if (result != ECHO_OK) {
-    log_error(LOG_COMP_CONS, "Failed to apply valid block: %d", result);
+    log_error(LOG_COMP_CONS, "Failed to apply block: %d", result);
     return result;
+  }
+
+  /*
+   * Update block index database with validated status.
+   * Note: Block data storage is already done when block was received.
+   */
+  if (node->block_index_db_open) {
+    const block_index_t *block_idx =
+        consensus_lookup_block_index(node->consensus, &block_hash);
+    work256_t chainwork;
+    if (block_idx != NULL) {
+      chainwork = block_idx->chainwork;
+    } else {
+      work256_zero(&chainwork);
+    }
+
+    uint32_t height = consensus_get_height(node->consensus);
+    block_index_entry_t entry = {
+        .hash = block_hash,
+        .height = height,
+        .header = block->header,
+        .chainwork = chainwork,
+        .status = BLOCK_STATUS_VALID_HEADER | BLOCK_STATUS_VALID_TREE |
+                  BLOCK_STATUS_VALID_SCRIPTS | BLOCK_STATUS_VALID_CHAIN |
+                  BLOCK_STATUS_HAVE_DATA,
+        .data_file = -1,
+        .data_pos = 0};
+
+    echo_result_t db_result = block_index_db_insert(&node->block_index_db, &entry);
+    if (db_result != ECHO_OK && db_result != ECHO_ERR_EXISTS) {
+      log_warn(LOG_COMP_DB, "Failed to update block index: %d", db_result);
+      /* Continue anyway - block is applied */
+    }
   }
 
   /* Step 4: Prune old blocks if pruning enabled (Session 9.6.6) */

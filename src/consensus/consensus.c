@@ -543,9 +543,17 @@ bool consensus_validate_header(const consensus_engine_t *engine,
   return consensus_validate_header_with_hash(engine, header, NULL, result);
 }
 
-bool consensus_validate_block(const consensus_engine_t *engine,
-                              const block_t *block,
-                              consensus_result_t *result) {
+/*
+ * Internal block validation with optional TXID output.
+ *
+ * If txids_out is non-NULL, the computed TXIDs are returned to the caller
+ * who becomes responsible for freeing them. This allows the TXIDs to be
+ * reused for block application, avoiding redundant computation.
+ */
+static bool validate_block_internal(const consensus_engine_t *engine,
+                                    const block_t *block,
+                                    hash256_t **txids_out,
+                                    consensus_result_t *result) {
   ECHO_ASSERT(engine != NULL);
   ECHO_ASSERT(block != NULL);
 
@@ -849,8 +857,19 @@ bool consensus_validate_block(const consensus_engine_t *engine,
     }
   }
 
-  free(block_txids);
+  /* Return TXIDs to caller if requested, otherwise free them */
+  if (txids_out != NULL) {
+    *txids_out = block_txids;
+  } else {
+    free(block_txids);
+  }
   return true;
+}
+
+bool consensus_validate_block(const consensus_engine_t *engine,
+                              const block_t *block,
+                              consensus_result_t *result) {
+  return validate_block_internal(engine, block, NULL, result);
 }
 
 bool consensus_validate_tx(const consensus_engine_t *engine, const tx_t *tx,
@@ -931,9 +950,14 @@ echo_result_t consensus_add_header(consensus_engine_t *engine,
   return chainstate_add_header(engine->chainstate, header, index_out);
 }
 
-echo_result_t consensus_apply_block(consensus_engine_t *engine,
-                                    const block_t *block,
-                                    consensus_result_t *result) {
+/*
+ * Internal apply function that accepts optional pre-computed TXIDs.
+ * If precomputed_txids is NULL, TXIDs are computed internally.
+ */
+static echo_result_t apply_block_internal(consensus_engine_t *engine,
+                                          const block_t *block,
+                                          const hash256_t *precomputed_txids,
+                                          consensus_result_t *result) {
   ECHO_ASSERT(engine != NULL);
   ECHO_ASSERT(block != NULL);
 
@@ -952,10 +976,35 @@ echo_result_t consensus_apply_block(consensus_engine_t *engine,
     return add_result;
   }
 
-  /* Apply to chain state */
+  /* Use pre-computed TXIDs if provided, otherwise compute them */
+  hash256_t *block_txids = NULL;
+  bool owns_txids = false;
+  if (precomputed_txids != NULL) {
+    /* Cast away const - we won't modify, just pass through */
+    block_txids = (hash256_t *)precomputed_txids;
+  } else if (block->tx_count > 0) {
+    block_txids = malloc(block->tx_count * sizeof(hash256_t));
+    if (block_txids == NULL) {
+      if (result != NULL) {
+        result->error = CONSENSUS_ERR_INTERNAL;
+      }
+      return ECHO_ERR_OUT_OF_MEMORY;
+    }
+    for (size_t i = 0; i < block->tx_count; i++) {
+      tx_compute_txid(&block->txs[i], &block_txids[i]);
+    }
+    owns_txids = true;
+  }
+
+  /* Apply to chain state with pre-computed TXIDs */
   block_delta_t *delta = NULL;
-  echo_result_t apply_result = chainstate_apply_block(
-      engine->chainstate, &block->header, block->txs, block->tx_count, &delta);
+  echo_result_t apply_result = chainstate_apply_block_with_txids(
+      engine->chainstate, &block->header, block->txs, block->tx_count,
+      block_txids, &delta);
+
+  if (owns_txids) {
+    free(block_txids);
+  }
 
   if (apply_result != ECHO_OK) {
     if (result != NULL) {
@@ -975,15 +1024,46 @@ echo_result_t consensus_apply_block(consensus_engine_t *engine,
     chainstate_set_tip_index(engine->chainstate, index);
   }
 
-  /* Prune old deltas to bound memory usage */
+  /* Prune the single delta that just aged out of reorg window - O(1) */
   uint32_t tip_height = chainstate_get_height(engine->chainstate);
   if (tip_height > DELTA_REORG_DEPTH) {
-    chainstate_prune_deltas(engine->chainstate, tip_height - DELTA_REORG_DEPTH);
+    chainstate_prune_delta_at(engine->chainstate,
+                              tip_height - DELTA_REORG_DEPTH - 1);
   }
 
   engine->initialized = true;
 
   return ECHO_OK;
+}
+
+echo_result_t consensus_apply_block(consensus_engine_t *engine,
+                                    const block_t *block,
+                                    consensus_result_t *result) {
+  return apply_block_internal(engine, block, NULL, result);
+}
+
+echo_result_t consensus_validate_and_apply_block(consensus_engine_t *engine,
+                                                  const block_t *block,
+                                                  consensus_result_t *result) {
+  ECHO_ASSERT(engine != NULL);
+  ECHO_ASSERT(block != NULL);
+
+  /* Validate block, getting TXIDs for reuse in apply */
+  hash256_t *block_txids = NULL;
+  bool valid = validate_block_internal(engine, block, &block_txids, result);
+
+  if (!valid) {
+    /* Validation failed - TXIDs were freed by validate_block_internal */
+    return ECHO_ERR_INVALID;
+  }
+
+  /* Apply block using the same TXIDs (avoids recomputing) */
+  echo_result_t apply_result =
+      apply_block_internal(engine, block, block_txids, result);
+
+  free(block_txids);
+
+  return apply_result;
 }
 
 bool consensus_would_reorg(const consensus_engine_t *engine,
