@@ -1303,9 +1303,30 @@ void sync_process_timeouts(sync_manager_t *mgr) {
     }
 
     /* Process block timeouts - count stalls per peer per tick, not per block */
+    /*
+     * Adaptive stall timeout based on network conditions:
+     * - Base: 3x network median latency (accounts for variance)
+     * - Floor: SYNC_BLOCK_STALLING_TIMEOUT_MS (5s)
+     * - Ceiling: SYNC_BLOCK_STALLING_TIMEOUT_MAX_MS (16s)
+     *
+     * At height 180k+ with median latency ~2400ms, this gives ~7200ms timeout
+     * instead of a fixed 5000ms, reducing false stall detections.
+     */
+    uint64_t adaptive_timeout = SYNC_BLOCK_STALLING_TIMEOUT_MS;
+    if (mgr->network_median_latency_ms > 0) {
+      uint64_t latency_based = mgr->network_median_latency_ms * 3;
+      if (latency_based > adaptive_timeout) {
+        adaptive_timeout = latency_based;
+      }
+      if (adaptive_timeout > SYNC_BLOCK_STALLING_TIMEOUT_MAX_MS) {
+        adaptive_timeout = SYNC_BLOCK_STALLING_TIMEOUT_MAX_MS;
+      }
+    }
+    mgr->stalling_timeout_ms = adaptive_timeout;
+
     size_t stalled_this_tick = 0;
     for (size_t j = 0; j < ps->blocks_in_flight_count;) {
-      if (now - ps->block_request_time[j] > SYNC_BLOCK_STALLING_TIMEOUT_MS) {
+      if (now - ps->block_request_time[j] > adaptive_timeout) {
         /* Timeout - unassign block and re-queue */
         hash256_t stalled_hash = ps->blocks_in_flight[j];
         block_queue_unassign(mgr->block_queue, &stalled_hash);
