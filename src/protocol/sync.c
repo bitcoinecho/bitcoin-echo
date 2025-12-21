@@ -635,7 +635,17 @@ static void update_peer_quality(sync_manager_t *mgr) {
     peer_sync_state_t *ps = &mgr->peers[i];
     ps->quality_score =
         calculate_quality_score(ps, mgr->network_median_latency_ms, now);
-    ps->max_slots = calculate_max_slots(ps->quality_score);
+    uint16_t new_slots = calculate_max_slots(ps->quality_score);
+
+    /*
+     * Never reduce max_slots below current in-flight count.
+     * This prevents capacity deadlock during network-wide slowdowns where
+     * all peers timeout simultaneously and get penalized together.
+     */
+    if (new_slots < ps->blocks_in_flight_count) {
+      new_slots = (uint16_t)ps->blocks_in_flight_count;
+    }
+    ps->max_slots = new_slots;
 
     /* Log quality metrics for debugging (only peers with samples) */
     if (ps->latency_samples > 0) {
