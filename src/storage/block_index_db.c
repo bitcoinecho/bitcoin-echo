@@ -75,6 +75,14 @@ static echo_result_t create_schema(db_t *db) {
     return result;
   }
 
+  /*
+   * Migration: Set HAVE_DATA flag for blocks that have stored data.
+   * This fixes blocks stored before the flag was properly set.
+   * Safe to run multiple times (idempotent).
+   */
+  db_exec(db, "UPDATE blocks SET status = status | 16 "
+              "WHERE data_file >= 0 AND (status & 16) = 0");
+
   return ECHO_OK;
 }
 
@@ -115,10 +123,10 @@ static echo_result_t prepare_statements(block_index_db_t *bdb) {
   if (result != ECHO_OK)
     return result;
 
-  /* Update block data position (when block is stored to disk) */
+  /* Update block data position and set HAVE_DATA flag (when block is stored) */
   result = db_prepare(&bdb->db,
-                      "UPDATE blocks SET data_file = ?, data_pos = ? "
-                      "WHERE hash = ?",
+                      "UPDATE blocks SET data_file = ?, data_pos = ?, "
+                      "status = status | ? WHERE hash = ?",
                       &bdb->update_data_pos_stmt);
   if (result != ECHO_OK)
     return result;
@@ -481,8 +489,13 @@ echo_result_t block_index_db_update_data_pos(block_index_db_t *bdb,
   if (result != ECHO_OK)
     return result;
 
-  /* Bind hash (parameter 3) */
-  result = db_bind_blob(&bdb->update_data_pos_stmt, 3, hash->bytes, 32);
+  /* Bind HAVE_DATA flag (parameter 3) */
+  result = db_bind_int(&bdb->update_data_pos_stmt, 3, BLOCK_STATUS_HAVE_DATA);
+  if (result != ECHO_OK)
+    return result;
+
+  /* Bind hash (parameter 4) */
+  result = db_bind_blob(&bdb->update_data_pos_stmt, 4, hash->bytes, 32);
   if (result != ECHO_OK)
     return result;
 
@@ -568,25 +581,23 @@ echo_result_t block_index_db_get_chain_block(block_index_db_t *bdb,
   echo_result_t result;
   db_stmt_t stmt;
 
-  /* Prepare query for blocks on best chain at this height */
+  /*
+   * Get block at height, preferring VALID_CHAIN status but falling back
+   * to any block at this height. This handles pruned blocks that may have
+   * lost their VALID_CHAIN status. Order by status DESC so VALID_CHAIN
+   * blocks (higher status values) come first.
+   */
   result =
       db_prepare(&bdb->db,
                  "SELECT hash, height, header, chainwork, status, data_file, "
                  "data_pos FROM blocks "
-                 "WHERE height = ? AND (status & ?) != 0 LIMIT 1",
+                 "WHERE height = ? ORDER BY status DESC LIMIT 1",
                  &stmt);
   if (result != ECHO_OK)
     return result;
 
   /* Bind height */
   result = db_bind_int(&stmt, 1, (int)height);
-  if (result != ECHO_OK) {
-    db_stmt_finalize(&stmt);
-    return result;
-  }
-
-  /* Bind status flag check (BLOCK_STATUS_VALID_CHAIN) */
-  result = db_bind_int(&stmt, 2, BLOCK_STATUS_VALID_CHAIN);
   if (result != ECHO_OK) {
     db_stmt_finalize(&stmt);
     return result;

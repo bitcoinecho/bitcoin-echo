@@ -19,36 +19,44 @@
 /*
  * Scan existing block files to find the current write position.
  * This is called during initialization to resume writing where we left off.
+ * Handles gaps from pruned files (e.g., blk00000-blk00005 deleted).
  */
 static echo_result_t scan_block_files(block_file_manager_t *mgr) {
   uint32_t file_index = 0;
+  uint32_t highest_found = UINT32_MAX; /* Track highest existing file */
+  uint32_t consecutive_missing = 0;
   char path[512];
 
-  /* Find the highest numbered block file */
-  while (1) {
+  /*
+   * Find the highest numbered block file, accounting for gaps from pruning.
+   * Stop scanning after 1000 consecutive missing files (arbitrary but safe).
+   */
+  while (consecutive_missing < 1000) {
     block_storage_get_path(mgr, file_index, path);
 
-    if (!plat_file_exists(path)) {
-      /* This file doesn't exist - we've found the end */
-      if (file_index == 0) {
-        /* No files exist yet */
-        mgr->current_file_index = 0;
-        mgr->current_file_offset = 0;
-        return ECHO_OK;
-      } else {
-        /* Previous file is the last one */
-        file_index--;
-        break;
-      }
+    if (plat_file_exists(path)) {
+      highest_found = file_index;
+      consecutive_missing = 0;
+    } else {
+      consecutive_missing++;
     }
 
     file_index++;
 
     /* Sanity check: don't scan more than 100,000 files */
     if (file_index > 100000) {
-      return ECHO_ERR_PLATFORM_IO;
+      break;
     }
   }
+
+  /* If no files found, start fresh */
+  if (highest_found == UINT32_MAX) {
+    mgr->current_file_index = 0;
+    mgr->current_file_offset = 0;
+    return ECHO_OK;
+  }
+
+  file_index = highest_found;
 
   /* Open the last file and find its size */
   block_storage_get_path(mgr, file_index, path);
@@ -374,6 +382,7 @@ echo_result_t block_storage_get_file_size(const block_file_manager_t *mgr,
 
 /*
  * Get total disk usage of all block files.
+ * Handles gaps from pruning (e.g., blk00000 deleted but blk00001+ exist).
  */
 echo_result_t block_storage_get_total_size(const block_file_manager_t *mgr,
                                            uint64_t *total_size) {
@@ -382,30 +391,25 @@ echo_result_t block_storage_get_total_size(const block_file_manager_t *mgr,
   }
 
   uint64_t total = 0;
-  uint32_t file_index = 0;
   char path[512];
 
-  /* Sum up all existing block files */
-  while (1) {
+  /* Iterate from 0 to current file, summing existing files */
+  for (uint32_t file_index = 0; file_index <= mgr->current_file_index;
+       file_index++) {
     block_storage_get_path(mgr, file_index, path);
 
     if (!plat_file_exists(path)) {
-      break; /* No more files */
+      continue; /* File was pruned, skip it */
     }
 
     uint64_t file_size = 0;
-    echo_result_t result = block_storage_get_file_size(mgr, file_index, &file_size);
+    echo_result_t result =
+        block_storage_get_file_size(mgr, file_index, &file_size);
     if (result != ECHO_OK) {
-      return result;
+      continue; /* Skip files we can't read */
     }
 
     total += file_size;
-    file_index++;
-
-    /* Sanity check */
-    if (file_index > 100000) {
-      break;
-    }
   }
 
   *total_size = total;
