@@ -133,7 +133,7 @@ static void destroy_test_peer(peer_t *peer) {
 /* ========== Test Cases ========== */
 
 static void test_relay_init(void) {
-  printf("test_relay_init\n");
+  test_case("Relay init");
 
   test_ctx_t tctx = {0};
   tctx.accept_blocks = ECHO_TRUE;
@@ -155,11 +155,11 @@ static void test_relay_init(void) {
   }
 
   relay_destroy(mgr);
-
+  test_pass();
 }
 
 static void test_relay_add_remove_peer(void) {
-  printf("test_relay_add_remove_peer\n");
+  test_case("Relay add remove peer");
 
   test_ctx_t tctx = {0};
   relay_callbacks_t callbacks = {
@@ -184,11 +184,11 @@ static void test_relay_add_remove_peer(void) {
   relay_destroy(mgr);
   destroy_test_peer(peer1);
   destroy_test_peer(peer2);
-
+  test_pass();
 }
 
 static void test_relay_handle_inv(void) {
-  printf("test_relay_handle_inv\n");
+  test_case("Relay handle inv");
 
   test_ctx_t tctx = {0};
   tctx.accept_blocks = ECHO_TRUE;
@@ -224,11 +224,11 @@ static void test_relay_handle_inv(void) {
 
   relay_destroy(mgr);
   destroy_test_peer(peer);
-
+  test_pass();
 }
 
 static void test_relay_inv_rate_limit(void) {
-  printf("test_relay_inv_rate_limit\n");
+  test_case("Relay inv rate limit");
 
   test_ctx_t tctx = {0};
   relay_callbacks_t callbacks = {
@@ -273,11 +273,11 @@ static void test_relay_inv_rate_limit(void) {
 
   relay_destroy(mgr);
   destroy_test_peer(peer);
-
+  test_pass();
 }
 
 static void test_relay_handle_getdata(void) {
-  printf("test_relay_handle_getdata\n");
+  test_case("Relay handle getdata");
 
   test_ctx_t tctx = {0};
 
@@ -323,11 +323,11 @@ static void test_relay_handle_getdata(void) {
 
   relay_destroy(mgr);
   destroy_test_peer(peer);
-
+  test_pass();
 }
 
 static void test_relay_getdata_rate_limit(void) {
-  printf("test_relay_getdata_rate_limit\n");
+  test_case("Relay getdata rate limit");
 
   test_ctx_t tctx = {0};
   relay_callbacks_t callbacks = {
@@ -371,11 +371,11 @@ static void test_relay_getdata_rate_limit(void) {
 
   relay_destroy(mgr);
   destroy_test_peer(peer);
-
+  test_pass();
 }
 
 static void test_relay_handle_block(void) {
-  printf("test_relay_handle_block\n");
+  test_case("Relay handle block");
 
   test_ctx_t tctx = {0};
   tctx.accept_blocks = ECHO_TRUE;
@@ -420,11 +420,11 @@ static void test_relay_handle_block(void) {
   relay_destroy(mgr);
   destroy_test_peer(peer1);
   destroy_test_peer(peer2);
-
+  test_pass();
 }
 
 static void test_relay_handle_tx(void) {
-  printf("test_relay_handle_tx\n");
+  test_case("Relay handle tx");
 
   test_ctx_t tctx = {0};
   tctx.accept_txs = ECHO_TRUE;
@@ -469,11 +469,11 @@ static void test_relay_handle_tx(void) {
   relay_destroy(mgr);
   destroy_test_peer(peer1);
   destroy_test_peer(peer2);
-
+  test_pass();
 }
 
 static void test_relay_announce_block(void) {
-  printf("test_relay_announce_block\n");
+  test_case("Relay announce block");
 
   test_ctx_t tctx = {0};
   relay_callbacks_t callbacks = {
@@ -500,11 +500,11 @@ static void test_relay_announce_block(void) {
   relay_destroy(mgr);
   destroy_test_peer(peer1);
   destroy_test_peer(peer2);
-
+  test_pass();
 }
 
 static void test_relay_announce_tx(void) {
-  printf("test_relay_announce_tx\n");
+  test_case("Relay announce tx");
 
   test_ctx_t tctx = {0};
   relay_callbacks_t callbacks = {
@@ -533,11 +533,11 @@ static void test_relay_announce_tx(void) {
   relay_destroy(mgr);
   destroy_test_peer(peer1);
   destroy_test_peer(peer2);
-
+  test_pass();
 }
 
 static void test_relay_ban_score(void) {
-  printf("test_relay_ban_score\n");
+  test_case("Relay ban score");
 
   test_ctx_t tctx = {0};
   relay_callbacks_t callbacks = {
@@ -581,11 +581,11 @@ static void test_relay_ban_score(void) {
 
   relay_destroy(mgr);
   destroy_test_peer(peer);
-
+  test_pass();
 }
 
 static void test_relay_ban_address(void) {
-  printf("test_relay_ban_address\n");
+  test_case("Relay ban address");
 
   test_ctx_t tctx = {0};
   relay_callbacks_t callbacks = {
@@ -619,11 +619,11 @@ static void test_relay_ban_address(void) {
   }
 
   relay_destroy(mgr);
-
+  test_pass();
 }
 
 static void test_relay_cleanup(void) {
-  printf("test_relay_cleanup\n");
+  test_case("Relay cleanup");
 
   test_ctx_t tctx = {0};
   relay_callbacks_t callbacks = {
@@ -653,11 +653,11 @@ static void test_relay_cleanup(void) {
   }
 
   relay_destroy(mgr);
-
+  test_pass();
 }
 
 static void test_relay_invalid_block(void) {
-  printf("test_relay_invalid_block\n");
+  test_case("Relay invalid block");
 
   test_ctx_t tctx = {0};
   tctx.accept_blocks = ECHO_FALSE; /* Reject blocks */
@@ -690,11 +690,11 @@ static void test_relay_invalid_block(void) {
 
   relay_destroy(mgr);
   destroy_test_peer(peer);
-
+  test_pass();
 }
 
 static void test_relay_ban_reason_string(void) {
-  printf("test_relay_ban_reason_string\n");
+  test_case("Relay ban reason string");
 
   const char *str = relay_ban_reason_string(BAN_REASON_EXCESSIVE_INV);
   if (strcmp(str, "EXCESSIVE_INV") != 0) {
@@ -702,7 +702,7 @@ static void test_relay_ban_reason_string(void) {
     return;
   }
 
-
+  test_pass();
 }
 
 /* ========== Test Runner ========== */
@@ -710,21 +710,21 @@ static void test_relay_ban_reason_string(void) {
 int main(void) {
     test_suite_begin("Block Relay Tests");
 
-    test_case("Relay init"); test_relay_init(); test_pass();
-    test_case("Relay add remove peer"); test_relay_add_remove_peer(); test_pass();
-    test_case("Relay handle inv"); test_relay_handle_inv(); test_pass();
-    test_case("Relay inv rate limit"); test_relay_inv_rate_limit(); test_pass();
-    test_case("Relay handle getdata"); test_relay_handle_getdata(); test_pass();
-    test_case("Relay getdata rate limit"); test_relay_getdata_rate_limit(); test_pass();
-    test_case("Relay handle block"); test_relay_handle_block(); test_pass();
-    test_case("Relay handle tx"); test_relay_handle_tx(); test_pass();
-    test_case("Relay announce block"); test_relay_announce_block(); test_pass();
-    test_case("Relay announce tx"); test_relay_announce_tx(); test_pass();
-    test_case("Relay ban score"); test_relay_ban_score(); test_pass();
-    test_case("Relay ban address"); test_relay_ban_address(); test_pass();
-    test_case("Relay cleanup"); test_relay_cleanup(); test_pass();
-    test_case("Relay invalid block"); test_relay_invalid_block(); test_pass();
-    test_case("Relay ban reason string"); test_relay_ban_reason_string(); test_pass();
+    test_relay_init();
+    test_relay_add_remove_peer();
+    test_relay_handle_inv();
+    test_relay_inv_rate_limit();
+    test_relay_handle_getdata();
+    test_relay_getdata_rate_limit();
+    test_relay_handle_block();
+    test_relay_handle_tx();
+    test_relay_announce_block();
+    test_relay_announce_tx();
+    test_relay_ban_score();
+    test_relay_ban_address();
+    test_relay_cleanup();
+    test_relay_invalid_block();
+    test_relay_ban_reason_string();
 
     test_suite_end();
     return test_global_summary();
