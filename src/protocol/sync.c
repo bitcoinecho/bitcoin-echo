@@ -100,6 +100,10 @@ struct sync_manager {
 
   /* IBD profiling: Rate-limited progress logging (every 30s) */
   uint64_t last_progress_log_time;
+
+  /* Peer quality network baseline for adaptive slot allocation */
+  uint64_t network_median_latency_ms;  /* Median block latency across all peers */
+  uint64_t last_quality_update_time;   /* Last time quality scores recalculated */
 };
 
 /* ============================================================================
@@ -481,12 +485,188 @@ find_best_header_peer(sync_manager_t *mgr) {
   return best;
 }
 
+/* ============================================================================
+ * Peer Quality Rating System
+ *
+ * Enables adaptive slot allocation and aggressive eviction of slow peers.
+ * Fast peers get more download slots (up to 32), slow peers get fewer (min 4).
+ * Peers significantly slower than the network median are disconnected.
+ * ============================================================================
+ */
+
 /**
- * Find best peer for block download (fewest blocks in flight).
+ * Calculate peer quality score (0-1000, higher = better).
+ *
+ * Combines three factors weighted for IBD optimization:
+ * - Block latency (60%): Primary factor, rewards fast peers
+ * - Reliability (30%): Penalizes stalls/timeouts heavily
+ * - Throughput (10%): Tiebreaker based on blocks per minute
+ *
+ * @param ps       Peer sync state
+ * @param median   Network median latency (0 uses default 1000ms)
+ * @param now      Current timestamp in milliseconds
+ * @return         Quality score 0-1000
+ */
+static uint16_t calculate_quality_score(const peer_sync_state_t *ps,
+                                        uint64_t median, uint64_t now) {
+  uint16_t score = 0;
+
+  /* Latency component: 600 points max
+   * ratio = median / peer_latency
+   * If peer == median: ratio = 1.0 -> 600 points
+   * If peer 2x slower: ratio = 0.5 -> 300 points
+   * If peer 2x faster: ratio = 2.0 -> capped at 600
+   */
+  if (ps->avg_block_latency_ms > 0 && ps->latency_samples >= 5) {
+    uint64_t base_median = median > 0 ? median : 1000;
+    /* Calculate ratio * 100 to avoid floating point */
+    uint64_t ratio_x100 = (base_median * 100) / ps->avg_block_latency_ms;
+    uint16_t latency_score = (uint16_t)((ratio_x100 * 600) / 100);
+    if (latency_score > 600) {
+      latency_score = 600;
+    }
+    score += latency_score;
+  } else {
+    /* Not enough samples - neutral score until proven */
+    score += 300;
+  }
+
+  /* Reliability component: 300 points max
+   * Each timeout costs 50 points (harsh penalty for unreliability)
+   * 0 timeouts = 300 pts, 6 timeouts = 0 pts
+   */
+  uint16_t timeout_penalty = ps->timeout_count * 50;
+  if (timeout_penalty > 300) {
+    timeout_penalty = 300;
+  }
+  score += (300 - timeout_penalty);
+
+  /* Throughput component: 100 points max
+   * Blocks per minute * 10, capped at 100
+   * 10 blocks/min = 100 pts
+   */
+  if (ps->first_block_time > 0 && ps->blocks_received > 0 &&
+      now > ps->first_block_time) {
+    uint64_t duration_ms = now - ps->first_block_time;
+    /* blocks_per_min = blocks_received * 60000 / duration_ms */
+    uint64_t bpm_x10 = (ps->blocks_received * 600000) / duration_ms;
+    uint16_t throughput_score = (uint16_t)(bpm_x10 > 100 ? 100 : bpm_x10);
+    score += throughput_score;
+  }
+
+  return score;
+}
+
+/**
+ * Calculate maximum slots for a peer based on quality score.
+ *
+ * Linear scaling from 4 slots (score 0) to 32 slots (score 1000).
+ * Formula: slots = 4 + (quality_score / 40)
+ *
+ * Score -> Slots:
+ *   0    -> 4   (minimum, peer is struggling)
+ *   400  -> 14  (below average)
+ *   500  -> 16  (average peer)
+ *   800  -> 24  (good peer)
+ *   1000 -> 29  (excellent, capped at 32)
+ *
+ * @param quality_score  Peer quality score (0-1000)
+ * @return               Maximum slots for this peer (4-32)
+ */
+static uint16_t calculate_max_slots(uint16_t quality_score) {
+  uint16_t slots = 4 + (quality_score / 40);
+  if (slots > SYNC_MAX_BLOCKS_PER_PEER) {
+    slots = SYNC_MAX_BLOCKS_PER_PEER;
+  }
+  return slots;
+}
+
+/**
+ * Recalculate peer quality scores and slot allocations.
+ *
+ * Called every 5 seconds during SYNC_MODE_BLOCKS to:
+ * 1. Calculate network median latency from all peers with sufficient samples
+ * 2. Update each peer's quality_score based on relative performance
+ * 3. Adjust max_slots dynamically (4-32 based on quality)
+ *
+ * @param mgr  Sync manager
+ */
+static void update_peer_quality(sync_manager_t *mgr) {
+  uint64_t now = plat_time_ms();
+
+  /* Rate limit: only update every 5 seconds */
+  if (now - mgr->last_quality_update_time < 5000) {
+    return;
+  }
+  mgr->last_quality_update_time = now;
+
+  /* Collect latencies from peers with sufficient samples for median calc */
+  uint64_t latencies[SYNC_MAX_PEERS];
+  size_t latency_count = 0;
+
+  for (size_t i = 0; i < mgr->peer_count; i++) {
+    peer_sync_state_t *ps = &mgr->peers[i];
+    if (ps->avg_block_latency_ms > 0 && ps->latency_samples >= 5) {
+      latencies[latency_count++] = ps->avg_block_latency_ms;
+    }
+  }
+
+  /* Calculate median latency (simple bubble sort for small N) */
+  if (latency_count >= 3) {
+    /* Sort latencies ascending */
+    for (size_t i = 0; i < latency_count - 1; i++) {
+      for (size_t j = 0; j < latency_count - i - 1; j++) {
+        if (latencies[j] > latencies[j + 1]) {
+          uint64_t tmp = latencies[j];
+          latencies[j] = latencies[j + 1];
+          latencies[j + 1] = tmp;
+        }
+      }
+    }
+    mgr->network_median_latency_ms = latencies[latency_count / 2];
+  } else {
+    /* Not enough data - use reasonable default */
+    mgr->network_median_latency_ms = 1000; /* 1 second */
+  }
+
+  /* Update each peer's quality score and max_slots */
+  for (size_t i = 0; i < mgr->peer_count; i++) {
+    peer_sync_state_t *ps = &mgr->peers[i];
+    ps->quality_score =
+        calculate_quality_score(ps, mgr->network_median_latency_ms, now);
+    ps->max_slots = calculate_max_slots(ps->quality_score);
+
+    /* Log quality metrics for debugging (only peers with samples) */
+    if (ps->latency_samples > 0) {
+      log_debug(LOG_COMP_SYNC,
+                "Peer %s quality: score=%u slots=%u latency=%lums "
+                "samples=%u timeouts=%u",
+                ps->peer->address, ps->quality_score, ps->max_slots,
+                (unsigned long)ps->avg_block_latency_ms, ps->latency_samples,
+                ps->timeout_count);
+    }
+  }
+
+  /* Log network baseline */
+  log_debug(LOG_COMP_SYNC, "Network quality baseline: median_latency=%lums "
+                           "(from %zu peers with samples)",
+            (unsigned long)mgr->network_median_latency_ms, latency_count);
+}
+
+/**
+ * Find best peer for block download based on quality and capacity.
+ *
+ * Selection criteria (in priority order):
+ * 1. Must be sync_candidate (has blocks we need)
+ * 2. Must be PEER_STATE_READY (handshake complete)
+ * 3. Must have capacity: blocks_in_flight < max_slots (dynamic!)
+ * 4. Primary: highest quality_score (prefer fast, reliable peers)
+ * 5. Tiebreaker: fewer blocks in flight (spread load)
  */
 static peer_sync_state_t *find_best_block_peer(sync_manager_t *mgr) {
   peer_sync_state_t *best = NULL;
-  size_t min_inflight = SIZE_MAX;
+  uint16_t best_score = 0;
+  size_t best_inflight = SIZE_MAX;
   size_t candidates = 0;
   size_t not_sync_candidate = 0;
   size_t not_ready = 0;
@@ -495,21 +675,36 @@ static peer_sync_state_t *find_best_block_peer(sync_manager_t *mgr) {
   for (size_t i = 0; i < mgr->peer_count; i++) {
     peer_sync_state_t *ps = &mgr->peers[i];
     bool ready = peer_is_ready(ps->peer);
-    bool has_capacity = ps->blocks_in_flight_count < SYNC_MAX_BLOCKS_PER_PEER;
+
+    /* Use dynamic max_slots based on peer quality (min 4, max 32) */
+    uint16_t peer_max_slots = ps->max_slots > 0 ? ps->max_slots : 4;
+    bool has_capacity = ps->blocks_in_flight_count < peer_max_slots;
 
     if (!ps->sync_candidate) {
       not_sync_candidate++;
     } else if (!ready) {
       not_ready++;
-      /* Debug: log why peer is not ready */
       log_debug(LOG_COMP_SYNC, "Peer %s not_ready: state=%s",
                 ps->peer->address, peer_state_string(ps->peer->state));
     } else if (!has_capacity) {
       no_capacity++;
     } else {
       candidates++;
-      if (ps->blocks_in_flight_count < min_inflight) {
-        min_inflight = ps->blocks_in_flight_count;
+
+      /* Primary: highest quality_score
+       * Secondary: fewer blocks in flight (spread load among equal quality)
+       */
+      bool is_better = false;
+      if (ps->quality_score > best_score) {
+        is_better = true;
+      } else if (ps->quality_score == best_score &&
+                 ps->blocks_in_flight_count < best_inflight) {
+        is_better = true;
+      }
+
+      if (is_better) {
+        best_score = ps->quality_score;
+        best_inflight = ps->blocks_in_flight_count;
         best = ps;
       }
     }
@@ -913,6 +1108,21 @@ echo_result_t sync_handle_block(sync_manager_t *mgr, peer_t *peer,
     }
   }
 
+  /* Update peer quality latency tracking for the delivering peer */
+  if (download_start_time > 0 && now > download_start_time) {
+    uint64_t download_ms = now - download_start_time;
+
+    /* Record first block time if not set */
+    if (ps->first_block_time == 0) {
+      ps->first_block_time = now;
+    }
+
+    /* Update running average latency */
+    ps->total_latency_ms += download_ms;
+    ps->latency_samples++;
+    ps->avg_block_latency_ms = ps->total_latency_ms / ps->latency_samples;
+  }
+
   /* Store block if callback provided (before validation - we need the data) */
   if (mgr->callbacks.store_block) {
     mgr->callbacks.store_block(block, mgr->callbacks.ctx);
@@ -1129,6 +1339,46 @@ void sync_process_timeouts(sync_manager_t *mgr) {
                  ps->timeout_count);
         peer_disconnect(ps->peer, PEER_DISCONNECT_MISBEHAVING,
                         "Too many block stalls during IBD");
+        continue; /* Skip further checks for this peer */
+      }
+    }
+
+    /*
+     * Aggressive eviction for chronically slow peers.
+     *
+     * Disconnect peers that are significantly slower than the network:
+     * - Condition 1: avg_latency > 3x median (hard limit)
+     * - Condition 2: avg_latency > 2.5x median AND 3+ timeouts (pattern of issues)
+     *
+     * Requires sufficient samples (10+) to avoid evicting peers too early.
+     */
+    if (ps->peer && ps->latency_samples >= 10 &&
+        mgr->network_median_latency_ms > 0 && ps->avg_block_latency_ms > 0) {
+
+      /* Hard limit: disconnect if >3x slower than network median */
+      if (ps->avg_block_latency_ms > mgr->network_median_latency_ms * 3) {
+        log_info(LOG_COMP_SYNC,
+                 "Evicting slow peer %s: latency=%lums (median=%lums, %.1fx)",
+                 ps->peer->address, (unsigned long)ps->avg_block_latency_ms,
+                 (unsigned long)mgr->network_median_latency_ms,
+                 (float)ps->avg_block_latency_ms /
+                     (float)mgr->network_median_latency_ms);
+        peer_disconnect(ps->peer, PEER_DISCONNECT_MISBEHAVING,
+                        "Block latency > 3x network median");
+        continue;
+      }
+
+      /* Combined slow + unreliable: disconnect if >2.5x slower AND has timeouts
+       */
+      if (ps->timeout_count >= 3 &&
+          ps->avg_block_latency_ms > (mgr->network_median_latency_ms * 5) / 2) {
+        log_info(LOG_COMP_SYNC,
+                 "Evicting unreliable peer %s: latency=%lums, timeouts=%u",
+                 ps->peer->address, (unsigned long)ps->avg_block_latency_ms,
+                 ps->timeout_count);
+        peer_disconnect(ps->peer, PEER_DISCONNECT_MISBEHAVING,
+                        "Slow + unreliable during IBD");
+        continue;
       }
     }
   }
@@ -1519,6 +1769,9 @@ void sync_tick(sync_manager_t *mgr) {
 
   case SYNC_MODE_BLOCKS: {
     uint64_t now = plat_time_ms();
+
+    /* Update peer quality scores periodically (every 5 seconds) */
+    update_peer_quality(mgr);
 
     /* IBD profiling: Rate-limited progress log every 30 seconds */
     if (now - mgr->last_progress_log_time >= 30000) {

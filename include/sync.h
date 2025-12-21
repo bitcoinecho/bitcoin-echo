@@ -135,6 +135,13 @@ typedef struct {
   uint64_t avg_headers_latency_ms; /* Average headers response time */
   uint64_t avg_block_latency_ms;   /* Average block download time */
   uint32_t timeout_count;          /* Number of timeouts from this peer */
+
+  /* Quality rating system - enables adaptive slot allocation and peer eviction */
+  uint64_t first_block_time;  /* When peer started delivering blocks (ms) */
+  uint64_t total_latency_ms;  /* Sum of all block download latencies */
+  uint32_t latency_samples;   /* Number of latency samples collected */
+  uint16_t quality_score;     /* 0-1000, higher = better peer */
+  uint16_t max_slots;         /* Dynamic slot cap based on quality (4-32) */
 } peer_sync_state_t;
 
 /**
