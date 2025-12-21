@@ -3595,8 +3595,14 @@ uint32_t node_prune_blocks(node_t *node, uint32_t target_height) {
   /* Get current write file (don't delete it) */
   uint32_t current_file = block_storage_get_current_file(&node->block_storage);
 
-  /* Delete old block files until we've freed enough space or reached target */
+  /* Calculate how many bytes we need to free */
+  uint64_t current_size = node_get_block_storage_size(node);
+  uint64_t target_size = node->config.prune_target_mb * 1024ULL * 1024ULL;
+  uint64_t bytes_to_free = (current_size > target_size) ? (current_size - target_size) : 0;
+
+  /* Delete old block files until we've freed enough space */
   uint32_t files_deleted = 0;
+  uint64_t bytes_freed = 0;
   for (uint32_t file_idx = lowest_file; file_idx < current_file; file_idx++) {
     /* Check if file exists */
     bool exists = false;
@@ -3605,21 +3611,25 @@ uint32_t node_prune_blocks(node_t *node, uint32_t target_height) {
       continue;
     }
 
+    /* Get file size before deleting */
+    uint64_t file_size = 0;
+    block_storage_get_file_size(&node->block_storage, file_idx, &file_size);
+
     /* Delete the file */
     result = block_storage_delete_file(
         (block_file_manager_t *)&node->block_storage, file_idx);
     if (result == ECHO_OK) {
       files_deleted++;
-      log_info(LOG_COMP_STORE, "Deleted block file blk%05u.dat", file_idx);
+      bytes_freed += file_size;
+      log_info(LOG_COMP_STORE, "Deleted block file blk%05u.dat (%llu MB)",
+               file_idx, (unsigned long long)(file_size / (1024 * 1024)));
     } else {
       log_warn(LOG_COMP_STORE, "Failed to delete blk%05u.dat: %d",
                file_idx, result);
     }
 
-    /* Estimate: each file ~1000 blocks at current sizes
-     * Stop if we've pruned enough */
-    uint32_t estimated_pruned = current_pruned_height + (files_deleted * 1000);
-    if (estimated_pruned >= target_height) {
+    /* Stop if we've freed enough bytes */
+    if (bytes_freed >= bytes_to_free) {
       break;
     }
   }
@@ -3639,8 +3649,8 @@ uint32_t node_prune_blocks(node_t *node, uint32_t target_height) {
 
   if (files_deleted > 0) {
     log_info(LOG_COMP_STORE,
-             "Pruning complete: deleted %u files, pruned height now %u",
-             files_deleted, new_pruned_height);
+             "Pruning complete: deleted %u files, freed %llu MB",
+             files_deleted, (unsigned long long)(bytes_freed / (1024 * 1024)));
   }
 
   return new_pruned_height;
