@@ -660,12 +660,9 @@ static bool validate_block_internal(const consensus_engine_t *engine,
   uint32_t script_flags = consensus_get_script_flags(height);
 
   /*
-   * AssumeValid: Skip script validation for blocks at or before the
-   * assumevalid height. This is the Bitcoin Core default behavior since v0.14.0.
-   * We still validate PoW, merkle roots, UTXO values, and all other consensus
-   * rules - only script execution is skipped.
+   * Full Verification: Bitcoin Echo verifies every signature.
+   * Per the manifesto: "Verify, not believe."
    */
-  bool assume_valid = (height <= ECHO_ASSUME_VALID_HEIGHT);
 
   for (size_t tx_idx = 1; tx_idx < block->tx_count; tx_idx++) {
     const tx_t *tx = &block->txs[tx_idx];
@@ -764,28 +761,26 @@ static bool validate_block_internal(const consensus_engine_t *engine,
         utxo_info.is_coinbase = utxo->is_coinbase ? ECHO_TRUE : ECHO_FALSE;
       }
 
-      /* Script validation (skip for AssumeValid blocks) */
-      if (!assume_valid) {
-        uint64_t script_start = plat_monotonic_ms();
-        tx_validate_result_t script_result;
-        tx_validate_result_init(&script_result);
+      /* Script validation - verify every signature */
+      uint64_t script_start = plat_monotonic_ms();
+      tx_validate_result_t script_result;
+      tx_validate_result_init(&script_result);
 
-        echo_result_t script_res =
-            tx_validate_input(tx, in_idx, &utxo_info, script_flags,
-                              &script_result);
-        script_time_total += plat_monotonic_ms() - script_start;
-        scripts_verified++;
+      echo_result_t script_res =
+          tx_validate_input(tx, in_idx, &utxo_info, script_flags,
+                            &script_result);
+      script_time_total += plat_monotonic_ms() - script_start;
+      scripts_verified++;
 
-        if (script_res != ECHO_OK) {
-          if (result != NULL) {
-            result->error = CONSENSUS_ERR_TX_SCRIPT;
-            result->failing_index = tx_idx;
-            result->failing_input_index = in_idx;
-            result->script_error = script_result.script_error;
-          }
-          free(block_txids);
-          return false;
+      if (script_res != ECHO_OK) {
+        if (result != NULL) {
+          result->error = CONSENSUS_ERR_TX_SCRIPT;
+          result->failing_index = tx_idx;
+          result->failing_input_index = in_idx;
+          result->script_error = script_result.script_error;
         }
+        free(block_txids);
+        return false;
       }
       total_inputs++;
     }
@@ -842,19 +837,12 @@ static bool validate_block_internal(const consensus_engine_t *engine,
 
   /* Only log detailed timing for blocks that take >10ms or every 1000 blocks */
   if (block_elapsed > 10 || height % 1000 == 0) {
-    if (assume_valid) {
-      log_info(LOG_COMP_CONS,
-               "Block %u validated in %lums (%zu txs, %zu inputs) [AssumeValid]",
-               height, (unsigned long)block_elapsed, block->tx_count,
-               total_inputs);
-    } else {
-      log_info(LOG_COMP_CONS,
-               "Block %u validated in %lums (%zu txs, %zu inputs, "
-               "scripts=%lums/%zu, sameblock=%lums/%zu)",
-               height, (unsigned long)block_elapsed, block->tx_count,
-               total_inputs, (unsigned long)script_time_total, scripts_verified,
-               (unsigned long)sameblock_time_total, sameblock_lookups);
-    }
+    log_info(LOG_COMP_CONS,
+             "Block %u validated in %lums (%zu txs, %zu inputs, "
+             "scripts=%lums/%zu, sameblock=%lums/%zu)",
+             height, (unsigned long)block_elapsed, block->tx_count,
+             total_inputs, (unsigned long)script_time_total, scripts_verified,
+             (unsigned long)sameblock_time_total, sameblock_lookups);
   }
 
   /* Return TXIDs to caller if requested, otherwise free them */
@@ -996,11 +984,20 @@ static echo_result_t apply_block_internal(consensus_engine_t *engine,
     owns_txids = true;
   }
 
-  /* Apply to chain state with pre-computed TXIDs */
-  block_delta_t *delta = NULL;
+  /*
+   * Apply to chain state with pre-computed TXIDs.
+   *
+   * IBD optimization: Pass NULL for delta_out to skip undo data creation.
+   * Creating deltas was O(n²) due to per-UTXO realloc - a massive bottleneck.
+   * During IBD, reorgs of historical blocks are essentially impossible.
+   * If we ever need to reorg during IBD, we'll restore from checkpoint.
+   *
+   * TODO: After IBD completes (near tip), enable delta tracking for shallow
+   * reorgs. For now, we prioritize sync speed.
+   */
   echo_result_t apply_result = chainstate_apply_block_with_txids(
       engine->chainstate, &block->header, block->txs, block->tx_count,
-      block_txids, &delta);
+      block_txids, NULL); /* NULL = skip delta creation for IBD performance */
 
   if (owns_txids) {
     free(block_txids);
@@ -1013,22 +1010,10 @@ static echo_result_t apply_block_internal(consensus_engine_t *engine,
     return apply_result;
   }
 
-  /* Store delta for potential undo (chainstate handles this internally) */
-  if (delta != NULL) {
-    /* Delta is stored in chainstate */
-  }
-
   /* Update tip index */
   if (index != NULL) {
     index->on_main_chain = true;
     chainstate_set_tip_index(engine->chainstate, index);
-  }
-
-  /* Prune the single delta that just aged out of reorg window - O(1) */
-  uint32_t tip_height = chainstate_get_height(engine->chainstate);
-  if (tip_height > DELTA_REORG_DEPTH) {
-    chainstate_prune_delta_at(engine->chainstate,
-                              tip_height - DELTA_REORG_DEPTH - 1);
   }
 
   engine->initialized = true;

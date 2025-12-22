@@ -32,6 +32,13 @@
  */
 #define PLATFORM_MAX_OUTBOUND_PEERS 32
 
+/*
+ * Peer Quality Assessment: connect to peers, measure RTT, keep fastest.
+ * Quick initial selection, then continuous rotation finds hidden gems.
+ * After assessment, we cull down to PLATFORM_MAX_OUTBOUND_PEERS.
+ */
+#define PLATFORM_AUDITION_PEER_COUNT 48
+
 /* Maximum inbound connections (connections others initiate to us) */
 #define PLATFORM_MAX_INBOUND_PEERS 117
 

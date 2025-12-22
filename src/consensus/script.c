@@ -2978,21 +2978,35 @@ echo_result_t script_exec_op(script_context_t *ctx, const script_op_t *op) {
     }
 
     /*
-     * Without transaction context, we cannot compute the sighash.
-     * In a real implementation, we would:
-     * 1. Extract sighash type from last byte of signature
-     * 2. Compute sighash based on tx, input index, scriptCode
-     * 3. Verify signature against sighash and pubkey
-     *
-     * For testing purposes, we push false (signature check fails
-     * without context). Real usage requires extending script_context_t
-     * with transaction data.
+     * Signature verification requires transaction context.
+     * Without it, verification fails (returns false).
      */
     echo_bool_t result = ECHO_FALSE;
 
-    /* Check if we're in NULLFAIL mode - empty sig on failure is required */
-    if ((ctx->flags & SCRIPT_VERIFY_NULLFAIL) && sig_elem.len > 0) {
-      /* Non-empty signature that fails verification in NULLFAIL mode */
+    if (ctx->tx != NULL && sig_elem.len > 0) {
+      /*
+       * We have transaction context - perform actual verification.
+       * 1. Extract sighash type from last byte of signature
+       * 2. Compute legacy sighash
+       * 3. Verify ECDSA signature
+       */
+      uint32_t sighash_type = sig_elem.data[sig_elem.len - 1];
+      size_t actual_sig_len = sig_elem.len - 1;
+
+      /* Compute legacy sighash */
+      uint8_t sighash[32];
+      echo_result_t res = sighash_legacy(ctx, sighash_type, sighash);
+      if (res == ECHO_OK) {
+        /* Verify ECDSA signature */
+        if (sig_verify(SIG_ECDSA, sig_elem.data, actual_sig_len, sighash,
+                       pubkey_elem.data, pubkey_elem.len)) {
+          result = ECHO_TRUE;
+        }
+      }
+    }
+
+    /* NULLFAIL: non-empty signature that fails must error */
+    if (!result && (ctx->flags & SCRIPT_VERIFY_NULLFAIL) && sig_elem.len > 0) {
       if (pubkey_elem.data)
         free(pubkey_elem.data);
       if (sig_elem.data)
@@ -3170,17 +3184,64 @@ echo_result_t script_exec_op(script_context_t *ctx, const script_op_t *op) {
     /*
      * Signature verification logic:
      *
-     * Without transaction context, we cannot verify signatures.
-     * However, if n_sigs == 0, verification succeeds vacuously
-     * (there are no signatures to verify).
+     * CHECKMULTISIG uses a greedy algorithm:
+     * - Signatures and pubkeys are matched in order
+     * - Once a pubkey is "passed", it can't be used for later sigs
+     * - All n_sigs signatures must match to succeed
      *
-     * This is important for tests like "0 0 0 CHECKMULTISIG" which
-     * is a 0-of-0 multisig and should succeed.
+     * If n_sigs == 0, verification succeeds vacuously.
      */
-    echo_bool_t result = (n_sigs == 0) ? ECHO_TRUE : ECHO_FALSE;
+    echo_bool_t result = ECHO_FALSE;
 
-    /* Check NULLFAIL: all signatures must be empty if verification fails */
-    if (ctx->flags & SCRIPT_VERIFY_NULLFAIL) {
+    if (n_sigs == 0) {
+      /* 0-of-n always succeeds */
+      result = ECHO_TRUE;
+    } else if (ctx->tx != NULL) {
+      /* We have transaction context - perform actual verification */
+      script_num_t isig = 0;   /* Current signature index */
+      script_num_t ikey = 0;   /* Current pubkey index */
+      script_num_t success = 0; /* Number of successful verifications */
+
+      while (isig < n_sigs && ikey < n_keys) {
+        /* Try to verify sigs[isig] with pubkeys[ikey] */
+        echo_bool_t valid = ECHO_FALSE;
+
+        if (sigs[isig].len > 0) {
+          uint32_t sighash_type = sigs[isig].data[sigs[isig].len - 1];
+          size_t actual_sig_len = sigs[isig].len - 1;
+
+          uint8_t sighash[32];
+          echo_result_t res = sighash_legacy(ctx, sighash_type, sighash);
+          if (res == ECHO_OK) {
+            if (sig_verify(SIG_ECDSA, sigs[isig].data, actual_sig_len, sighash,
+                           pubkeys[ikey].data, pubkeys[ikey].len)) {
+              valid = ECHO_TRUE;
+            }
+          }
+        }
+
+        if (valid) {
+          /* Signature verified - consume both sig and pubkey */
+          isig++;
+          ikey++;
+          success++;
+        } else {
+          /* Signature didn't match this pubkey - try next pubkey */
+          ikey++;
+        }
+
+        /* Check if we can still succeed:
+         * remaining sigs <= remaining pubkeys */
+        if ((n_sigs - success) > (n_keys - ikey)) {
+          break; /* Not enough pubkeys left */
+        }
+      }
+
+      result = (success == n_sigs) ? ECHO_TRUE : ECHO_FALSE;
+    }
+
+    /* Check NULLFAIL: all non-empty signatures must have succeeded */
+    if (!result && (ctx->flags & SCRIPT_VERIFY_NULLFAIL)) {
       for (script_num_t i = 0; i < n_sigs; i++) {
         if (sigs[i].len > 0) {
           if (sigs) {

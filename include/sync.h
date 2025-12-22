@@ -335,6 +335,23 @@ typedef struct {
    */
   echo_result_t (*flush_headers)(void *ctx);
 
+  /**
+   * Cull peers after audition phase - keep only the fastest performers.
+   *
+   * Called after the ping contest completes. The implementation should:
+   * 1. Sort connected peers by RTT (last_rtt_ms in peer_t)
+   * 2. Disconnect the slowest peers
+   * 3. Keep only target_count fastest peers
+   *
+   * Parameters:
+   *   target_count - Number of peers to keep
+   *   ctx          - User context
+   *
+   * Returns:
+   *   Number of peers actually culled
+   */
+  size_t (*cull_slow_peers)(size_t target_count, void *ctx);
+
   /* Context pointer passed to all callbacks */
   void *ctx;
 } sync_callbacks_t;
@@ -543,6 +560,22 @@ bool sync_is_ibd(const sync_manager_t *mgr);
  * waiting for peers or running a ping contest.
  */
 void sync_skip_ping_contest(sync_manager_t *mgr);
+
+/**
+ * Check if the audition phase is complete.
+ *
+ * During the audition phase, the node connects to many peers
+ * (ECHO_AUDITION_PEER_COUNT) and measures their RTT via ping contest.
+ * After culling, only the fastest ECHO_MAX_OUTBOUND_PEERS are kept.
+ *
+ * Use this to determine the current peer limit:
+ * - During audition: allow up to ECHO_AUDITION_PEER_COUNT
+ * - After audition: maintain only ECHO_MAX_OUTBOUND_PEERS
+ *
+ * Returns:
+ *   true if audition is complete (culling has happened)
+ */
+bool sync_is_audition_complete(const sync_manager_t *mgr);
 
 /* ============================================================================
  * Block Locator

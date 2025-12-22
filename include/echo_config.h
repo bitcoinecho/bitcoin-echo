@@ -87,16 +87,15 @@
 #define CONSENSUS_TAPROOT_HEIGHT 709632 /* Taproot/Schnorr */
 
 /*
- * AssumeValid: Skip script validation for blocks at or before this height.
- * This is the Bitcoin Core default behavior since v0.14.0.
- * Update this value when freezing Bitcoin Echo to a new checkpoint.
+ * Full Verification: Bitcoin Echo verifies every signature.
  *
- * Block 912,683: 00000000000000000000611fd22f2df7c8fbd0688745c3a6c3bb5109cc2a12cb
- * (Bitcoin Core master as of 2025-01)
+ * Unlike Bitcoin Core's AssumeValid optimization, we verify everything.
+ * Per the manifesto: "Verify, not believe."
+ *
+ * Network latency is the bottleneck (~5-7 seconds/block), not CPU.
+ * Signature verification adds only ~4-6ms per block. The practical
+ * performance impact of full verification is negligible.
  */
-#define ECHO_ASSUME_VALID_HEIGHT 912683
-#define ECHO_ASSUME_VALID_HASH                                                 \
-  "00000000000000000000611fd22f2df7c8fbd0688745c3a6c3bb5109cc2a12cb"
 
 #elif defined(ECHO_NETWORK_TESTNET)
 #define CONSENSUS_BIP16_HEIGHT 514
@@ -107,10 +106,6 @@
 #define CONSENSUS_SEGWIT_HEIGHT 834624
 #define CONSENSUS_TAPROOT_HEIGHT 2000000 /* Approximate */
 
-/* Testnet3 AssumeValid - use 0 to disable during testing */
-#define ECHO_ASSUME_VALID_HEIGHT 0
-#define ECHO_ASSUME_VALID_HASH ""
-
 #elif defined(ECHO_NETWORK_REGTEST)
 #define CONSENSUS_BIP16_HEIGHT 0 /* Always active */
 #define CONSENSUS_BIP34_HEIGHT 500
@@ -119,10 +114,6 @@
 #define CONSENSUS_BIP68_HEIGHT 432
 #define CONSENSUS_SEGWIT_HEIGHT 0  /* Always active */
 #define CONSENSUS_TAPROOT_HEIGHT 0 /* Always active */
-
-/* Regtest: No AssumeValid (full validation for testing) */
-#define ECHO_ASSUME_VALID_HEIGHT 0
-#define ECHO_ASSUME_VALID_HASH ""
 
 #endif
 
@@ -174,6 +165,7 @@
 #define ECHO_MAX_OUTBOUND_PEERS PLATFORM_MAX_OUTBOUND_PEERS
 #define ECHO_MAX_INBOUND_PEERS PLATFORM_MAX_INBOUND_PEERS
 #define ECHO_MAX_TOTAL_PEERS PLATFORM_MAX_TOTAL_PEERS
+#define ECHO_AUDITION_PEER_COUNT PLATFORM_AUDITION_PEER_COUNT
 #define ECHO_CONNECT_TIMEOUT_MS PLATFORM_CONNECT_TIMEOUT_MS
 #define ECHO_PING_INTERVAL_MS PLATFORM_PING_INTERVAL_MS
 #define ECHO_INACTIVITY_TIMEOUT_MS PLATFORM_INACTIVITY_TIMEOUT_MS

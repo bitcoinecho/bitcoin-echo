@@ -3,12 +3,27 @@
  *
  * This module implements headers-first sync as specified in whitepaper §7.3.
  *
+ * CRITICAL ZONE REDUNDANCY
+ * ========================
+ * Block download optimization using redundant requests for critical blocks:
+ *
+ * 1. CRITICAL ZONE: The next N blocks from validation tip are precious.
+ *    Request each from multiple top peers simultaneously.
+ *    First response wins, duplicates are discarded.
+ *
+ * 2. SPECULATIVE ZONE: Blocks beyond critical zone are requested normally.
+ *    These fill while we wait for critical blocks.
+ *
+ * 3. ANTICIPATORY FILLING: Don't wait for stalls - be proactive.
+ *    Request critical blocks BEFORE they become blocking.
+ *
  * Build once. Build right. Stop.
  */
 
 #include "sync.h"
 #include "block.h"
 #include "chainstate.h"
+#include "echo_config.h"
 #include "echo_types.h"
 #include "log.h"
 #include "peer.h"
@@ -127,21 +142,42 @@ struct sync_manager {
   size_t headers_sync_peer_idx;        /* Index into peers[] array */
   bool has_headers_sync_peer;          /* Whether we have a designated peer */
 
-  /* Ping contest: measure RTT to find fastest peer before headers sync */
-#define PING_CONTEST_MIN_PEERS 12      /* Wait for this many peers before countdown */
-#define PING_CONTEST_WAIT_MS 12000     /* Wait this long after hitting min peers */
-#define PING_CONTEST_TIMEOUT_MS 3000   /* Max time to wait for pong responses */
+  /*
+   * PEER QUALITY ASSESSMENT: Quick initial selection, then continuous rotation.
+   *
+   * Before IBD begins:
+   * 1. Connect to peers (AUDITION_PEER_COUNT)
+   * 2. Send pings to all, measure RTT
+   * 3. Cull slow peers, keep top performers
+   * 4. Start IBD - continuous rotation finds hidden gems
+   */
+#define PING_CONTEST_MIN_PEERS 24      /* Wait for this many peers before assessment */
+#define PING_CONTEST_WAIT_MS 15000     /* 15s to gather more peers after min */
+#define PING_CONTEST_TIMEOUT_MS 5000   /* 5s for pong responses */
   uint64_t ping_contest_trigger_time;  /* When we hit min peers (0 = not triggered) */
   uint64_t ping_contest_start_time;    /* When pings were sent (0 = not started) */
   size_t ping_contest_responses;       /* How many pongs received */
   size_t ping_contest_sent;            /* How many pings sent */
   bool skip_ping_contest;              /* Skip ping contest (for testing) */
+  bool audition_complete;              /* True after culling is done */
 
   /* Rolling window for accurate block rate calculation (500 blocks = ~30-60s at typical rates) */
 #define RATE_WINDOW_SIZE 500
   uint64_t rate_window[RATE_WINDOW_SIZE]; /* Ring buffer of validation timestamps */
   size_t rate_window_idx;                 /* Next write position */
   size_t rate_window_count;               /* Number of entries (0 to RATE_WINDOW_SIZE) */
+
+  /*
+   * Rolling window for block sizes - enables adaptive download window.
+   * Like Bitcoin's difficulty adjustment, we measure actual conditions
+   * rather than assuming based on height. Target a memory budget and
+   * continuously adapt the download window as blocks grow/shrink.
+   */
+#define SIZE_WINDOW_SIZE 100              /* 100-block rolling average - responsive but smooth */
+  uint32_t size_window[SIZE_WINDOW_SIZE]; /* Ring buffer of block sizes (bytes) */
+  size_t size_window_idx;                 /* Next write position */
+  size_t size_window_count;               /* Number of entries (0 to SIZE_WINDOW_SIZE) */
+  uint64_t size_window_total;             /* Running sum for O(1) average calculation */
 
   /* Deferred header persistence: queue headers during SYNC_MODE_HEADERS,
    * flush all at once when transitioning to SYNC_MODE_BLOCKS. */
@@ -204,6 +240,103 @@ static float rate_window_get_rate(const struct sync_manager *mgr) {
   float seconds = (float)elapsed_ms / 1000.0f;
 
   return blocks / seconds;
+}
+
+/* ============================================================================
+ * Adaptive Window Sizing (Block Size Rolling Average)
+ *
+ * Like Bitcoin's difficulty adjustment, we measure actual block sizes rather
+ * than assuming based on height. This enables continuous, smooth adaptation
+ * of the download window to maintain a target memory budget.
+ * ============================================================================
+ */
+
+/**
+ * Target memory budget for queued blocks (64 MB).
+ * This is the maximum data we want in-flight/pending at any time.
+ */
+#define ADAPTIVE_WINDOW_MEMORY_BUDGET_BYTES (64 * 1024 * 1024)
+
+/**
+ * Minimum and maximum window bounds.
+ * Even with huge blocks, we want some pipeline depth.
+ * Even with tiny blocks, cap to avoid memory explosion.
+ */
+#define ADAPTIVE_WINDOW_MIN 64
+#define ADAPTIVE_WINDOW_MAX 2048
+
+/**
+ * Default block size assumption when we have no measurements yet.
+ * ~250KB is a reasonable modern block estimate.
+ */
+#define ADAPTIVE_DEFAULT_BLOCK_SIZE (250 * 1024)
+
+/**
+ * Record a block size in the rolling window.
+ * Uses O(1) running sum for efficient average calculation.
+ */
+static void size_window_record(struct sync_manager *mgr, uint32_t block_size) {
+  /* Subtract old value from running sum if window is full */
+  if (mgr->size_window_count == SIZE_WINDOW_SIZE) {
+    mgr->size_window_total -= mgr->size_window[mgr->size_window_idx];
+  }
+
+  /* Add new value */
+  mgr->size_window[mgr->size_window_idx] = block_size;
+  mgr->size_window_total += block_size;
+
+  /* Advance index and count */
+  mgr->size_window_idx = (mgr->size_window_idx + 1) % SIZE_WINDOW_SIZE;
+  if (mgr->size_window_count < SIZE_WINDOW_SIZE) {
+    mgr->size_window_count++;
+  }
+}
+
+/**
+ * Get average block size from the rolling window.
+ * Returns default estimate if insufficient data.
+ */
+static uint32_t size_window_get_average(const struct sync_manager *mgr) {
+  if (mgr->size_window_count == 0) {
+    return ADAPTIVE_DEFAULT_BLOCK_SIZE;
+  }
+  return (uint32_t)(mgr->size_window_total / mgr->size_window_count);
+}
+
+/**
+ * Calculate adaptive download window based on memory budget.
+ *
+ * This is the heart of continuous adaptation:
+ *   effective_window = memory_budget / avg_block_size
+ *
+ * As blocks grow larger, window shrinks proportionally.
+ * As blocks shrink (empty blocks), window expands.
+ */
+static uint32_t get_adaptive_window(const struct sync_manager *mgr) {
+  uint32_t avg_size = size_window_get_average(mgr);
+
+  /* Prevent division by zero */
+  if (avg_size == 0) {
+    avg_size = ADAPTIVE_DEFAULT_BLOCK_SIZE;
+  }
+
+  /* Calculate ideal window for memory budget */
+  uint32_t ideal_window = ADAPTIVE_WINDOW_MEMORY_BUDGET_BYTES / avg_size;
+
+  /* Clamp to bounds */
+  if (ideal_window < ADAPTIVE_WINDOW_MIN) {
+    ideal_window = ADAPTIVE_WINDOW_MIN;
+  }
+  if (ideal_window > ADAPTIVE_WINDOW_MAX) {
+    ideal_window = ADAPTIVE_WINDOW_MAX;
+  }
+
+  /* Never exceed configured maximum (pruned vs archival) */
+  if (ideal_window > mgr->download_window) {
+    ideal_window = mgr->download_window;
+  }
+
+  return ideal_window;
 }
 
 /* ============================================================================
@@ -744,27 +877,21 @@ static uint16_t calculate_quality_score(const peer_sync_state_t *ps,
 }
 
 /**
- * Calculate maximum slots for a peer based on quality score.
+ * RESERVED CAPACITY: Leave room for urgent requests!
  *
- * Linear scaling from 4 slots (score 0) to 32 slots (score 1000).
- * Formula: slots = 4 + (quality_score / 40)
+ * If we fill all 16 slots with speculative blocks, there's no room left
+ * when we desperately need the blocking block. Reserve slots for urgent work.
  *
- * Score -> Slots:
- *   0    -> 4   (minimum, peer is struggling)
- *   400  -> 14  (below average)
- *   500  -> 16  (average peer)
- *   800  -> 24  (good peer)
- *   1000 -> 29  (excellent, capped at 32)
+ * Normal/speculative requests: 12 slots max (32 peers × 12 = 384 parallel)
+ * Reserved for urgent (BLAST): 4 slots per peer (32 peers × 4 = 128 emergency)
  *
- * @param quality_score  Peer quality score (0-1000)
- * @return               Maximum slots for this peer (4-32)
+ * @param quality_score  Peer quality score (0-1000) - currently unused
+ * @return               Maximum slots for normal requests (12)
  */
+#define SLOTS_RESERVED_FOR_URGENT 4
 static uint16_t calculate_max_slots(uint16_t quality_score) {
-  uint16_t slots = 4 + (quality_score / 40);
-  if (slots > SYNC_MAX_BLOCKS_PER_PEER) {
-    slots = SYNC_MAX_BLOCKS_PER_PEER;
-  }
-  return slots;
+  (void)quality_score;
+  return SYNC_MAX_BLOCKS_PER_PEER - SLOTS_RESERVED_FOR_URGENT; /* 12 */
 }
 
 /**
@@ -918,8 +1045,10 @@ static peer_sync_state_t *find_best_block_peer(sync_manager_t *mgr) {
     peer_sync_state_t *ps = &mgr->peers[i];
     bool ready = peer_is_ready(ps->peer);
 
-    /* Use dynamic max_slots based on peer quality (min 4, max 32) */
-    uint16_t peer_max_slots = ps->max_slots > 0 ? ps->max_slots : 4;
+    /* Use dynamic max_slots based on peer quality.
+     * Default to SYNC_MAX_BLOCKS_PER_PEER (16) until quality is measured,
+     * not 4 - that severely limits parallelism early in sync! */
+    uint16_t peer_max_slots = ps->max_slots > 0 ? ps->max_slots : SYNC_MAX_BLOCKS_PER_PEER;
     bool has_capacity = ps->blocks_in_flight_count < peer_max_slots;
 
     if (!ps->sync_candidate) {
@@ -1140,61 +1269,71 @@ echo_result_t sync_start(sync_manager_t *mgr) {
            "sync_start: best_header=%p (height=%u), validated_height=%u",
            (void *)mgr->best_header, best_header_height, validated_height);
 
-  if (mgr->best_header != NULL && best_header_height > validated_height) {
-    /* Already have headers, need to sync blocks */
-    log_info(LOG_COMP_SYNC,
-             "Starting sync in BLOCKS mode (already have headers: "
-             "best_header=%u, validated=%u)",
-             best_header_height, validated_height);
-    mgr->mode = SYNC_MODE_BLOCKS;
-    mgr->block_sync_start_time = now;
-  } else {
-    /*
-     * Fresh headers sync - run ping contest to find fastest peer.
-     * Wait for 12 peers, then 12 seconds, then run contest.
-     * (Skip if skip_ping_contest is set, e.g., for testing)
-     */
-    if (!mgr->skip_ping_contest) {
-      if (mgr->ping_contest_trigger_time == 0) {
-        /* Not enough peers yet - caller should retry later */
-        log_info(LOG_COMP_SYNC,
-                 "sync_start: waiting for %d peers (have %zu)",
-                 PING_CONTEST_MIN_PEERS, count_sync_peers(mgr));
-        return ECHO_ERR_INVALID_STATE;
-      }
+  /*
+   * AUDITION PHASE: Always run ping contest to select fastest peers,
+   * regardless of whether we already have headers. The only exception
+   * is when skip_ping_contest is explicitly set (e.g., for testing).
+   *
+   * After audition completes, we'll transition to BLOCKS or HEADERS mode
+   * based on whether we have headers.
+   */
+  bool resume_in_blocks_mode =
+      (mgr->best_header != NULL && best_header_height > validated_height);
 
-      uint64_t wait_elapsed = now - mgr->ping_contest_trigger_time;
-      if (wait_elapsed < PING_CONTEST_WAIT_MS) {
-        /* Still in 12-second countdown - caller should retry */
-        return ECHO_ERR_INVALID_STATE;
-      }
+  if (!mgr->skip_ping_contest && !mgr->audition_complete) {
+    if (mgr->ping_contest_trigger_time == 0) {
+      /* Not enough peers yet - caller should retry later */
+      log_info(LOG_COMP_SYNC,
+               "sync_start: waiting for %d peers (have %zu)",
+               PING_CONTEST_MIN_PEERS, count_sync_peers(mgr));
+      return ECHO_ERR_INVALID_STATE;
+    }
 
-      /* Countdown complete - send pings and enter PING_CONTEST mode */
-      log_info(LOG_COMP_SYNC, "Starting ping contest with %zu peers",
-               mgr->peer_count);
+    uint64_t wait_elapsed = now - mgr->ping_contest_trigger_time;
+    if (wait_elapsed < PING_CONTEST_WAIT_MS) {
+      /* Still in countdown - caller should retry */
+      return ECHO_ERR_INVALID_STATE;
+    }
 
-      mgr->ping_contest_start_time = now;
-      mgr->ping_contest_sent = 0;
-      mgr->ping_contest_responses = 0;
+    /* Countdown complete - send pings and enter PING_CONTEST mode */
+    log_info(LOG_COMP_SYNC, "Starting ping contest with %zu peers",
+             mgr->peer_count);
 
-      /* Send ping to all sync-candidate peers */
-      for (size_t i = 0; i < mgr->peer_count; i++) {
-        peer_sync_state_t *ps = &mgr->peers[i];
-        if (ps->sync_candidate && peer_is_ready(ps->peer)) {
-          if (mgr->callbacks.send_ping) {
-            mgr->callbacks.send_ping(ps->peer, mgr->callbacks.ctx);
-            mgr->ping_contest_sent++;
-          }
+    mgr->ping_contest_start_time = now;
+    mgr->ping_contest_sent = 0;
+    mgr->ping_contest_responses = 0;
+
+    /* Send ping to all sync-candidate peers */
+    for (size_t i = 0; i < mgr->peer_count; i++) {
+      peer_sync_state_t *ps = &mgr->peers[i];
+      if (ps->sync_candidate && peer_is_ready(ps->peer)) {
+        if (mgr->callbacks.send_ping) {
+          mgr->callbacks.send_ping(ps->peer, mgr->callbacks.ctx);
+          mgr->ping_contest_sent++;
         }
       }
+    }
 
-      log_info(LOG_COMP_SYNC, "Sent pings to %zu peers, waiting for responses",
-               mgr->ping_contest_sent);
+    log_info(LOG_COMP_SYNC, "Sent pings to %zu peers, waiting for responses",
+             mgr->ping_contest_sent);
 
-      mgr->mode = SYNC_MODE_PING_CONTEST;
+    mgr->mode = SYNC_MODE_PING_CONTEST;
+  } else {
+    /*
+     * Audition complete or skipped - start in appropriate mode.
+     * Use BLOCKS mode if we already have headers ahead of validated tip.
+     */
+    if (resume_in_blocks_mode) {
+      log_info(LOG_COMP_SYNC,
+               "Starting sync in BLOCKS mode (audition %s, headers=%u, validated=%u)",
+               mgr->audition_complete ? "complete" : "skipped",
+               best_header_height, validated_height);
+      mgr->mode = SYNC_MODE_BLOCKS;
+      mgr->block_sync_start_time = now;
     } else {
-      /* Skip ping contest - go straight to headers mode */
-      log_info(LOG_COMP_SYNC, "Starting headers-first sync (ping contest skipped)");
+      log_info(LOG_COMP_SYNC,
+               "Starting headers-first sync (audition %s)",
+               mgr->audition_complete ? "complete" : "skipped");
       mgr->mode = SYNC_MODE_HEADERS;
     }
   }
@@ -1608,6 +1747,10 @@ echo_result_t sync_handle_block(sync_manager_t *mgr, peer_t *peer,
   ps->blocks_received++;
   mgr->last_progress_time = plat_time_ms();
 
+  /* Record block size for adaptive window calculation */
+  size_t block_size = block_serialize_size(block);
+  size_window_record(mgr, (uint32_t)block_size);
+
   /* IBD profiling: Log download timing for slow blocks or every 1000 blocks */
   if (download_start_time > 0) {
     uint64_t download_ms = now - download_start_time;
@@ -1775,17 +1918,25 @@ static void queue_blocks_from_headers(sync_manager_t *mgr) {
 
   uint32_t tip_height = chainstate_get_height(mgr->chainstate);
 
-  /* Calculate target range (use configured download window) */
+  /*
+   * ADAPTIVE WINDOW: Calculate effective download window based on recent
+   * block sizes. Like difficulty adjustment, this continuously adapts to
+   * actual conditions rather than assuming based on height.
+   */
+  uint32_t effective_window = get_adaptive_window(mgr);
+  uint32_t avg_block_size = size_window_get_average(mgr);
+
+  /* Calculate target range using adaptive window */
   uint32_t start_height = tip_height + 1;
-  uint32_t end_height = tip_height + mgr->download_window;
+  uint32_t end_height = tip_height + effective_window;
   if (end_height > mgr->best_header->height) {
     end_height = mgr->best_header->height;
   }
 
   log_info(LOG_COMP_SYNC,
-           "queue_blocks: tip=%u, start=%u, end=%u, window=%u, best=%u",
-           tip_height, start_height, end_height, mgr->download_window,
-           mgr->best_header->height);
+           "queue_blocks: tip=%u, start=%u, end=%u, window=%u (avg_blk=%uKB), best=%u",
+           tip_height, start_height, end_height, effective_window,
+           avg_block_size / 1024, mgr->best_header->height);
 
   if (start_height > end_height) {
     /* Already fully synced */
@@ -1808,7 +1959,7 @@ static void queue_blocks_from_headers(sync_manager_t *mgr) {
     /* Fast path: query database by height directly */
     uint32_t lookup_failures = 0;
     for (uint32_t h = start_height;
-         h <= end_height && to_queue_count < mgr->download_window; h++) {
+         h <= end_height && to_queue_count < effective_window; h++) {
       hash256_t hash;
       echo_result_t cb_result = mgr->callbacks.get_block_hash_at_height(
           h, &hash, mgr->callbacks.ctx);
@@ -1911,7 +2062,7 @@ static void queue_blocks_from_headers(sync_manager_t *mgr) {
 
     /* Collect blocks to queue (walking backward, we'll reverse later) */
     while (idx && idx->height >= start_height &&
-           to_queue_count < mgr->download_window) {
+           to_queue_count < effective_window) {
       if (!block_queue_contains(mgr->block_queue, &idx->hash)) {
         block_t stored;
         block_init(&stored);
@@ -1950,6 +2101,120 @@ static void queue_blocks_from_headers(sync_manager_t *mgr) {
 }
 
 /**
+ * STAGGERED REDUNDANCY: Request critical zone from ALL peers.
+ *
+ * HYBRID APPROACH: Only the next 4 blocks get 32x redundancy (all peers).
+ * This leaves 12 slots per peer for speculative blocks, giving us:
+ *   - 4 critical blocks × 32 peers = 128 requests (32x redundancy)
+ *   - 32 peers × 12 slots = 384 speculative requests
+ *   - Total pipeline: 4 + 384 = 388 unique blocks
+ *
+ * The stagger means each peer prioritizes a different critical block:
+ *   Peer 0: [0, 1, 2, 3]  ← block 0 is top priority
+ *   Peer 1: [1, 2, 3, 0]  ← block 1 is top priority (wraps)
+ *   Peer 2: [2, 3, 0, 1]  ← block 2 is top priority
+ *   Peer 3: [3, 0, 1, 2]  ← block 3 is top priority
+ *
+ * PARALLEL BLOCK RACING
+ *
+ * Mathematics: If peer latency is exponentially distributed with mean μ,
+ * the MINIMUM of N independent samples has expected value μ/N.
+ *
+ * With 32 peers at 1000ms mean latency: E[min] = 1000/32 ≈ 31ms per block.
+ * Theoretical: 32 blk/s just from order statistics!
+ *
+ * Implementation: Request critical blocks from ALL peers simultaneously.
+ * 4 blocks × 32 peers = 128 parallel races. First response wins.
+ * Leave 12 slots per peer for speculative blocks to maintain pipeline depth.
+ * No rate limiting - we WANT the race. One batched getdata per peer.
+ */
+#define RACING_ZONE_SIZE 4  /* 4 critical blocks race, leaving 12 slots for speculative */
+
+static size_t request_racing_critical_blocks(sync_manager_t *mgr) {
+  uint32_t validated_height = chainstate_get_height(mgr->chainstate);
+  uint32_t next_needed = validated_height + 1;
+
+  /* Collect critical blocks - as many as we can fit in peer slots */
+  hash256_t critical_blocks[RACING_ZONE_SIZE];
+  uint32_t critical_heights[RACING_ZONE_SIZE];
+  size_t critical_count = 0;
+
+  for (uint32_t h = next_needed;
+       h < next_needed + RACING_ZONE_SIZE && critical_count < RACING_ZONE_SIZE;
+       h++) {
+    hash256_t hash;
+    if (block_queue_find_by_height(mgr->block_queue, h, &hash) == ECHO_OK) {
+      critical_blocks[critical_count] = hash;
+      critical_heights[critical_count] = h;
+      critical_count++;
+    }
+  }
+
+  if (critical_count == 0) {
+    return 0;
+  }
+
+  size_t total_requests = 0;
+  size_t peers_used = 0;
+
+  /* Parallel racing: Request ALL critical blocks from EVERY peer */
+  for (size_t peer_idx = 0; peer_idx < mgr->peer_count; peer_idx++) {
+    peer_sync_state_t *ps = &mgr->peers[peer_idx];
+    if (!ps->peer || ps->peer->state != PEER_STATE_READY) {
+      continue;
+    }
+
+    /* Build list of blocks NOT yet in-flight for this peer */
+    hash256_t to_request[RACING_ZONE_SIZE];
+    size_t request_count = 0;
+
+    for (size_t i = 0; i < critical_count; i++) {
+      hash256_t *block_hash = &critical_blocks[i];
+
+      /* Skip if already in-flight for this peer */
+      bool already_inflight = false;
+      for (size_t j = 0; j < ps->blocks_in_flight_count; j++) {
+        if (memcmp(&ps->blocks_in_flight[j], block_hash, sizeof(hash256_t)) == 0) {
+          already_inflight = true;
+          break;
+        }
+      }
+
+      if (!already_inflight && ps->blocks_in_flight_count + request_count < SYNC_MAX_BLOCKS_PER_PEER) {
+        to_request[request_count++] = *block_hash;
+      }
+    }
+
+    /* Send ONE batched getdata with all blocks for this peer */
+    if (request_count > 0 && mgr->callbacks.send_getdata_blocks) {
+      mgr->callbacks.send_getdata_blocks(ps->peer, to_request, request_count,
+                                          mgr->callbacks.ctx);
+
+      /* Track in-flight */
+      uint64_t now = plat_time_ms();
+      for (size_t i = 0; i < request_count; i++) {
+        ps->blocks_in_flight[ps->blocks_in_flight_count] = to_request[i];
+        ps->block_request_time[ps->blocks_in_flight_count] = now;
+        ps->blocks_in_flight_count++;
+      }
+
+      total_requests += request_count;
+      peers_used++;
+    }
+  }
+
+  if (total_requests > 0 && peers_used > 0) {
+    log_info(LOG_COMP_SYNC,
+             "Racing: %zu requests for %zu blocks (%u-%u) across %zu peers",
+             total_requests, critical_count,
+             critical_heights[0], critical_heights[critical_count - 1],
+             peers_used);
+  }
+
+  return total_requests;
+}
+
+/**
  * Request blocks from peers.
  */
 static void request_blocks(sync_manager_t *mgr) {
@@ -1961,91 +2226,13 @@ static void request_blocks(sync_manager_t *mgr) {
   uint32_t validated_height = chainstate_get_height(mgr->chainstate);
 
   /*
-   * CRITICAL PATH OPTIMIZATION: If the next needed block (validated_height+1)
-   * is in-flight and taking >1 second, request it from other peers.
-   * Rate-limited: only send parallel request once per block, and only every 2s.
+   * Parallel Block Racing: Request critical blocks from ALL peers.
+   * Mathematics: E[min of 32 exponentials] = mean/32 ≈ 31ms per block.
+   * 4 blocks × 32 peers = 128 parallel races. First response wins.
+   * Leave 12 slots per peer for speculative blocks to maintain pipeline.
    */
-  uint32_t next_needed = validated_height + 1;
-  hash256_t next_hash;
-  if (block_queue_find_by_height(mgr->block_queue, next_needed, &next_hash) ==
-      ECHO_OK) {
-    uint64_t now = plat_time_ms();
-
-    /* Check if we already sent a parallel request for this block recently.
-     * Rate limit to 500ms between parallel requests (was 2000ms).
-     * Aggressive parallel requesting is critical during IBD to avoid
-     * head-of-line blocking where one slow block stalls the entire pipeline.
-     */
-    bool already_requested =
-        (memcmp(&mgr->last_parallel_request_hash, &next_hash,
-                sizeof(hash256_t)) == 0) &&
-        (now - mgr->last_parallel_request_time < 500);
-
-    if (!already_requested) {
-      /* Find if this block is in-flight and stalling */
-      for (size_t i = 0; i < mgr->peer_count; i++) {
-        peer_sync_state_t *ps = &mgr->peers[i];
-        for (size_t j = 0; j < ps->blocks_in_flight_count; j++) {
-          if (memcmp(&ps->blocks_in_flight[j], &next_hash, sizeof(hash256_t)) ==
-              0) {
-            /* Found it - start parallel requests early (400ms vs old 1000ms)
-             * when network latency is high. Whoever responds first wins.
-             */
-            if (now - ps->block_request_time[j] > 400) {
-              /*
-               * Request from peers with the FEWEST blocks in-flight, so they
-               * can serve the blocking block sooner. Sort by in-flight count.
-               */
-              size_t peer_indices[SYNC_MAX_PEERS];
-              size_t peer_count = 0;
-
-              /* Collect eligible peers */
-              for (size_t k = 0; k < mgr->peer_count; k++) {
-                if (k == i)
-                  continue; /* Skip the original peer */
-                peer_sync_state_t *other = &mgr->peers[k];
-                if (other->peer && other->peer->state == PEER_STATE_READY) {
-                  peer_indices[peer_count++] = k;
-                }
-              }
-
-              /* Simple selection sort by in-flight count (ascending) */
-              for (size_t a = 0; a < peer_count && a < 8; a++) {
-                for (size_t b = a + 1; b < peer_count; b++) {
-                  if (mgr->peers[peer_indices[b]].blocks_in_flight_count <
-                      mgr->peers[peer_indices[a]].blocks_in_flight_count) {
-                    size_t tmp = peer_indices[a];
-                    peer_indices[a] = peer_indices[b];
-                    peer_indices[b] = tmp;
-                  }
-                }
-              }
-
-              /* Request from up to 8 peers with fewest in-flight */
-              size_t extra_requests = 0;
-              for (size_t r = 0; r < peer_count && extra_requests < 8; r++) {
-                peer_sync_state_t *other = &mgr->peers[peer_indices[r]];
-                if (mgr->callbacks.send_getdata_blocks) {
-                  mgr->callbacks.send_getdata_blocks(other->peer, &next_hash,
-                                                     1, mgr->callbacks.ctx);
-                  extra_requests++;
-                }
-              }
-              if (extra_requests > 0) {
-                log_info(LOG_COMP_SYNC,
-                         "Parallel request for blocking block %u to %zu peers",
-                         next_needed, extra_requests);
-                mgr->last_parallel_request_hash = next_hash;
-                mgr->last_parallel_request_time = now;
-              }
-            }
-            goto done_parallel_check;
-          }
-        }
-      }
-    }
-  }
-done_parallel_check:;  /* Empty statement after label */
+  size_t racing_requests = request_racing_critical_blocks(mgr);
+  (void)racing_requests;
 
   /* Log entry state */
   size_t pending = block_queue_pending_count(mgr->block_queue);
@@ -2057,40 +2244,16 @@ done_parallel_check:;  /* Empty statement after label */
   }
 
   /*
-   * Request blocks within the download window of the validated tip.
-   * Window size is configured at sync_create() based on pruning mode.
+   * Request speculative blocks beyond the critical zone.
+   * Window dynamically adjusts based on recent block sizes (like difficulty).
    *
-   * STALL MITIGATION: If the blocking block (next_needed) has been in-flight
-   * for >2 seconds, reduce the download window to prevent saturating all
-   * peers with far-ahead blocks. Focus bandwidth near the tip.
+   * POST-AUDITION PHILOSOPHY: The critical zone (next 16 blocks) is handled by
+   * staggered redundancy above - all 32 peers race for those blocks. Here we
+   * request additional speculative blocks to keep the pipeline full, distributed
+   * across peers normally (one block per peer slot).
    */
-  uint32_t max_request_height = validated_height + mgr->download_window;
-  uint32_t stall_check_height = validated_height + 1;
-  uint64_t now_check = plat_time_ms();
-
-  /* Check if blocking block is stalling */
-  bool is_stalling = false;
-  for (size_t i = 0; i < mgr->peer_count && !is_stalling; i++) {
-    peer_sync_state_t *ps = &mgr->peers[i];
-    for (size_t j = 0; j < ps->blocks_in_flight_count; j++) {
-      hash256_t next_hash;
-      if (block_queue_find_by_height(mgr->block_queue, stall_check_height,
-                                       &next_hash) == ECHO_OK) {
-        if (memcmp(&ps->blocks_in_flight[j], &next_hash, sizeof(hash256_t)) ==
-            0) {
-          if (now_check - ps->block_request_time[j] > 2000) {
-            is_stalling = true;
-            /* Reduce window to 128 blocks when stalling */
-            max_request_height = validated_height + 128;
-            log_debug(LOG_COMP_SYNC,
-                      "Stalling on block %u, reducing download window to 128",
-                      stall_check_height);
-          }
-          break;
-        }
-      }
-    }
-  }
+  uint32_t effective_window = get_adaptive_window(mgr);
+  uint32_t max_request_height = validated_height + effective_window;
 
   /* Request blocks from queue */
   size_t iteration = 0;
@@ -2221,9 +2384,39 @@ void sync_tick(sync_manager_t *mgr) {
         mgr->has_headers_sync_peer = false;
       }
 
-      /* Transition to headers mode */
-      log_info(LOG_COMP_SYNC, "Starting headers-first sync");
-      mgr->mode = SYNC_MODE_HEADERS;
+      /*
+       * AUDITION CULLING: Now that we know everyone's RTT, dismiss the
+       * slow performers and keep only the elite orchestra.
+       */
+      if (mgr->callbacks.cull_slow_peers && !mgr->audition_complete) {
+        size_t target = ECHO_MAX_OUTBOUND_PEERS;
+        log_info(LOG_COMP_SYNC,
+                 "Audition complete - culling to top %zu fastest peers",
+                 target);
+        size_t culled = mgr->callbacks.cull_slow_peers(target, mgr->callbacks.ctx);
+        log_info(LOG_COMP_SYNC,
+                 "Audition: dismissed %zu slow peers, keeping fastest %zu",
+                 culled, target);
+        mgr->audition_complete = true;
+      }
+
+      /*
+       * Transition to next mode: BLOCKS if we already have headers
+       * ahead of validated tip, otherwise HEADERS to fetch headers first.
+       */
+      uint32_t validated_height = chainstate_get_height(mgr->chainstate);
+      uint32_t best_header_height = mgr->best_header ? mgr->best_header->height : 0;
+
+      if (mgr->best_header != NULL && best_header_height > validated_height) {
+        log_info(LOG_COMP_SYNC,
+                 "Audition complete - resuming BLOCKS mode (headers=%u, validated=%u)",
+                 best_header_height, validated_height);
+        mgr->mode = SYNC_MODE_BLOCKS;
+        mgr->block_sync_start_time = plat_time_ms();
+      } else {
+        log_info(LOG_COMP_SYNC, "Audition complete - starting headers-first sync");
+        mgr->mode = SYNC_MODE_HEADERS;
+      }
     }
     break;
   }
@@ -2464,7 +2657,11 @@ void sync_tick(sync_manager_t *mgr) {
       }
     }
 
-    /* Request blocks from peers */
+    /* Parallel Block Racing: Maximum redundancy.
+     * Critical blocks race across all peers simultaneously.
+     * E[min of 32 exponentials] = mean/32 ≈ 31ms per block.
+     * request_racing_critical_blocks() is called inside request_blocks().
+     */
     request_blocks(mgr);
     break;
   }
@@ -2536,6 +2733,10 @@ void sync_skip_ping_contest(sync_manager_t *mgr) {
   if (mgr) {
     mgr->skip_ping_contest = true;
   }
+}
+
+bool sync_is_audition_complete(const sync_manager_t *mgr) {
+  return mgr && mgr->audition_complete;
 }
 
 /* ============================================================================
