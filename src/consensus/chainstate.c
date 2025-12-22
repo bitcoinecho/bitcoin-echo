@@ -407,8 +407,15 @@ chainstate_t *chainstate_create(void) {
   state->tip.height = 0;
   work256_zero(&state->tip.chainwork);
 
-  /* Create UTXO set */
-  state->utxo_set = utxo_set_create(0);
+  /*
+   * Create UTXO set with large initial capacity for IBD performance.
+   *
+   * Bitcoin's UTXO set grows to ~170M entries. Starting with 128M buckets
+   * (1GB for bucket pointers) eliminates expensive hash table resizes
+   * during IBD. Without this, we'd resize ~17 times from 1024 buckets,
+   * each resize rehashing all entries - a massive performance hit.
+   */
+  state->utxo_set = utxo_set_create(128 * 1024 * 1024);
   if (state->utxo_set == NULL) {
     free(state);
     return NULL;
