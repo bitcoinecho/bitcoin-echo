@@ -2613,10 +2613,11 @@ void sync_get_metrics(const sync_manager_t *mgr, sync_metrics_t *metrics) {
   /* Calculate blocks per second using rolling window for accurate real-time rate */
   metrics->blocks_per_second = rate_window_get_rate(mgr);
 
-  /* ETA in seconds */
-  uint64_t eta_ms = sync_estimate_remaining_time(&progress);
-  if (eta_ms != UINT64_MAX) {
-    metrics->eta_seconds = eta_ms / 1000;
+  /* ETA in seconds - use rolling window rate for consistency with displayed speed.
+   * Previously used overall average which was inflated by fast early blocks. */
+  if (metrics->blocks_per_second > 0 && progress.best_header_height > progress.tip_height) {
+    uint32_t remaining = progress.best_header_height - progress.tip_height;
+    metrics->eta_seconds = (uint64_t)(remaining / metrics->blocks_per_second);
   }
 
   /* Network median latency from peer quality system */
