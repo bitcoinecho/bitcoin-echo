@@ -49,16 +49,6 @@ static size_t hex_to_bytes(const char *hex, uint8_t *out, size_t max_len) {
 }
 
 /*
- * Print bytes as hex (debug helper).
- */
-__attribute__((unused)) static void print_hex(const uint8_t *data, size_t len) {
-  size_t i;
-  for (i = 0; i < len; i++) {
-    printf("%02x", data[i]);
-  }
-}
-
-/*
  * Reverse bytes for display (little-endian to big-endian).
  */
 static void reverse_bytes(uint8_t *data, size_t len) {

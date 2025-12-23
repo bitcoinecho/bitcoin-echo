@@ -15,17 +15,6 @@
 
 
 /*
- * Print a byte array as hex.
- */
-static void print_hex(const uint8_t *data, size_t len)
-{
-    size_t i;
-    for (i = 0; i < len; i++) {
-        printf("%02x", data[i]);
-    }
-}
-
-/*
  * Test script type classification.
  */
 static void test_classify(const char *name, const uint8_t *script,
