@@ -262,6 +262,9 @@ void node_config_init(node_config_t *config, const char *data_dir) {
 
   /* Default to full validation mode (not observer) */
   config->observer_mode = false;
+
+  /* Default log level */
+  config->log_level = LOG_LEVEL_INFO;
 }
 
 /*

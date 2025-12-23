@@ -25,6 +25,7 @@
 
 #include "echo_config.h" /* Must be first for network-specific constants */
 #include "block.h"
+#include "log.h"
 #include "block_index_db.h"
 #include "blocks_storage.h"
 #include "chainstate.h"
@@ -57,11 +58,12 @@
  * allows the node to be created with a specific data directory path.
  */
 typedef struct {
-  char data_dir[512];     /* Path to data directory */
-  uint16_t port;          /* P2P port (default: network-specific) */
-  uint16_t rpc_port;      /* RPC port (default: network-specific) */
-  bool observer_mode;     /* If true, skip consensus/storage (Session 9.5) */
+  char data_dir[512];       /* Path to data directory */
+  uint16_t port;            /* P2P port (default: network-specific) */
+  uint16_t rpc_port;        /* RPC port (default: network-specific) */
+  bool observer_mode;       /* If true, skip consensus/storage (Session 9.5) */
   uint64_t prune_target_mb; /* Pruning target in MB (0 = archival/no pruning) */
+  log_level_t log_level;    /* Log verbosity (default: LOG_LEVEL_INFO) */
 } node_config_t;
 
 /**

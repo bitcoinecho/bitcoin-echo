@@ -70,6 +70,8 @@ static void print_usage(const char *program_name) {
       "  --port=<port>       P2P listening port (default: network-specific)\n");
   printf(
       "  --rpcport=<port>    RPC listening port (default: network-specific)\n");
+  printf("  --loglevel=<level>  Log verbosity: error, warn, info, debug\n");
+  printf("                      (default: info)\n");
   printf("\n");
   printf("Network: %s (compile-time)\n", ECHO_NETWORK_NAME);
   printf("\n");
@@ -177,6 +179,21 @@ static int parse_arguments(int argc, char *argv[], node_config_t *config) {
         return -1;
       }
       config->rpc_port = (uint16_t)port;
+    } else if (strncmp(arg, "--loglevel=", 11) == 0) {
+      const char *level = arg + 11;
+      if (strcmp(level, "error") == 0) {
+        config->log_level = LOG_LEVEL_ERROR;
+      } else if (strcmp(level, "warn") == 0) {
+        config->log_level = LOG_LEVEL_WARN;
+      } else if (strcmp(level, "info") == 0) {
+        config->log_level = LOG_LEVEL_INFO;
+      } else if (strcmp(level, "debug") == 0) {
+        config->log_level = LOG_LEVEL_DEBUG;
+      } else {
+        fprintf(stderr, "Error: Unknown log level '%s'\n", level);
+        fprintf(stderr, "Valid levels: error, warn, info, debug\n");
+        return -1;
+      }
     } else {
       fprintf(stderr, "Error: Unknown option: %s\n", arg);
       fprintf(stderr, "Use --help for usage information\n");
@@ -282,11 +299,12 @@ int main(int argc, char *argv[]) {
   }
   printf("Data directory: %s\n", config.data_dir);
   printf("P2P port: %u\n", config.port);
-  printf("RPC port: %u\n\n", config.rpc_port);
+  printf("RPC port: %u\n", config.rpc_port);
+  printf("Log level: %s\n\n", log_level_string(config.log_level));
 
   /* Initialize logging */
   log_init();
-  log_set_level(LOG_LEVEL_INFO);
+  log_set_level(config.log_level);
 
   /* Create node */
   log_info(LOG_COMP_MAIN, "Creating node...");
