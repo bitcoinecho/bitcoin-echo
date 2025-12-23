@@ -150,6 +150,7 @@ static echo_result_t sync_cb_get_block_hash_at_height(uint32_t height,
                                                        hash256_t *hash,
                                                        void *ctx);
 static size_t sync_cb_cull_slow_peers(size_t target_count, void *ctx);
+static void sync_cb_evict_peer(peer_t *peer, const char *reason, void *ctx);
 
 /*
  * ============================================================================
@@ -1858,6 +1859,26 @@ static size_t sync_cb_cull_slow_peers(size_t target_count, void *ctx) {
 }
 
 /**
+ * Evict a peer during continuous rotation.
+ *
+ * Called during IBD when a peer is identified as a poor performer.
+ * Disconnects the peer and relies on the node's connection management
+ * to backfill with a new peer from the address pool.
+ */
+static void sync_cb_evict_peer(peer_t *peer, const char *reason, void *ctx) {
+  node_t *node = (node_t *)ctx;
+  if (node == NULL || peer == NULL) {
+    return;
+  }
+
+  log_info(LOG_COMP_NET, "Evicting peer %s: %s", peer->address,
+           reason ? reason : "poor performance");
+
+  /* Disconnect the peer - node's event loop will clean up and try new peers */
+  peer_disconnect(peer, PEER_DISCONNECT_USER, reason);
+}
+
+/**
  * Get block hash at height from the database.
  *
  * Used for efficient block queueing - avoids walking back through
@@ -1944,6 +1965,7 @@ static echo_result_t node_init_sync(node_t *node) {
       .commit_header_batch = sync_cb_commit_header_batch,
       .flush_headers = NULL,
       .cull_slow_peers = sync_cb_cull_slow_peers,
+      .evict_peer = sync_cb_evict_peer,
       .ctx = node};
 
   /* Create sync manager with appropriate download window for mode */

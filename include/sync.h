@@ -92,6 +92,28 @@
 #define SYNC_STALE_TIP_THRESHOLD_MS (30ULL * 60 * 1000) /* 30 minutes */
 
 /* ============================================================================
+ * Continuous Peer Rotation (Phase 2)
+ * ============================================================================
+ * During IBD, continuously evaluate peer performance and rotate out the
+ * worst performers. This finds hidden gems and discards degraded peers.
+ */
+
+/* Rotation interval - evaluate and rotate peers every 60 seconds */
+#define SYNC_ROTATION_INTERVAL_MS 60000
+
+/* Number of peers to rotate per cycle (bottom 3 performers) */
+#define SYNC_ROTATION_COUNT 3
+
+/* Minimum time before a peer can be evicted (evaluation period) */
+#define SYNC_ROTATION_MIN_EVAL_TIME_MS 60000
+
+/* Minimum blocks a peer must have opportunity to deliver before eviction */
+#define SYNC_ROTATION_MIN_EVAL_BLOCKS 5
+
+/* Minimum peers to keep - never evict below this threshold */
+#define SYNC_ROTATION_MIN_PEERS 16
+
+/* ============================================================================
  * Sync State
  * ============================================================================
  */
@@ -144,6 +166,11 @@ typedef struct {
   uint32_t latency_samples;   /* Number of latency samples collected */
   uint16_t quality_score;     /* 0-1000, higher = better peer */
   uint16_t max_slots;         /* Dynamic slot cap based on quality (4-32) */
+
+  /* Continuous rotation metrics (Phase 2) - windowed for recent performance */
+  uint64_t rotation_eval_start;    /* Start of current evaluation window (ms) */
+  uint32_t rotation_blocks_recv;   /* Blocks received in current window */
+  uint32_t rotation_blocks_req;    /* Blocks requested in current window */
 } peer_sync_state_t;
 
 /**
@@ -351,6 +378,20 @@ typedef struct {
    *   Number of peers actually culled
    */
   size_t (*cull_slow_peers)(size_t target_count, void *ctx);
+
+  /**
+   * Evict a peer during continuous rotation.
+   *
+   * Called during IBD when a peer is identified as a poor performer.
+   * The implementation should disconnect the peer and optionally
+   * trigger connection to a new peer from the address pool.
+   *
+   * Parameters:
+   *   peer   - Peer to evict
+   *   reason - Human-readable reason for eviction (for logging)
+   *   ctx    - User context
+   */
+  void (*evict_peer)(peer_t *peer, const char *reason, void *ctx);
 
   /* Context pointer passed to all callbacks */
   void *ctx;

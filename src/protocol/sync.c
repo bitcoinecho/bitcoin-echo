@@ -30,6 +30,7 @@
 #include "platform.h"
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -184,6 +185,19 @@ struct sync_manager {
   pending_header_t *pending_headers;      /* Dynamic array of pending headers */
   size_t pending_headers_count;           /* Number of queued headers */
   size_t pending_headers_capacity;        /* Allocated capacity */
+
+  /*
+   * CONTINUOUS PEER ROTATION (Phase 2)
+   *
+   * Every 60 seconds during IBD, evaluate peer performance and rotate
+   * out the worst performers. This finds hidden gems among peers that
+   * may have been slow initially but improved, and discards peers that
+   * degraded after initial assessment.
+   */
+  uint64_t last_rotation_time;            /* Last time we rotated peers (ms) */
+  uint32_t rotation_cycle_count;          /* Number of rotation cycles completed */
+  uint32_t peers_evicted_total;           /* Total peers evicted via rotation */
+  uint32_t peers_replaced_total;          /* Total replacement peers connected */
 };
 
 /* ============================================================================
@@ -976,6 +990,239 @@ static void update_peer_quality(sync_manager_t *mgr) {
             (unsigned long)mgr->network_median_latency_ms, latency_count);
 }
 
+/* ============================================================================
+ * Continuous Peer Rotation (Phase 2)
+ * ============================================================================
+ *
+ * Every 60 seconds during IBD, evaluate recent peer performance and rotate
+ * out the worst performers. This complements the initial ping contest with
+ * ongoing assessment during actual block delivery.
+ *
+ * Key insight: A peer's RTT during ping contest doesn't guarantee good
+ * block delivery. Network conditions change, peers get congested, etc.
+ * Continuous rotation finds hidden gems and discards degraded peers.
+ */
+
+/**
+ * Calculate delivery rate for a peer in the current rotation window.
+ *
+ * @param ps   Peer sync state
+ * @param now  Current timestamp (ms)
+ * @return     Delivery rate (blocks per minute), 0 if insufficient data
+ */
+static float calculate_delivery_rate(const peer_sync_state_t *ps, uint64_t now) {
+  /* Need evaluation window to have started */
+  if (ps->rotation_eval_start == 0) {
+    return 0.0f;
+  }
+
+  uint64_t elapsed_ms = now - ps->rotation_eval_start;
+  if (elapsed_ms < 10000) { /* Need at least 10 seconds */
+    return 0.0f;
+  }
+
+  /* Rate = blocks delivered per minute */
+  float minutes = (float)elapsed_ms / 60000.0f;
+  if (minutes < 0.001f) {
+    return 0.0f;
+  }
+
+  return (float)ps->rotation_blocks_recv / minutes;
+}
+
+/**
+ * Structure for sorting peers by performance (worst first).
+ */
+typedef struct {
+  size_t idx;           /* Index in mgr->peers[] */
+  float delivery_rate;  /* Blocks per minute */
+  uint32_t timeouts;    /* Timeout count in window */
+  bool eligible;        /* Eligible for eviction */
+} rotation_candidate_t;
+
+/**
+ * Compare rotation candidates - worst performers sort first.
+ * Criteria: lowest delivery rate, then highest timeout count.
+ */
+static int compare_rotation_candidates(const void *a, const void *b) {
+  const rotation_candidate_t *ca = (const rotation_candidate_t *)a;
+  const rotation_candidate_t *cb = (const rotation_candidate_t *)b;
+
+  /* Non-eligible peers go to the end (we don't evict them) */
+  if (!ca->eligible && cb->eligible) return 1;
+  if (ca->eligible && !cb->eligible) return -1;
+  if (!ca->eligible && !cb->eligible) return 0;
+
+  /* Lowest delivery rate = worst = sorts first */
+  if (ca->delivery_rate < cb->delivery_rate) return -1;
+  if (ca->delivery_rate > cb->delivery_rate) return 1;
+
+  /* Tiebreaker: highest timeout count = worst */
+  if (ca->timeouts > cb->timeouts) return -1;
+  if (ca->timeouts < cb->timeouts) return 1;
+
+  return 0;
+}
+
+/**
+ * Rotate peers during IBD - evict worst performers and try new ones.
+ *
+ * Called every SYNC_ROTATION_INTERVAL_MS (60s) during SYNC_MODE_BLOCKS.
+ * Identifies the bottom SYNC_ROTATION_COUNT (3) performers and evicts them,
+ * allowing the node to try fresh peers from the address pool.
+ *
+ * @param mgr  Sync manager
+ */
+static void sync_rotate_peers(sync_manager_t *mgr) {
+  uint64_t now = plat_time_ms();
+
+  /* Rate limit: only rotate every SYNC_ROTATION_INTERVAL_MS */
+  if (now - mgr->last_rotation_time < SYNC_ROTATION_INTERVAL_MS) {
+    return;
+  }
+
+  /* Only rotate during block sync (not headers, not done) */
+  if (mgr->mode != SYNC_MODE_BLOCKS) {
+    return;
+  }
+
+  /* Need evict callback to actually evict peers */
+  if (!mgr->callbacks.evict_peer) {
+    return;
+  }
+
+  mgr->last_rotation_time = now;
+  mgr->rotation_cycle_count++;
+
+  log_info(LOG_COMP_SYNC, "Peer rotation cycle %u starting (evaluating %zu peers)",
+           mgr->rotation_cycle_count, mgr->peer_count);
+
+  /* Build candidate list with performance metrics */
+  rotation_candidate_t candidates[SYNC_MAX_PEERS];
+  size_t candidate_count = 0;
+
+  for (size_t i = 0; i < mgr->peer_count; i++) {
+    peer_sync_state_t *ps = &mgr->peers[i];
+
+    /* Skip peers that aren't ready or aren't sync candidates */
+    if (!ps->sync_candidate || !peer_is_ready(ps->peer)) {
+      continue;
+    }
+
+    rotation_candidate_t *c = &candidates[candidate_count++];
+    c->idx = i;
+    c->delivery_rate = calculate_delivery_rate(ps, now);
+    c->timeouts = ps->timeout_count;
+
+    /* Eligibility check: peer must have had fair evaluation period */
+    uint64_t eval_time = now - ps->rotation_eval_start;
+    bool had_time = (ps->rotation_eval_start > 0) &&
+                    (eval_time >= SYNC_ROTATION_MIN_EVAL_TIME_MS);
+    bool had_opportunity = ps->rotation_blocks_req >= SYNC_ROTATION_MIN_EVAL_BLOCKS;
+
+    c->eligible = had_time && had_opportunity;
+
+    log_debug(LOG_COMP_SYNC,
+              "Rotation candidate: %s rate=%.1f blk/min timeouts=%u eligible=%s "
+              "(eval_time=%llums blocks_req=%u blocks_recv=%u)",
+              ps->peer->address, c->delivery_rate, c->timeouts,
+              c->eligible ? "yes" : "no",
+              (unsigned long long)eval_time,
+              ps->rotation_blocks_req, ps->rotation_blocks_recv);
+  }
+
+  /* Need enough candidates to rotate */
+  if (candidate_count < SYNC_ROTATION_COUNT + 2) {
+    log_info(LOG_COMP_SYNC, "Rotation: too few candidates (%zu), skipping",
+             candidate_count);
+    /* Reset windows for next cycle anyway */
+    goto reset_windows;
+  }
+
+  /* Don't evict below minimum peer threshold */
+  size_t active_peers = candidate_count;
+  size_t max_evictions = 0;
+  if (active_peers > SYNC_ROTATION_MIN_PEERS) {
+    max_evictions = active_peers - SYNC_ROTATION_MIN_PEERS;
+    if (max_evictions > SYNC_ROTATION_COUNT) {
+      max_evictions = SYNC_ROTATION_COUNT;
+    }
+  }
+  if (max_evictions == 0) {
+    log_info(LOG_COMP_SYNC,
+             "Rotation: at minimum peer threshold (%zu peers), skipping eviction",
+             active_peers);
+    goto reset_windows;
+  }
+
+  /* Sort by performance (worst first) */
+  qsort(candidates, candidate_count, sizeof(rotation_candidate_t),
+        compare_rotation_candidates);
+
+  /* Evict the worst performers (up to max_evictions) */
+  size_t evicted = 0;
+  for (size_t i = 0; i < candidate_count && evicted < max_evictions; i++) {
+    rotation_candidate_t *c = &candidates[i];
+
+    if (!c->eligible) {
+      continue; /* Skip peers that haven't had fair evaluation */
+    }
+
+    peer_sync_state_t *ps = &mgr->peers[c->idx];
+
+    /* Don't evict if peer is currently serving blocks we need urgently */
+    if (ps->blocks_in_flight_count > 0) {
+      /* Check if any in-flight blocks are critical (within 8 of validated tip) */
+      uint32_t validated_height = chainstate_get_height(mgr->chainstate);
+      block_index_map_t *index_map = chainstate_get_block_index_map(mgr->chainstate);
+      bool has_critical = false;
+      for (size_t j = 0; j < ps->blocks_in_flight_count; j++) {
+        block_index_t *idx = block_index_map_lookup(
+            index_map, &ps->blocks_in_flight[j]);
+        if (idx && idx->height <= validated_height + 8) {
+          has_critical = true;
+          break;
+        }
+      }
+      if (has_critical) {
+        log_debug(LOG_COMP_SYNC,
+                  "Rotation: skipping %s (has critical blocks in flight)",
+                  ps->peer->address);
+        continue;
+      }
+    }
+
+    /* Build eviction reason string */
+    char reason[128];
+    snprintf(reason, sizeof(reason),
+             "Poor IBD performance (rate=%.1f blk/min, timeouts=%u)",
+             c->delivery_rate, c->timeouts);
+
+    log_info(LOG_COMP_SYNC, "Rotation: evicting %s - %s",
+             ps->peer->address, reason);
+
+    /* Request eviction via callback */
+    mgr->callbacks.evict_peer(ps->peer, reason, mgr->callbacks.ctx);
+    mgr->peers_evicted_total++;
+    evicted++;
+  }
+
+  log_info(LOG_COMP_SYNC,
+           "Rotation cycle %u complete: evicted %zu peers "
+           "(total evicted: %u, total replaced: %u)",
+           mgr->rotation_cycle_count, evicted,
+           mgr->peers_evicted_total, mgr->peers_replaced_total);
+
+reset_windows:
+  /* Reset windowed metrics for all peers for next evaluation cycle */
+  for (size_t i = 0; i < mgr->peer_count; i++) {
+    peer_sync_state_t *ps = &mgr->peers[i];
+    ps->rotation_eval_start = now;
+    ps->rotation_blocks_recv = 0;
+    ps->rotation_blocks_req = 0;
+  }
+}
+
 /**
  * Select or validate the designated headers sync peer.
  *
@@ -1182,6 +1429,9 @@ void sync_add_peer(sync_manager_t *mgr, peer_t *peer, int32_t height) {
   memset(ps, 0, sizeof(peer_sync_state_t));
   ps->peer = peer;
   ps->start_height = height;
+
+  /* Initialize rotation evaluation window (Phase 2 continuous rotation) */
+  ps->rotation_eval_start = plat_time_ms();
 
   /* Peer is sync candidate if they have blocks we need */
   uint32_t our_height = chainstate_get_height(mgr->chainstate);
@@ -1745,6 +1995,7 @@ echo_result_t sync_handle_block(sync_manager_t *mgr, peer_t *peer,
 
   mgr->blocks_received_total++;
   ps->blocks_received++;
+  ps->rotation_blocks_recv++;  /* Track for continuous rotation (Phase 2) */
   mgr->last_progress_time = plat_time_ms();
 
   /* Record block size for adaptive window calculation */
@@ -2197,6 +2448,7 @@ static size_t request_racing_critical_blocks(sync_manager_t *mgr) {
         ps->block_request_time[ps->blocks_in_flight_count] = now;
         ps->blocks_in_flight_count++;
       }
+      ps->rotation_blocks_req += request_count;  /* Track for continuous rotation (Phase 2) */
 
       total_requests += request_count;
       peers_used++;
@@ -2308,6 +2560,7 @@ static void request_blocks(sync_manager_t *mgr) {
       ps->blocks_in_flight[ps->blocks_in_flight_count] = hash;
       ps->block_request_time[ps->blocks_in_flight_count] = plat_time_ms();
       ps->blocks_in_flight_count++;
+      ps->rotation_blocks_req++;  /* Track for continuous rotation (Phase 2) */
     }
 
     /* Collect for batched getdata */
@@ -2466,6 +2719,9 @@ void sync_tick(sync_manager_t *mgr) {
 
     /* Update peer quality scores periodically (every 5 seconds) */
     update_peer_quality(mgr);
+
+    /* Continuous peer rotation (Phase 2): evict worst performers every 60s */
+    sync_rotate_peers(mgr);
 
     /* IBD profiling: Rate-limited progress log every 30 seconds */
     if (now - mgr->last_progress_log_time >= 30000) {
