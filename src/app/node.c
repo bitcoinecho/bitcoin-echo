@@ -453,6 +453,9 @@ static echo_result_t node_init_databases(node_t *node) {
   }
   node->block_index_db_open = true;
 
+  /* Enable IBD mode for block index DB too (synchronous=OFF for speed) */
+  db_set_ibd_mode(&node->block_index_db.db, true);
+
   /* Initialize block file storage */
   result = block_storage_init(&node->block_storage, node->config.data_dir);
   if (result != ECHO_OK) {
@@ -3077,12 +3080,15 @@ echo_result_t node_maintenance(node_t *node) {
                "IBD complete! Transitioning to normal operation. "
                "Mempool and transaction relay now active.");
 
-      /* Switch UTXO database to normal mode (sync writes for safety) */
+      /* Switch databases to normal mode (sync writes for safety) */
       if (node->utxo_db_open) {
         db_set_ibd_mode(&node->utxo_db.db, false);
-        log_info(LOG_COMP_SYNC,
-                 "Database mode switched to NORMAL (synchronous writes)");
       }
+      if (node->block_index_db_open) {
+        db_set_ibd_mode(&node->block_index_db.db, false);
+      }
+      log_info(LOG_COMP_SYNC,
+               "Databases switched to NORMAL mode (synchronous writes)");
     }
   }
 
