@@ -52,17 +52,11 @@
 /* Timeout for getheaders response (30 seconds) */
 #define SYNC_HEADERS_TIMEOUT_MS 30000
 
-/* Initial block stalling timeout (5 seconds)
- * Bitcoin Core uses 2s, but that's too aggressive for IBD where blocks
- * get larger. 5s gives peers more time to deliver while still catching
- * truly unresponsive nodes.
- */
-#define SYNC_BLOCK_STALLING_TIMEOUT_MS 5000
+/* Initial block stalling timeout (2 seconds) - matches Bitcoin Core */
+#define SYNC_BLOCK_STALLING_TIMEOUT_MS 2000
 
-/* Maximum block stalling timeout (16 seconds - more aggressive than Bitcoin Core's 64s)
- * Lower timeout = faster recovery from slow/unresponsive peers during IBD.
- */
-#define SYNC_BLOCK_STALLING_TIMEOUT_MAX_MS 16000
+/* Maximum block stalling timeout (64 seconds) - matches Bitcoin Core */
+#define SYNC_BLOCK_STALLING_TIMEOUT_MAX_MS 64000
 
 /* Timeout decay factor when blocks connect successfully (0.85) */
 #define SYNC_STALLING_TIMEOUT_DECAY 0.85
@@ -123,9 +117,13 @@ typedef struct {
   hash256_t last_header_hash; /* Last header hash we sent getheaders for */
   uint32_t headers_received;  /* Number of headers received from this peer */
 
-  /* Block download state */
-  hash256_t blocks_in_flight[SYNC_MAX_BLOCKS_PER_PEER];  /* Pending blocks */
-  uint64_t block_request_time[SYNC_MAX_BLOCKS_PER_PEER]; /* When requested */
+  /* Block download state.
+   * Arrays sized for normal limit + 4 extra slots for critical blocks.
+   * The sync manager may exceed SYNC_MAX_BLOCKS_PER_PEER for the next
+   * needed block (validated_tip + 1) to prevent validation stalls.
+   */
+  hash256_t blocks_in_flight[SYNC_MAX_BLOCKS_PER_PEER + 4];  /* Pending blocks */
+  uint64_t block_request_time[SYNC_MAX_BLOCKS_PER_PEER + 4]; /* When requested */
   size_t blocks_in_flight_count;
   uint32_t blocks_received; /* Number of blocks received from this peer */
 

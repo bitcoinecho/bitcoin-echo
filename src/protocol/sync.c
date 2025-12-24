@@ -660,6 +660,25 @@ bool block_queue_contains(const block_queue_t *queue, const hash256_t *hash) {
   return false;
 }
 
+/**
+ * Check if a block at a given height is pending (in queue but not in-flight).
+ * Returns true if the block is pending and needs to be requested.
+ */
+static bool block_queue_is_pending_at_height(const block_queue_t *queue,
+                                             uint32_t height) {
+  if (!queue) {
+    return false;
+  }
+
+  for (size_t i = 0; i < queue->capacity; i++) {
+    if (queue->entries[i].valid && queue->entries[i].height == height) {
+      /* Block found - is it pending (not in-flight)? */
+      return !queue->entries[i].in_flight;
+    }
+  }
+  return false;
+}
+
 /* ============================================================================
  * Block Locator
  * ============================================================================
@@ -920,6 +939,69 @@ static size_t count_sync_peers(const sync_manager_t *mgr) {
     }
   }
   return count;
+}
+
+/**
+ * Force-request a critical block, bypassing capacity limits.
+ *
+ * Core-style: The next needed block is critical for validation progress.
+ * If all peers are at capacity, we MUST still request it from someone.
+ * Request from the peer with fewest in-flight blocks (lowest additional load).
+ *
+ * Returns true if the block was successfully requested.
+ */
+static bool force_request_critical_block(sync_manager_t *mgr,
+                                         const hash256_t *hash,
+                                         uint32_t height) {
+  if (!mgr || !hash) {
+    return false;
+  }
+
+  /* Find ANY sync candidate peer, prefer one with fewer in-flight blocks */
+  peer_sync_state_t *best = NULL;
+  size_t best_inflight = SIZE_MAX;
+
+  for (size_t i = 0; i < mgr->peer_count; i++) {
+    peer_sync_state_t *ps = &mgr->peers[i];
+    if (ps->sync_candidate && peer_is_ready(ps->peer)) {
+      /* Allow exceeding capacity by 1 for critical blocks */
+      if (ps->blocks_in_flight_count < SYNC_MAX_BLOCKS_PER_PEER + 1) {
+        if (ps->blocks_in_flight_count < best_inflight) {
+          best_inflight = ps->blocks_in_flight_count;
+          best = ps;
+        }
+      }
+    }
+  }
+
+  if (!best) {
+    log_warn(LOG_COMP_SYNC,
+             "force_request_critical_block: no available peer for height %u",
+             height);
+    return false;
+  }
+
+  /* Assign block to peer */
+  block_queue_assign(mgr->block_queue, hash, best->peer);
+
+  /* Add to peer's in-flight list (may exceed normal limit) */
+  if (best->blocks_in_flight_count < SYNC_MAX_BLOCKS_PER_PEER + 4) {
+    best->blocks_in_flight[best->blocks_in_flight_count] = *hash;
+    best->block_request_time[best->blocks_in_flight_count] = plat_time_ms();
+    best->blocks_in_flight_count++;
+  }
+
+  /* Send immediate getdata request */
+  if (mgr->callbacks.send_getdata_blocks) {
+    hash256_t blocks[1] = {*hash};
+    mgr->callbacks.send_getdata_blocks(best->peer, blocks, 1, mgr->callbacks.ctx);
+  }
+
+  log_info(LOG_COMP_SYNC,
+           "Force-requested critical block %u from peer %s (now %zu in-flight)",
+           height, best->peer->address, best->blocks_in_flight_count);
+
+  return true;
 }
 
 sync_manager_t *sync_create(chainstate_t *chainstate,
@@ -1646,6 +1728,85 @@ void sync_process_timeouts(sync_manager_t *mgr) {
     }
   }
 
+  /*
+   * CORE-STYLE NEXT-BLOCK STALL DETECTION
+   *
+   * The most critical block is the NEXT NEEDED block (validated_tip + 1).
+   * If this block is stalled or not requested, validation cannot progress
+   * regardless of how many other blocks we download.
+   *
+   * Core uses aggressive 2-second timeout specifically for this block and
+   * ensures it's always being requested from SOME peer.
+   *
+   * Handle three cases:
+   * 1. Block in-flight and stalled -> unassign and re-request
+   * 2. Block pending (not requested) -> force-request immediately
+   * 3. Block not in queue -> log warning (should not happen during IBD)
+   */
+  if (mgr->mode == SYNC_MODE_BLOCKS && mgr->chainstate) {
+    uint32_t next_needed_height = chainstate_get_height(mgr->chainstate) + 1;
+    hash256_t next_needed_hash;
+    bool found_in_flight = false;
+
+    /* Find the hash of the next needed block */
+    if (block_queue_find_by_height(mgr->block_queue, next_needed_height,
+                                   &next_needed_hash) == ECHO_OK) {
+      /* Check if this block is in-flight with any peer */
+      for (size_t i = 0; i < mgr->peer_count && !found_in_flight; i++) {
+        peer_sync_state_t *ps = &mgr->peers[i];
+        for (size_t j = 0; j < ps->blocks_in_flight_count; j++) {
+          if (memcmp(&ps->blocks_in_flight[j], &next_needed_hash,
+                     sizeof(hash256_t)) == 0) {
+            found_in_flight = true;
+            /* Found it - check if stalled (use base 2s timeout, not adaptive) */
+            uint64_t elapsed = now - ps->block_request_time[j];
+            if (elapsed > SYNC_BLOCK_STALLING_TIMEOUT_MS) {
+              log_info(LOG_COMP_SYNC,
+                       "Next needed block %u stalled for %llums - re-requesting",
+                       next_needed_height, (unsigned long long)elapsed);
+
+              /* Unassign from this peer so it gets re-requested */
+              block_queue_unassign(mgr->block_queue, &next_needed_hash);
+
+              /* Remove from peer's in-flight list */
+              for (size_t k = j; k < ps->blocks_in_flight_count - 1; k++) {
+                ps->blocks_in_flight[k] = ps->blocks_in_flight[k + 1];
+                ps->block_request_time[k] = ps->block_request_time[k + 1];
+              }
+              ps->blocks_in_flight_count--;
+
+              /* Track starvation time for metrics */
+              mgr->total_starvation_ms += elapsed;
+              mgr->blocks_starved++;
+
+              /* Force immediate re-request, bypassing capacity limits */
+              force_request_critical_block(mgr, &next_needed_hash, next_needed_height);
+            }
+            break;
+          }
+        }
+      }
+
+      /*
+       * CASE 2: Block is PENDING (in queue but not in-flight).
+       *
+       * This is the critical bug fix: if the next needed block is in the queue
+       * but no peer has requested it yet, we're blocked waiting for something
+       * that will never arrive. Force-request it now, bypassing capacity limits!
+       */
+      if (!found_in_flight &&
+          block_queue_is_pending_at_height(mgr->block_queue, next_needed_height)) {
+        log_info(LOG_COMP_SYNC,
+                 "Next needed block %u is PENDING but not in-flight - forcing request",
+                 next_needed_height);
+        mgr->blocks_starved++;
+
+        /* Force request, bypassing peer capacity limits */
+        force_request_critical_block(mgr, &next_needed_hash, next_needed_height);
+      }
+    }
+  }
+
   /* Process header timeouts */
   for (size_t i = 0; i < mgr->peer_count; i++) {
     peer_sync_state_t *ps = &mgr->peers[i];
@@ -1694,26 +1855,28 @@ void sync_process_timeouts(sync_manager_t *mgr) {
     if (stalled_this_tick > 0) {
       ps->timeout_count++;
 
-      /* Core-style adaptive timeout: double on stall (slower tolerance) */
-      uint64_t doubled = mgr->stalling_timeout_ms * 2;
-      if (doubled > SYNC_BLOCK_STALLING_TIMEOUT_MAX_MS) {
-        doubled = SYNC_BLOCK_STALLING_TIMEOUT_MAX_MS;
-      }
-      mgr->stalling_timeout_ms = doubled;
+      log_debug(LOG_COMP_SYNC,
+               "Peer stall: %zu blocks timed out (stall events: %u)",
+               stalled_this_tick, ps->timeout_count);
 
-      log_info(LOG_COMP_SYNC,
-               "Peer stall: %zu blocks timed out (stall events: %u, new timeout: %llums)",
-               stalled_this_tick, ps->timeout_count,
-               (unsigned long long)mgr->stalling_timeout_ms);
-
-      /* After 6 stall EVENTS (not blocks), disconnect slow peer.
-       * More tolerant than before (was 3) to maintain stable peer count.
-       * Combined with 5s timeout, gives peers 30s+ before disconnect.
+      /* After 3 stall events, disconnect slow peer.
+       * Core-style: only double the global timeout when we DISCONNECT,
+       * not on every stall event. This prevents timeout death spiral.
        */
-      if (ps->timeout_count >= 6 && ps->peer) {
+      if (ps->timeout_count >= 3 && ps->peer) {
         log_info(LOG_COMP_SYNC,
                  "Disconnecting slow peer after %u stall events",
                  ps->timeout_count);
+
+        /* Core-style: double timeout only when disconnecting a peer */
+        uint64_t doubled = mgr->stalling_timeout_ms * 2;
+        if (doubled > SYNC_BLOCK_STALLING_TIMEOUT_MAX_MS) {
+          doubled = SYNC_BLOCK_STALLING_TIMEOUT_MAX_MS;
+        }
+        mgr->stalling_timeout_ms = doubled;
+        log_info(LOG_COMP_SYNC, "Global timeout now %llums",
+                 (unsigned long long)mgr->stalling_timeout_ms);
+
         peer_disconnect(ps->peer, PEER_DISCONNECT_MISBEHAVING,
                         "Too many block stalls during IBD");
         continue;

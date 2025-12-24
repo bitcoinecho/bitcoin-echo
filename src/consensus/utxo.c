@@ -120,7 +120,8 @@ utxo_entry_t *utxo_entry_create(const outpoint_t *outpoint, int64_t value,
                                 const uint8_t *script_pubkey, size_t script_len,
                                 uint32_t height, bool is_coinbase) {
   ECHO_ASSERT(outpoint != NULL);
-  ECHO_ASSERT(script_pubkey != NULL);
+  /* script_pubkey can be NULL if script_len == 0 (e.g., OP_RETURN outputs) */
+  ECHO_ASSERT(script_pubkey != NULL || script_len == 0);
   ECHO_ASSERT(value >= 0);
 
   utxo_entry_t *entry = malloc(sizeof(utxo_entry_t));
@@ -134,13 +135,17 @@ utxo_entry_t *utxo_entry_create(const outpoint_t *outpoint, int64_t value,
   entry->height = height;
   entry->is_coinbase = is_coinbase;
 
-  /* Allocate and copy scriptPubKey */
-  entry->script_pubkey = malloc(script_len);
-  if (entry->script_pubkey == NULL) {
-    free(entry);
-    return NULL;
+  /* Allocate and copy scriptPubKey (NULL for empty scripts) */
+  if (script_len > 0) {
+    entry->script_pubkey = malloc(script_len);
+    if (entry->script_pubkey == NULL) {
+      free(entry);
+      return NULL;
+    }
+    memcpy(entry->script_pubkey, script_pubkey, script_len);
+  } else {
+    entry->script_pubkey = NULL;
   }
-  memcpy(entry->script_pubkey, script_pubkey, script_len);
 
   return entry;
 }

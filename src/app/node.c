@@ -1649,23 +1649,24 @@ static echo_result_t sync_cb_validate_and_apply_block(const block_t *block,
     }
   }
 
-  /* Step 5: Announce valid block to peers */
-  /* Send INV to all connected peers except the sender */
-  for (size_t i = 0; i < NODE_MAX_PEERS; i++) {
-    peer_t *peer = &node->peers[i];
-    if (peer_is_ready(peer)) {
-      /* Build and send INV message */
-      inv_vector_t inv_vec;
-      inv_vec.type = INV_BLOCK;
-      inv_vec.hash = block_hash;
+  /* Step 5: Announce valid block to peers (skip during IBD - Core behavior) */
+  if (!node->ibd_mode) {
+    for (size_t i = 0; i < NODE_MAX_PEERS; i++) {
+      peer_t *peer = &node->peers[i];
+      if (peer_is_ready(peer)) {
+        /* Build and send INV message */
+        inv_vector_t inv_vec;
+        inv_vec.type = INV_BLOCK;
+        inv_vec.hash = block_hash;
 
-      msg_t inv_msg;
-      memset(&inv_msg, 0, sizeof(inv_msg));
-      inv_msg.type = MSG_INV;
-      inv_msg.payload.inv.count = 1;
-      inv_msg.payload.inv.inventory = &inv_vec;
+        msg_t inv_msg;
+        memset(&inv_msg, 0, sizeof(inv_msg));
+        inv_msg.type = MSG_INV;
+        inv_msg.payload.inv.count = 1;
+        inv_msg.payload.inv.inventory = &inv_vec;
 
-      peer_queue_message(peer, &inv_msg);
+        peer_queue_message(peer, &inv_msg);
+      }
     }
   }
 
@@ -3321,61 +3322,18 @@ echo_result_t node_apply_block(node_t *node, const block_t *block) {
   }
 
   /*
-   * Step 2: Store block in block files.
-   */
-  if (node->block_storage_init) {
-    /* Serialize block to bytes */
-    size_t block_size = block_serialize_size(block);
-    uint8_t *block_data = malloc(block_size);
-    if (block_data != NULL) {
-      size_t written;
-      result = block_serialize(block, block_data, block_size, &written);
-      if (result == ECHO_OK) {
-        block_file_pos_t pos;
-        result = block_storage_write(&node->block_storage, block_data,
-                                     (uint32_t)written, &pos);
-        if (result != ECHO_OK) {
-          log_error(LOG_COMP_STORE, "Failed to write block to storage: %d",
-                    result);
-          /* Continue anyway - block is in consensus engine */
-        } else {
-          log_debug(LOG_COMP_STORE, "Block stored at file %u offset %u",
-                    pos.file_index, pos.file_offset);
-        }
-      }
-      free(block_data);
-    }
-  }
-
-  /*
-   * Step 3: Update block index database.
+   * Step 2: Update block index status (block already stored by sync_cb_store_block).
+   * Just update the validation status flags - no duplicate storage.
    */
   if (node->block_index_db_open) {
-    /* Get chainwork from consensus engine's block index */
-    const block_index_t *block_idx =
-        consensus_lookup_block_index(node->consensus, &block_hash);
-    work256_t chainwork;
-    if (block_idx != NULL) {
-      chainwork = block_idx->chainwork;
-    } else {
-      work256_zero(&chainwork);
-    }
-
-    block_index_entry_t entry = {
-        .hash = block_hash,
-        .height = height,
-        .header = block->header,
-        .chainwork = chainwork,
-        .status = BLOCK_STATUS_VALID_HEADER | BLOCK_STATUS_VALID_TREE |
-                  BLOCK_STATUS_VALID_SCRIPTS | BLOCK_STATUS_VALID_CHAIN |
-                  BLOCK_STATUS_HAVE_DATA,
-        .data_file = -1,
-        .data_pos = 0};
-
-    result = block_index_db_insert(&node->block_index_db, &entry);
-    if (result != ECHO_OK && result != ECHO_ERR_EXISTS) {
-      log_error(LOG_COMP_DB, "Failed to insert block index: %d", result);
-      /* Continue anyway */
+    uint32_t new_status = BLOCK_STATUS_VALID_HEADER | BLOCK_STATUS_VALID_TREE |
+                          BLOCK_STATUS_VALID_SCRIPTS | BLOCK_STATUS_VALID_CHAIN |
+                          BLOCK_STATUS_HAVE_DATA;
+    result = block_index_db_update_status(&node->block_index_db, &block_hash,
+                                          new_status);
+    if (result != ECHO_OK && result != ECHO_ERR_NOT_FOUND) {
+      log_debug(LOG_COMP_DB, "Failed to update block status: %d", result);
+      /* Continue anyway - block is validated in memory */
     }
   }
 
