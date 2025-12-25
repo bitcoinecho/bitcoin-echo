@@ -148,6 +148,7 @@ static peer_t *create_test_peer(const char *address, uint16_t port,
   peer->start_height = height;
   peer->state = PEER_STATE_READY;
   peer->relay = ECHO_TRUE;
+  peer->services = SERVICE_NODE_NETWORK; /* Required for sync_candidate */
   return peer;
 }
 
