@@ -2668,21 +2668,39 @@ static void node_handle_peer_message(node_t *node, peer_t *peer,
     /* Verack handled during handshake in peer.c */
     /* When handshake complete, add peer to sync manager */
     if (peer_is_ready(peer)) {
-      /* Add peer to sync manager. Pruned peers will be marked as
-       * non-sync-candidates in sync_add_peer() based on SERVICE_NODE_NETWORK.
-       * We keep them connected for address discovery and tx relay. */
-      if (node->sync_mgr != NULL) {
-        sync_add_peer(node->sync_mgr, peer, peer->start_height);
-      }
-
-      /* Request addresses from peer to replenish our address pool.
-       * This is critical for maintaining peer diversity - without it,
-       * we can only connect to our initial seed addresses. */
+      /* Request addresses from peer FIRST - even pruned peers can give us
+       * addresses. This is critical for maintaining peer diversity. */
       msg_t getaddr;
       memset(&getaddr, 0, sizeof(getaddr));
       getaddr.type = MSG_GETADDR;
       peer_queue_message(peer, &getaddr);
       log_debug(LOG_COMP_NET, "Sent GETADDR to peer %s", peer->address);
+
+      /*
+       * During IBD, disconnect pruned peers immediately to free connection
+       * slots for full archival nodes that can serve historical blocks.
+       *
+       * SERVICE_NODE_NETWORK (bit 0) = full archival node
+       * SERVICE_NODE_NETWORK_LIMITED (bit 10) = pruned node (~288 blocks)
+       *
+       * A peer with only LIMITED and not NETWORK is useless for IBD.
+       */
+      bool is_full_node = (peer->services & SERVICE_NODE_NETWORK) != 0;
+      bool is_ibd = node->ibd_mode;
+
+      if (is_ibd && !is_full_node) {
+        log_info(LOG_COMP_NET,
+                 "Disconnecting pruned peer %s (services=0x%llx) - need full "
+                 "nodes for IBD",
+                 peer->address, (unsigned long long)peer->services);
+        peer_disconnect(peer, PEER_DISCONNECT_USER, "Pruned peer during IBD");
+        break;
+      }
+
+      /* Add full nodes to sync manager */
+      if (node->sync_mgr != NULL) {
+        sync_add_peer(node->sync_mgr, peer, peer->start_height);
+      }
     }
     break;
 
