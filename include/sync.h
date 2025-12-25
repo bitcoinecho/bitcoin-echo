@@ -151,6 +151,9 @@ typedef struct {
   uint64_t first_block_time;  /* When peer started delivering blocks (ms) */
   uint64_t total_latency_ms;  /* Sum of all block download latencies */
   uint32_t latency_samples;   /* Number of latency samples collected */
+
+  /* Session-based reputation (for racing prioritization) */
+  uint64_t last_delivery_time; /* When peer last delivered a block (ms) */
 } peer_sync_state_t;
 
 /**

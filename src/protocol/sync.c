@@ -961,9 +961,15 @@ static bool force_request_critical_block(sync_manager_t *mgr,
   /* Find a sync candidate peer that DOESN'T already have this block in-flight.
    * The whole point of force-requesting is that the current peer(s) are slow,
    * so we must try a DIFFERENT peer to have any chance of success.
+   *
+   * PRIORITIZATION (per PEER_REPUTATION.md "Immediate Actions"):
+   * 1. Prefer peers that delivered a block recently (last 5 seconds)
+   * 2. Among equals, prefer peers with fewer in-flight blocks
    */
   peer_sync_state_t *best = NULL;
   size_t best_inflight = SIZE_MAX;
+  bool best_is_recent = false;
+  uint64_t now = plat_time_ms();
 
   for (size_t i = 0; i < mgr->peer_count; i++) {
     peer_sync_state_t *ps = &mgr->peers[i];
@@ -984,11 +990,26 @@ static bool force_request_critical_block(sync_manager_t *mgr,
     }
 
     /* Allow exceeding capacity by 1 for critical blocks */
-    if (ps->blocks_in_flight_count < SYNC_MAX_BLOCKS_PER_PEER + 1) {
-      if (ps->blocks_in_flight_count < best_inflight) {
-        best_inflight = ps->blocks_in_flight_count;
-        best = ps;
-      }
+    if (ps->blocks_in_flight_count >= SYNC_MAX_BLOCKS_PER_PEER + 1) {
+      continue;
+    }
+
+    /* Check if this peer delivered recently (within 5 seconds) */
+    bool is_recent = (ps->last_delivery_time > 0 &&
+                      now - ps->last_delivery_time < 5000);
+
+    /* Prefer recent deliverers, then by fewest in-flight */
+    bool is_better = false;
+    if (is_recent && !best_is_recent) {
+      is_better = true;  /* Recent always beats non-recent */
+    } else if (is_recent == best_is_recent) {
+      is_better = (ps->blocks_in_flight_count < best_inflight);
+    }
+
+    if (is_better) {
+      best = ps;
+      best_inflight = ps->blocks_in_flight_count;
+      best_is_recent = is_recent;
     }
   }
 
@@ -1752,7 +1773,8 @@ echo_result_t sync_handle_block(sync_manager_t *mgr, peer_t *peer,
 
   mgr->blocks_received_total++;
   ps->blocks_received++;
-  mgr->last_progress_time = plat_time_ms();
+  ps->last_delivery_time = plat_time_ms(); /* Track for session reputation */
+  mgr->last_progress_time = ps->last_delivery_time;
 
   /* Record block size for adaptive window calculation */
   size_t block_size = block_serialize_size(block);
@@ -1954,21 +1976,40 @@ void sync_process_timeouts(sync_manager_t *mgr) {
      * but don't deliver blocks. This catches peers with headers but no
      * block data - ping RTT doesn't measure block delivery ability.
      *
-     * With racing, peers may lose races to faster peers. But a peer with
-     * 0% delivery after 50+ requests is truly broken, not just slow.
-     * Good peers should have at least SOME deliveries from racing.
+     * TIERED APPROACH (per PEER_REPUTATION.md "Immediate Actions"):
      *
-     * Thresholds: 50+ requests, <10% delivery, AND connected 60+ seconds.
+     * 1. Non-responders (0% delivery): Cull aggressively after 30 requests/30s
+     *    These peers are truly broken - not serving any blocks at all.
+     *
+     * 2. Slow responders (1-10% delivery): Only cull if we have >16 peers
+     *    With 8-peer racing, even good peers only deliver ~12.5% (1/8).
+     *    Don't create a "death spiral" by culling slow-but-working peers
+     *    when we're already low on sync candidates.
      */
-    if (ps->peer && ps->blocks_requested >= 50) {
+    if (ps->peer && ps->blocks_requested >= 30) {
       uint64_t connected_ms = now - ps->peer->connect_time;
-      if (connected_ms >= 60000) {
-        uint32_t delivery_pct = (ps->blocks_received * 100) / ps->blocks_requested;
-        if (delivery_pct < 10) {
+      uint32_t delivery_pct = (ps->blocks_received * 100) / ps->blocks_requested;
+
+      /* Tier 1: Zero delivery - always cull after 30s (truly broken) */
+      if (delivery_pct == 0 && connected_ms >= 30000) {
+        log_info(LOG_COMP_SYNC,
+                 "Disconnecting non-responding peer: 0/%u blocks over %llus",
+                 ps->blocks_requested, (unsigned long long)(connected_ms / 1000));
+        peer_disconnect(ps->peer, PEER_DISCONNECT_MISBEHAVING,
+                        "Zero block delivery during IBD");
+        continue;
+      }
+
+      /* Tier 2: Low delivery - only cull if we have enough peers */
+      if (delivery_pct < 10 && connected_ms >= 60000 &&
+          ps->blocks_requested >= 50) {
+        size_t sync_peers = count_sync_peers(mgr);
+        if (sync_peers > 16) {
           log_info(LOG_COMP_SYNC,
-                   "Disconnecting poor-delivery peer: %u/%u blocks (%u%%) over %llus",
+                   "Disconnecting poor-delivery peer: %u/%u blocks (%u%%) "
+                   "over %llus (have %zu sync peers)",
                    ps->blocks_received, ps->blocks_requested, delivery_pct,
-                   (unsigned long long)(connected_ms / 1000));
+                   (unsigned long long)(connected_ms / 1000), sync_peers);
           peer_disconnect(ps->peer, PEER_DISCONNECT_MISBEHAVING,
                           "Poor block delivery rate during IBD");
           continue;
@@ -2217,14 +2258,62 @@ static size_t request_critical_zone_blocks(sync_manager_t *mgr) {
       continue;
     }
 
-    /* Request from additional peers to reach redundancy target */
+    /* Request from additional peers to reach redundancy target.
+     *
+     * TWO-PASS APPROACH (per PEER_REPUTATION.md "Immediate Actions"):
+     * 1. First pass: Prefer peers with good delivery rate (>15%)
+     * 2. Second pass: Fill remaining slots from any available peer
+     *
+     * This ensures high-performing peers get racing priority.
+     */
     size_t needed = SYNC_CRITICAL_ZONE_REDUNDANCY - current_inflight;
+
+    /* Pass 1: High-delivery peers first (>15% delivery rate) */
     for (size_t i = 0; i < mgr->peer_count && needed > 0; i++) {
       peer_sync_state_t *ps = &mgr->peers[i];
 
       /* Skip if not a sync candidate (pruned peers can't serve historical blocks) */
       if (!ps->sync_candidate) continue;
       /* Skip if not ready or no capacity */
+      if (!ps->peer || !peer_is_ready(ps->peer)) continue;
+      if (ps->blocks_in_flight_count >= SYNC_MAX_BLOCKS_PER_PEER) continue;
+
+      /* Pass 1: Only high-delivery peers (>15%) */
+      if (ps->blocks_requested >= 10) {
+        uint32_t delivery_pct = (ps->blocks_received * 100) / ps->blocks_requested;
+        if (delivery_pct < 15) continue;  /* Skip low-delivery peers in pass 1 */
+      }
+
+      /* Skip if already has this block in-flight */
+      bool already_has = false;
+      for (size_t j = 0; j < ps->blocks_in_flight_count; j++) {
+        if (memcmp(&ps->blocks_in_flight[j], &block_hash, sizeof(hash256_t)) == 0) {
+          already_has = true;
+          break;
+        }
+      }
+      if (already_has) continue;
+
+      /* Request this critical block from this peer */
+      ps->blocks_in_flight[ps->blocks_in_flight_count] = block_hash;
+      ps->block_request_time[ps->blocks_in_flight_count] = plat_time_ms();
+      ps->blocks_in_flight_count++;
+      ps->blocks_requested++;
+
+      if (mgr->callbacks.send_getdata_blocks) {
+        mgr->callbacks.send_getdata_blocks(ps->peer, &block_hash, 1,
+                                           mgr->callbacks.ctx);
+      }
+
+      racing_requests++;
+      needed--;
+    }
+
+    /* Pass 2: Fill remaining slots from any available peer */
+    for (size_t i = 0; i < mgr->peer_count && needed > 0; i++) {
+      peer_sync_state_t *ps = &mgr->peers[i];
+
+      if (!ps->sync_candidate) continue;
       if (!ps->peer || !peer_is_ready(ps->peer)) continue;
       if (ps->blocks_in_flight_count >= SYNC_MAX_BLOCKS_PER_PEER) continue;
 
