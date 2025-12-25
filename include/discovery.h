@@ -19,8 +19,8 @@
 #include "protocol.h"
 #include <stdint.h>
 
-/* Maximum peer addresses to store */
-#define MAX_PEER_ADDRESSES 10000
+/* Maximum peer addresses to store (matches Bitcoin Core's addrman capacity) */
+#define MAX_PEER_ADDRESSES 65536
 
 /* Maximum addresses per DNS seed query */
 #define MAX_DNS_RESULTS 128
