@@ -12,6 +12,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "block.h"
+#include "chainstate.h"
+#include "log.h"
+#include "node.h"
+
 /* Forward declarations */
 static int confirm_start(chaser_t *self);
 static bool confirm_handle_event(chaser_t *self, chase_event_t event,
@@ -79,7 +84,12 @@ confirm_result_t chaser_confirm_block(chaser_confirm_t *chaser, uint32_t height,
         return CONFIRM_ERROR_INTERNAL;
     }
 
-    (void)block_hash; /* TODO: Use for block lookup */
+    (void)block_hash; /* Hash passed for interface compatibility */
+
+    node_t *node = chaser->base.node;
+    if (!node) {
+        return CONFIRM_ERROR_INTERNAL;
+    }
 
     chaser_lock(&chaser->base);
 
@@ -89,10 +99,33 @@ confirm_result_t chaser_confirm_block(chaser_confirm_t *chaser, uint32_t height,
         return CONFIRM_ERROR_INTERNAL;
     }
 
-    /* TODO: Apply block to chainstate */
-    /* For now, just update height */
-    chaser->confirmed_height = height;
+    chaser_unlock(&chaser->base);
 
+    /* Load block from storage */
+    block_t block;
+    hash256_t hash;
+    echo_result_t result = node_load_block_at_height(node, height, &block, &hash);
+    if (result != ECHO_OK) {
+        log_error(LOG_COMP_SYNC, "chaser_confirm: failed to load block %u: %d",
+                  height, result);
+        return CONFIRM_ERROR_LOOKUP;
+    }
+
+    (void)hash; /* Hash not needed for apply-only path */
+
+    /* Apply block to chainstate (validation already done by chaser_validate) */
+    result = node_apply_block(node, &block);
+    block_free(&block);
+
+    if (result != ECHO_OK) {
+        log_error(LOG_COMP_SYNC, "chaser_confirm: block %u apply failed: %d",
+                  height, result);
+        return CONFIRM_ERROR_APPLY;
+    }
+
+    /* Update confirmed height */
+    chaser_lock(&chaser->base);
+    chaser->confirmed_height = height;
     chaser_unlock(&chaser->base);
 
     /* Notify that block is organized */
@@ -148,8 +181,13 @@ static int confirm_start(chaser_t *self) {
     chaser_confirm_t *chaser = (chaser_confirm_t *)self;
 
     /* Get confirmed height from chainstate */
-    /* TODO: Query chainstate for current height */
-    chaser->confirmed_height = 0;
+    if (chaser->chainstate != NULL) {
+        chaser->confirmed_height = chainstate_get_height(chaser->chainstate);
+        log_info(LOG_COMP_SYNC, "chaser_confirm: starting at height %u",
+                 chaser->confirmed_height);
+    } else {
+        chaser->confirmed_height = 0;
+    }
 
     return 0;
 }

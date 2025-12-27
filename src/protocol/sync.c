@@ -117,7 +117,7 @@ struct sync_manager {
   /* Performance-based download manager for peer throughput tracking */
   download_mgr_t *download_mgr;
 
-  /* Chase event dispatcher for validation pipeline (Phase 3 IBD rewrite) */
+  /* Chase event dispatcher for chaser-based validation */
   chase_dispatcher_t *dispatcher;
 };
 
@@ -900,152 +900,16 @@ echo_result_t sync_handle_block(sync_manager_t *mgr, peer_t *peer,
     mgr->callbacks.store_block(block, mgr->callbacks.ctx);
   }
 
-  /* Find block index */
+  /* Find block index and mark complete */
   block_index_map_t *index_map =
       chainstate_get_block_index_map(mgr->chainstate);
   block_index_t *block_index = block_index_map_lookup(index_map, &block_hash);
 
-  /* Validate and apply if callback provided */
-  if (mgr->callbacks.validate_and_apply_block && block_index) {
-    /*
-     * Check if this block connects to the validated tip before attempting
-     * validation. This avoids expensive validation attempts and noisy error
-     * logging for out-of-order blocks during parallel download.
-     *
-     * NOTE: We can't use on_main_chain because headers-first sync sets that
-     * flag on all headers during header download. Instead, check if this
-     * block's parent height equals the current validated tip height.
-     */
-    uint32_t validated_height = chainstate_get_height(mgr->chainstate);
-    uint32_t block_height = block_index->height;
-    bool can_connect =
-        (block_height == 0) || /* Genesis can always connect */
-        (block_height == validated_height + 1); /* Next block after tip */
-
-    if (!can_connect) {
-      /* Block doesn't connect to current tip - wait for parent.
-       * download_mgr will timeout and reassign if needed. */
-      return ECHO_ERR_WOULD_BLOCK; /* Not an error, just waiting for parent */
-    }
-
-    /* Validate and apply the block */
-    echo_result_t result = mgr->callbacks.validate_and_apply_block(
-        block, block_index, mgr->callbacks.ctx);
-
-    if (result != ECHO_OK) {
-      /* Block validation failed. download_mgr will handle reassignment. */
-      return ECHO_ERR_INVALID;
-    }
-    mgr->blocks_validated_total++;
-
-    /* Core-style adaptive timeout: decay on success (faster recovery) */
-    uint64_t decayed = (uint64_t)(mgr->stalling_timeout_ms * SYNC_STALLING_TIMEOUT_DECAY);
-    if (decayed < SYNC_BLOCK_STALLING_TIMEOUT_MS) {
-      decayed = SYNC_BLOCK_STALLING_TIMEOUT_MS;
-    }
-    mgr->stalling_timeout_ms = decayed;
-
-    /*
-     * After successful validation, check if we have the next block already
-     * stored on disk (from out-of-order download). If so, load and validate
-     * it immediately without waiting for another network round-trip.
-     */
-    if (mgr->callbacks.get_block) {
-      uint32_t next_height = chainstate_get_height(mgr->chainstate) + 1;
-
-      while (next_height <= mgr->best_header->height) {
-        /* Find block index at next height */
-        block_index_t *next_index = NULL;
-        block_index_map_t *idx_map =
-            chainstate_get_block_index_map(mgr->chainstate);
-
-        /*
-         * Look up block by height using callback (works for stored blocks
-         * from previous sessions that aren't in the queue).
-         */
-        hash256_t next_hash;
-        bool found_block = false;
-
-        /* Try to find stored block at this height */
-        if (mgr->callbacks.get_block_hash_at_height &&
-            mgr->callbacks.get_block_hash_at_height(next_height, &next_hash,
-                                                    mgr->callbacks.ctx) == ECHO_OK) {
-          next_index = block_index_map_lookup(idx_map, &next_hash);
-          if (next_index != NULL) {
-            found_block = true;
-            log_debug(LOG_COMP_SYNC,
-                      "Found block at height %u via callback, data_file=%u",
-                      next_height, next_index->data_file);
-          }
-        }
-
-        if (!found_block) {
-          log_debug(LOG_COMP_SYNC,
-                    "Block at height %u not found", next_height);
-          break;
-        }
-
-        if (next_index == NULL ||
-            next_index->data_file == BLOCK_DATA_NOT_STORED) {
-          log_debug(LOG_COMP_SYNC,
-                    "Block at height %u not stored yet (data_file=%u)",
-                    next_height,
-                    next_index ? next_index->data_file : 0xFFFFFFFF);
-          break; /* Next block not stored yet */
-        }
-
-        /* Load block from storage */
-        block_t stored_block;
-        echo_result_t load_result =
-            mgr->callbacks.get_block(&next_index->hash, &stored_block,
-                                     mgr->callbacks.ctx);
-        if (load_result != ECHO_OK) {
-          log_debug(LOG_COMP_SYNC,
-                    "Failed to load stored block at height %u: %d",
-                    next_height, load_result);
-          /* Mark as not stored so we don't keep retrying (file may be pruned) */
-          next_index->data_file = BLOCK_DATA_NOT_STORED;
-          next_index->data_pos = 0;
-          break;
-        }
-
-        echo_result_t val_result = mgr->callbacks.validate_and_apply_block(
-            &stored_block, next_index, mgr->callbacks.ctx);
-
-        block_free(&stored_block);
-
-        if (val_result != ECHO_OK) {
-          log_warn(LOG_COMP_SYNC,
-                   "Stored block at height %u failed validation: %d",
-                   next_height, val_result);
-          break;
-        }
-
-        /* Success! Remove from download manager and continue */
-        download_mgr_block_complete(mgr->download_mgr, &next_index->hash,
-                                    next_height);
-        mgr->blocks_validated_total++;
-        mgr->last_progress_time = plat_time_ms();
-
-        log_info(LOG_COMP_SYNC,
-                 "Validated stored block at height %u (from disk)",
-                 next_height);
-
-        next_height++;
-      }
-    }
-  }
-
-  /* Mark complete in download manager */
   if (block_index) {
     download_mgr_block_complete(mgr->download_mgr, &block_hash,
                                 block_index->height);
 
-    /*
-     * Fire CHASE_CHECKED to notify validation chaser (Phase 3 IBD rewrite).
-     * This signals that a block has been downloaded and is ready for
-     * parallel validation by chaser_validate.
-     */
+    /* Notify chaser pipeline that block is ready for validation */
     if (mgr->dispatcher != NULL) {
       chase_notify_height(mgr->dispatcher, CHASE_CHECKED, block_index->height);
     }
@@ -1232,50 +1096,9 @@ static void queue_blocks_from_headers(sync_manager_t *mgr) {
             log_info(LOG_COMP_SYNC, "queue_blocks: queuing height %u", h);
           }
         } else {
-          /*
-           * Block is already in storage. If it's the next block to validate,
-           * validate it immediately to kickstart the stored-block chain.
-           * This handles the restart case where validated_height = 0 but
-           * we have blocks stored from a previous run.
-           */
-          uint32_t validated_height = chainstate_get_height(mgr->chainstate);
-          bool is_next = (h == validated_height + 1);
-          bool has_callback = (mgr->callbacks.validate_and_apply_block != NULL);
-
-          if (h == start_height) {
-            log_info(LOG_COMP_SYNC,
-                     "queue_blocks: kickstart check h=%u, validated=%u, "
-                     "is_next=%s, has_callback=%s",
-                     h, validated_height, is_next ? "YES" : "NO",
-                     has_callback ? "YES" : "NO");
-          }
-
-          if (is_next && has_callback) {
-            block_index_map_t *idx_map = chainstate_get_block_index_map(mgr->chainstate);
-            block_index_t *block_idx = block_index_map_lookup(idx_map, &hash);
-
-            log_info(LOG_COMP_SYNC,
-                     "queue_blocks: kickstart block_idx=%p", (void *)block_idx);
-
-            if (block_idx != NULL) {
-              log_info(LOG_COMP_SYNC,
-                       "Validating stored block at height %u (kickstart)", h);
-
-              echo_result_t val_result = mgr->callbacks.validate_and_apply_block(
-                  &stored, block_idx, mgr->callbacks.ctx);
-
-              if (val_result == ECHO_OK) {
-                mgr->blocks_validated_total++;
-                mgr->last_progress_time = plat_time_ms();
-                log_info(LOG_COMP_SYNC,
-                         "Validated stored block at height %u (kickstart success)", h);
-              } else {
-                log_warn(LOG_COMP_SYNC,
-                         "Stored block at height %u failed validation: %d", h, val_result);
-              }
-            }
-          } else if (h <= 5) {
-            log_info(LOG_COMP_SYNC, "queue_blocks: height %u already in storage", h);
+          /* Block already in storage - notify chaser to validate it */
+          if (mgr->dispatcher != NULL) {
+            chase_notify_height(mgr->dispatcher, CHASE_CHECKED, h);
           }
         }
         block_free(&stored);
@@ -1501,89 +1324,15 @@ void sync_tick(sync_manager_t *mgr) {
     queue_blocks_from_headers(mgr);
 
     /*
-     * PERIODIC STORED BLOCK VALIDATION: Check if next-needed blocks are
-     * already stored on disk and validate them. This handles the case where
-     * blocks arrive out of order, get stored, and the "next" block never
-     * arrives from the network because we already have it.
-     *
-     * Only check every 100ms to avoid excessive disk reads.
+     * Periodically notify chasers about stored blocks that need validation.
+     * This handles blocks stored from previous sessions.
      */
     if (now - mgr->last_stored_block_check_time >= 100) {
       mgr->last_stored_block_check_time = now;
 
-      uint32_t validated_height = chainstate_get_height(mgr->chainstate);
-      uint32_t blocks_validated_this_tick = 0;
-      const uint32_t max_per_tick = 100; /* Limit to avoid blocking */
-
-      while (blocks_validated_this_tick < max_per_tick) {
-        uint32_t next_height = validated_height + 1;
-        hash256_t next_hash;
-        bool found_block = false;
-
-        block_index_map_t *idx_map =
-            chainstate_get_block_index_map(mgr->chainstate);
-        block_index_t *next_index = NULL;
-
-        /* First try height callback (finds stored blocks from prev session) */
-        if (mgr->callbacks.get_block_hash_at_height &&
-            mgr->callbacks.get_block_hash_at_height(next_height, &next_hash,
-                                                    mgr->callbacks.ctx) == ECHO_OK) {
-          next_index = block_index_map_lookup(idx_map, &next_hash);
-          if (next_index != NULL) {
-            found_block = true;
-          }
-        }
-
-        if (!found_block) {
-          break; /* Block not found */
-        }
-
-        if (next_index == NULL ||
-            next_index->data_file == BLOCK_DATA_NOT_STORED) {
-          break; /* Not stored yet */
-        }
-
-        /* Load and validate */
-        block_t stored_block;
-        block_init(&stored_block);
-        echo_result_t load_result = mgr->callbacks.get_block(
-            &next_hash, &stored_block, mgr->callbacks.ctx);
-
-        if (load_result != ECHO_OK) {
-          block_free(&stored_block);
-          /* Mark as not stored so we don't keep retrying (file may be pruned) */
-          if (next_index != NULL) {
-            next_index->data_file = BLOCK_DATA_NOT_STORED;
-            next_index->data_pos = 0;
-          }
-          break;
-        }
-
-        echo_result_t val_result = mgr->callbacks.validate_and_apply_block(
-            &stored_block, next_index, mgr->callbacks.ctx);
-
-        block_free(&stored_block);
-
-        if (val_result != ECHO_OK) {
-          log_warn(LOG_COMP_SYNC,
-                   "Stored block at height %u failed validation: %d",
-                   next_height, val_result);
-          break;
-        }
-
-        /* Success! */
-        download_mgr_block_complete(mgr->download_mgr, &next_hash, next_height);
-        mgr->blocks_validated_total++;
-        mgr->last_progress_time = now;
-        validated_height = next_height;
-        blocks_validated_this_tick++;
-
-        if (blocks_validated_this_tick == 1 ||
-            blocks_validated_this_tick % 10 == 0) {
-          log_info(LOG_COMP_SYNC,
-                   "Validated stored block at height %u (periodic check)",
-                   next_height);
-        }
+      if (mgr->dispatcher != NULL) {
+        /* Fire BUMP to trigger chasers to check for work */
+        chase_notify_height(mgr->dispatcher, CHASE_BUMP, 0);
       }
     }
 

@@ -811,4 +811,67 @@ echo_result_t node_maybe_prune(node_t *node);
  */
 uint64_t node_get_block_storage_size(const node_t *node);
 
+/**
+ * Load a block from storage by hash.
+ *
+ * Used by chasers to load blocks for validation.
+ *
+ * Parameters:
+ *   node      - The node
+ *   hash      - Block hash to look up
+ *   block_out - Output: parsed block (caller must call block_free)
+ *
+ * Returns:
+ *   ECHO_OK on success, error code otherwise
+ */
+echo_result_t node_load_block(node_t *node, const hash256_t *hash,
+                              block_t *block_out);
+
+/**
+ * Load a block from storage by height.
+ *
+ * Looks up block hash at height, then loads block data.
+ *
+ * Parameters:
+ *   node      - The node
+ *   height    - Block height
+ *   block_out - Output: parsed block (caller must call block_free)
+ *   hash_out  - Output: block hash (optional, can be NULL)
+ *
+ * Returns:
+ *   ECHO_OK on success, error code otherwise
+ */
+echo_result_t node_load_block_at_height(node_t *node, uint32_t height,
+                                        block_t *block_out, hash256_t *hash_out);
+
+/**
+ * Validate a block (read-only, does not modify chainstate).
+ *
+ * Performs full consensus validation: PoW, structure, merkle root,
+ * script verification. Can be called in parallel for multiple blocks.
+ *
+ * Parameters:
+ *   node  - The node
+ *   block - Block to validate
+ *
+ * Returns:
+ *   true if block is valid, false otherwise
+ */
+bool node_validate_block(node_t *node, const block_t *block);
+
+/**
+ * Apply a validated block to chainstate.
+ *
+ * Updates the UTXO set. Must be called sequentially in height order.
+ * Block MUST have been validated first via node_validate_block().
+ *
+ * Parameters:
+ *   node  - The node
+ *   block - Block to apply (must be pre-validated)
+ *
+ * Returns:
+ *   ECHO_OK on success, error code otherwise
+ */
+echo_result_t node_apply_block(node_t *node, const block_t *block);
+
 #endif /* ECHO_NODE_H */

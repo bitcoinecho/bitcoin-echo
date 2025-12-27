@@ -4003,6 +4003,91 @@ uint64_t node_get_block_storage_size(const node_t *node) {
   return total_size;
 }
 
+echo_result_t node_load_block(node_t *node, const hash256_t *hash,
+                              block_t *block_out) {
+  if (node == NULL || hash == NULL || block_out == NULL) {
+    return ECHO_ERR_NULL_PARAM;
+  }
+
+  if (!node->block_storage_init || !node->block_index_db_open) {
+    return ECHO_ERR_NOT_FOUND;
+  }
+
+  /* Look up block position in database */
+  block_index_entry_t entry;
+  echo_result_t result =
+      block_index_db_lookup_by_hash(&node->block_index_db, hash, &entry);
+  if (result != ECHO_OK) {
+    return result;
+  }
+
+  /* Check if block data is stored */
+  if (entry.data_file < 0) {
+    return ECHO_ERR_NOT_FOUND;
+  }
+
+  /* Load block data from storage */
+  block_file_pos_t pos;
+  pos.file_index = (uint32_t)entry.data_file;
+  pos.file_offset = entry.data_pos;
+
+  uint8_t *block_data = NULL;
+  uint32_t block_size = 0;
+  result = block_storage_read(&node->block_storage, pos, &block_data, &block_size);
+  if (result != ECHO_OK) {
+    return result;
+  }
+
+  /* Parse block data */
+  size_t consumed;
+  result = block_parse(block_data, block_size, block_out, &consumed);
+  free(block_data);
+
+  return result;
+}
+
+echo_result_t node_load_block_at_height(node_t *node, uint32_t height,
+                                        block_t *block_out, hash256_t *hash_out) {
+  if (node == NULL || block_out == NULL) {
+    return ECHO_ERR_NULL_PARAM;
+  }
+
+  if (!node->block_index_db_open) {
+    return ECHO_ERR_NOT_FOUND;
+  }
+
+  /* Look up block entry at height (includes hash) */
+  block_index_entry_t entry;
+  echo_result_t result =
+      block_index_db_lookup_by_height(&node->block_index_db, height, &entry);
+  if (result != ECHO_OK) {
+    return ECHO_ERR_NOT_FOUND;
+  }
+
+  /* Load block by hash */
+  result = node_load_block(node, &entry.hash, block_out);
+  if (result != ECHO_OK) {
+    return result;
+  }
+
+  /* Return hash if requested */
+  if (hash_out != NULL) {
+    memcpy(hash_out->bytes, entry.hash.bytes, 32);
+  }
+
+  return ECHO_OK;
+}
+
+bool node_validate_block(node_t *node, const block_t *block) {
+  if (node == NULL || block == NULL || node->consensus == NULL) {
+    return false;
+  }
+
+  consensus_result_t result;
+  consensus_result_init(&result);
+  return consensus_validate_block(node->consensus, block, &result);
+}
+
 uint32_t node_prune_blocks(node_t *node, uint32_t target_height) {
   if (node == NULL || !node->block_storage_init || !node->block_index_db_open) {
     return 0;

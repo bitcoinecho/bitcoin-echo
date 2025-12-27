@@ -10,10 +10,68 @@
 
 #include <pthread.h>
 #include <stdatomic.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+
+/* Stubs for functions called by chasers - use void* to avoid header deps */
+typedef int echo_result_t;
+#define ECHO_OK 0
+#define ECHO_ERR_NOT_FOUND -14
+
+/* Test-controllable block storage simulation */
+#define MAX_TEST_BLOCKS 256
+static bool g_stored_blocks[MAX_TEST_BLOCKS] = {false};
+static pthread_mutex_t g_storage_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static void test_storage_reset(void) {
+    pthread_mutex_lock(&g_storage_mutex);
+    memset(g_stored_blocks, 0, sizeof(g_stored_blocks));
+    pthread_mutex_unlock(&g_storage_mutex);
+}
+
+static void test_storage_add_block(uint32_t height) {
+    if (height < MAX_TEST_BLOCKS) {
+        pthread_mutex_lock(&g_storage_mutex);
+        g_stored_blocks[height] = true;
+        pthread_mutex_unlock(&g_storage_mutex);
+    }
+}
+
+static bool test_storage_has_block(uint32_t height) {
+    if (height >= MAX_TEST_BLOCKS)
+        return false;
+    pthread_mutex_lock(&g_storage_mutex);
+    bool has = g_stored_blocks[height];
+    pthread_mutex_unlock(&g_storage_mutex);
+    return has;
+}
+
+void block_free(void *block) { (void)block; }
+uint32_t chainstate_get_height(void *cs) { (void)cs; return 0; }
+void log_error(int comp, const char *fmt, ...) { (void)comp; (void)fmt; }
+void log_info(int comp, const char *fmt, ...) { (void)comp; (void)fmt; }
+echo_result_t node_apply_block(void *node, const void *block) {
+    (void)node; (void)block; return ECHO_OK;
+}
+echo_result_t node_load_block_at_height(void *node, uint32_t height,
+                                        void *block_out, void *hash_out) {
+    (void)node; (void)block_out; (void)hash_out;
+    /* Only return OK for blocks that have been "stored" by test */
+    if (test_storage_has_block(height)) {
+        return ECHO_OK;
+    }
+    return ECHO_ERR_NOT_FOUND;
+}
+bool node_validate_block(void *node, const void *block) {
+    (void)node; (void)block; return true;
+}
+
+/* Fake node for tests - just needs to be non-NULL */
+static int g_fake_node = 0;
+#define FAKE_NODE ((void *)&g_fake_node)
 
 /* Test context for tracking handler calls */
 typedef struct {
@@ -607,10 +665,15 @@ static void test_chaser_confirm_create_destroy(void) {
 }
 
 static void test_chaser_confirm_sequential(void) {
+    test_storage_reset();
     chase_dispatcher_t *dispatcher = chase_dispatcher_create();
-    chaser_confirm_t *confirm = chaser_confirm_create(NULL, dispatcher, NULL);
+    chaser_confirm_t *confirm = chaser_confirm_create(FAKE_NODE, dispatcher, NULL);
 
     uint8_t hash[32] = {0};
+
+    /* Add blocks to simulated storage */
+    test_storage_add_block(1);
+    test_storage_add_block(2);
 
     test_case("confirm block 1");
     confirm_result_t result = chaser_confirm_block(confirm, 1, hash);
@@ -641,10 +704,16 @@ static void test_chaser_confirm_sequential(void) {
 }
 
 static void test_chaser_confirm_reorg(void) {
+    test_storage_reset();
     chase_dispatcher_t *dispatcher = chase_dispatcher_create();
-    chaser_confirm_t *confirm = chaser_confirm_create(NULL, dispatcher, NULL);
+    chaser_confirm_t *confirm = chaser_confirm_create(FAKE_NODE, dispatcher, NULL);
 
     uint8_t hash[32] = {0};
+
+    /* Add blocks 1-5 to simulated storage */
+    for (uint32_t h = 1; h <= 5; h++) {
+        test_storage_add_block(h);
+    }
 
     /* Confirm blocks 1-5 */
     for (uint32_t h = 1; h <= 5; h++) {
@@ -716,12 +785,13 @@ static bool pipeline_observer(chase_event_t event, chase_value_t value,
 }
 
 static void test_pipeline_single_block(void) {
+    test_storage_reset();
     chase_dispatcher_t *dispatcher = chase_dispatcher_create();
 
     /* Create both chasers */
     chaser_validate_t *validate =
-        chaser_validate_create(NULL, dispatcher, NULL, 2, 10);
-    chaser_confirm_t *confirm = chaser_confirm_create(NULL, dispatcher, NULL);
+        chaser_validate_create(FAKE_NODE, dispatcher, NULL, 2, 10);
+    chaser_confirm_t *confirm = chaser_confirm_create(FAKE_NODE, dispatcher, NULL);
 
     /* Start chasers (this subscribes them to events) */
     chaser_start(&validate->base);
@@ -736,7 +806,8 @@ static void test_pipeline_single_block(void) {
 
     test_case("pipeline: single block CHECKED → VALID → ORGANIZED");
 
-    /* Simulate download completing for block 1 */
+    /* Add block to storage, then notify download complete */
+    test_storage_add_block(1);
     chase_notify_height(dispatcher, CHASE_CHECKED, 1);
 
     /* Wait for async processing (validation is in worker threads) */
@@ -778,11 +849,12 @@ static void test_pipeline_single_block(void) {
 }
 
 static void test_pipeline_multiple_blocks(void) {
+    test_storage_reset();
     chase_dispatcher_t *dispatcher = chase_dispatcher_create();
 
     chaser_validate_t *validate =
-        chaser_validate_create(NULL, dispatcher, NULL, 2, 50);
-    chaser_confirm_t *confirm = chaser_confirm_create(NULL, dispatcher, NULL);
+        chaser_validate_create(FAKE_NODE, dispatcher, NULL, 2, 50);
+    chaser_confirm_t *confirm = chaser_confirm_create(FAKE_NODE, dispatcher, NULL);
 
     chaser_start(&validate->base);
     chaser_start(&confirm->base);
@@ -795,10 +867,10 @@ static void test_pipeline_multiple_blocks(void) {
 
     test_case("pipeline: sequential blocks 1-10");
 
-    /* Fire CHASE_CHECKED for blocks 1-10 in order */
+    /* Simulate downloading blocks 1-10 in order */
     for (uint32_t h = 1; h <= 10; h++) {
+        test_storage_add_block(h);
         chase_notify_height(dispatcher, CHASE_CHECKED, h);
-        /* Small delay between blocks */
         usleep(5000);
     }
 
@@ -830,11 +902,12 @@ static void test_pipeline_multiple_blocks(void) {
 }
 
 static void test_pipeline_out_of_order(void) {
+    test_storage_reset();
     chase_dispatcher_t *dispatcher = chase_dispatcher_create();
 
     chaser_validate_t *validate =
-        chaser_validate_create(NULL, dispatcher, NULL, 2, 50);
-    chaser_confirm_t *confirm = chaser_confirm_create(NULL, dispatcher, NULL);
+        chaser_validate_create(FAKE_NODE, dispatcher, NULL, 2, 50);
+    chaser_confirm_t *confirm = chaser_confirm_create(FAKE_NODE, dispatcher, NULL);
 
     chaser_start(&validate->base);
     chaser_start(&confirm->base);
@@ -847,7 +920,8 @@ static void test_pipeline_out_of_order(void) {
 
     test_case("pipeline: out-of-order blocks don't skip");
 
-    /* Fire CHECKED for block 3 before 1 and 2 */
+    /* Store and notify block 3 before 1 and 2 */
+    test_storage_add_block(3);
     chase_notify_height(dispatcher, CHASE_CHECKED, 3);
     usleep(20000);
 
@@ -861,19 +935,21 @@ static void test_pipeline_out_of_order(void) {
 
     test_case("pipeline: blocks validated in order after gap filled");
     /* Now fill in blocks 1 and 2 */
+    test_storage_add_block(1);
     chase_notify_height(dispatcher, CHASE_CHECKED, 1);
     usleep(30000);
+    test_storage_add_block(2);
     chase_notify_height(dispatcher, CHASE_CHECKED, 2);
     usleep(50000);
 
-    /* Should have validated blocks 1 and 2 */
+    /* Should have validated blocks 1, 2, and 3 via BUMP */
     valid = atomic_load(&ctx.valid_count);
-    if (valid >= 2 && chaser_confirm_height(confirm) >= 2) {
+    uint32_t confirmed = chaser_confirm_height(confirm);
+    if (valid >= 2 && confirmed >= 2) {
         test_pass();
     } else {
         char msg[128];
-        snprintf(msg, sizeof(msg), "valid=%d, confirmed=%u", valid,
-                 chaser_confirm_height(confirm));
+        snprintf(msg, sizeof(msg), "valid=%d, confirmed=%u", valid, confirmed);
         test_fail(msg);
     }
 

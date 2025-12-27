@@ -13,6 +13,10 @@
 #include <string.h>
 #include <unistd.h>
 
+#include "block.h"
+#include "log.h"
+#include "node.h"
+
 /* Default configuration */
 #define DEFAULT_WORKER_COUNT 4
 #define DEFAULT_MAX_BACKLOG 50
@@ -279,9 +283,29 @@ static void *worker_thread(void *arg) {
         int result = 0; /* 0 = success */
 
         if (!work->bypass) {
-            /* TODO: Actual block validation using chainstate */
-            /* For now, just simulate success */
-            /* result = validate_block(chaser->chainstate, work->block_hash); */
+            node_t *node = chaser->base.node;
+
+            /* Load block from storage */
+            block_t block;
+            hash256_t hash;
+            echo_result_t load_result =
+                node_load_block_at_height(node, work->height, &block, &hash);
+
+            if (load_result != ECHO_OK) {
+                log_error(LOG_COMP_SYNC,
+                          "chaser_validate: failed to load block %u: %d",
+                          work->height, load_result);
+                result = -1;
+            } else {
+                /* Validate block (read-only, no chainstate modification) */
+                if (!node_validate_block(node, &block)) {
+                    log_error(LOG_COMP_SYNC,
+                              "chaser_validate: block %u validation failed",
+                              work->height);
+                    result = -1;
+                }
+                block_free(&block);
+            }
         }
 
         /* Decrement backlog */
@@ -339,8 +363,43 @@ static bool validate_handle_event(chaser_t *self, chase_event_t event,
     case CHASE_RESUME:
     case CHASE_START:
     case CHASE_BUMP:
-        /* Bump to check for work */
-        /* TODO: Check database for blocks ready to validate */
+        /* Check for stored blocks ready to validate */
+        {
+            node_t *node = chaser->base.node;
+            uint32_t position = chaser_position(self);
+
+            /* Try to find and submit stored blocks */
+            while (1) {
+                uint32_t next_height = position + 1;
+
+                /* Check if we can accept more work */
+                if (atomic_load(&chaser->backlog) >= chaser->maximum_backlog) {
+                    break;
+                }
+
+                /* Try to load block at next height */
+                block_t block;
+                hash256_t hash;
+                echo_result_t result =
+                    node_load_block_at_height(node, next_height, &block, &hash);
+
+                if (result != ECHO_OK) {
+                    break; /* Block not stored yet */
+                }
+
+                block_free(&block); /* We just needed to check it exists */
+
+                /* Submit for validation */
+                bool bypass = chaser_validate_is_bypass(chaser, next_height);
+                if (chaser_validate_submit(chaser, next_height, hash.bytes,
+                                           bypass) == 0) {
+                    chaser_set_position(self, next_height);
+                    position = next_height;
+                } else {
+                    break; /* Queue full or error */
+                }
+            }
+        }
         break;
 
     case CHASE_CHECKED:
