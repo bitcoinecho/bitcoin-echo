@@ -289,7 +289,7 @@ echo_result_t block_storage_read(block_file_manager_t *mgr,
 
 /*
  * ============================================================================
- * PRUNING OPERATIONS (Session 9.6.2)
+ * PRUNING OPERATIONS
  * ============================================================================
  */
 

@@ -129,7 +129,7 @@ void block_storage_get_path(const block_file_manager_t *mgr,
 
 /*
  * ============================================================================
- * PRUNING OPERATIONS (Session 9.6.2)
+ * PRUNING OPERATIONS
  * ============================================================================
  */
 

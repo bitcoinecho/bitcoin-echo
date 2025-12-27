@@ -9,8 +9,6 @@
  *   - File output
  *   - Thread safety
  *
- * Session 9.4: Logging system tests.
- *
  * Build once. Build right. Stop.
  */
 

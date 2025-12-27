@@ -7,8 +7,6 @@
  *   - Regtest genesis block
  *   - Nonce mining
  *
- * Session 9.6.4: Regtest Mining implementation.
- *
  * Build once. Build right. Stop.
  */
 

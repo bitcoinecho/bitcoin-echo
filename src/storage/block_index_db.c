@@ -836,7 +836,7 @@ echo_result_t block_index_db_get_chainwork(block_index_db_t *bdb,
 }
 
 /* ========================================================================
- * Pruning Operations (Session 9.6.2)
+ * Pruning Operations
  * ======================================================================== */
 
 echo_result_t block_index_db_mark_pruned(block_index_db_t *bdb,

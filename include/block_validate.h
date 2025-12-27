@@ -99,7 +99,7 @@ typedef enum {
   BLOCK_ERR_SIGOPS_EXCEEDED,     /* Too many signature operations */
   BLOCK_ERR_TX_INVALID,          /* A transaction failed validation */
 
-  /* Coinbase-specific errors (Session 5.3) */
+  /* Coinbase-specific errors */
   BLOCK_ERR_COINBASE_INVALID,   /* Coinbase transaction malformed */
   BLOCK_ERR_COINBASE_HEIGHT,    /* BIP-34 height encoding invalid/mismatch */
   BLOCK_ERR_COINBASE_SUBSIDY,   /* Coinbase output exceeds allowed subsidy */
@@ -290,8 +290,7 @@ echo_bool_t block_validate_version(const block_header_t *header,
  *   4. Version validation
  *
  * Note: Difficulty target validation (bits == expected_bits) is NOT
- * performed here—that requires the difficulty adjustment algorithm
- * from Session 5.2.
+ * performed here—that requires the difficulty adjustment algorithm.
  *
  * Parameters:
  *   header - Block header to validate
@@ -336,7 +335,7 @@ const char *block_validation_error_str(block_validation_error_t error);
 
 /*
  * ============================================================================
- * Difficulty Adjustment (Session 5.2)
+ * Difficulty Adjustment
  * ============================================================================
  */
 
@@ -508,7 +507,7 @@ echo_result_t difficulty_get_powlimit(hash256_t *target);
 
 /*
  * ============================================================================
- * Coinbase Validation (Session 5.3)
+ * Coinbase Validation
  * ============================================================================
  */
 
@@ -668,7 +667,7 @@ echo_bool_t coinbase_is_mature(uint32_t coinbase_height,
 
 /*
  * ============================================================================
- * Full Block Validation (Session 5.4)
+ * Full Block Validation
  * ============================================================================
  */
 
@@ -826,7 +825,7 @@ echo_bool_t block_validate_tx_structure(const block_t *block,
  *   7. Witness commitment verification (if SegWit active)
  *
  * Note: This does NOT validate individual transaction scripts or
- * UTXO availability—that requires the UTXO set from Phase 6.
+ * UTXO availability—that requires the UTXO set.
  *
  * Parameters:
  *   block  - Block to validate

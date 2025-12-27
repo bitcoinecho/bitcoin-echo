@@ -21,8 +21,6 @@
  * There are no administrative commands, no wallet operations,
  * no runtime reconfiguration. This is intentionally minimal.
  *
- * Session 9.3: RPC Interface implementation.
- *
  * Build once. Build right. Stop.
  */
 

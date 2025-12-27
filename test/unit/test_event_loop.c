@@ -1,7 +1,7 @@
 /**
  * Bitcoin Echo — Event Loop Tests
  *
- * Tests for Session 9.2: Main Event Loop
+ * Main Event Loop Tests
  *
  * Verifies:
  * - node_process_peers() peer message handling
@@ -178,7 +178,7 @@ static void test_handle_ping_message(void) {
   node_handle_peer_message(node, &peer, &ping);
 
   /* Verify PONG was queued (check peer send queue) */
-  /* For Session 9.2, we verify the function doesn't crash */
+  /* We verify the function doesn't crash */
   /* Full verification of queued messages would require peer internals */
 
   node_destroy(node);

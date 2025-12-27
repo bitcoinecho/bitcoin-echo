@@ -15,8 +15,6 @@
  *   - Consensus engine (validation, chain state)
  *   - Protocol layer (P2P messaging, sync, mempool)
  *
- * Session 9.1: Node initialization and shutdown sequences.
- *
  * Build once. Build right. Stop.
  */
 
@@ -61,7 +59,7 @@ typedef struct {
   char data_dir[512];       /* Path to data directory */
   uint16_t port;            /* P2P port (default: network-specific) */
   uint16_t rpc_port;        /* RPC port (default: network-specific) */
-  bool observer_mode;       /* If true, skip consensus/storage (Session 9.5) */
+  bool observer_mode;       /* If true, skip consensus/storage */
   uint64_t prune_target_mb; /* Pruning target in MB (0 = archival/no pruning) */
   log_level_t log_level;    /* Log verbosity (default: LOG_LEVEL_INFO) */
 } node_config_t;
@@ -495,8 +493,6 @@ echo_result_t node_process_blocks(node_t *node);
  *
  * The block must have been validated first via consensus_validate_block().
  *
- * Session 9.6.0: Storage Foundation & Chain Restoration
- *
  * Parameters:
  *   node  - The node
  *   block - The validated block to apply
@@ -556,7 +552,7 @@ bool node_shutdown_requested(const node_t *node);
 
 /*
  * ============================================================================
- * OBSERVER MODE (Session 9.5)
+ * OBSERVER MODE
  * ============================================================================
  */
 
@@ -665,7 +661,7 @@ void node_observe_message(node_t *node, const char *command);
 
 /*
  * ============================================================================
- * BLOCK PIPELINE (Session 9.6.1)
+ * BLOCK PIPELINE
  * ============================================================================
  */
 
@@ -718,7 +714,7 @@ echo_result_t node_process_received_block(node_t *node, const block_t *block);
 
 /*
  * ============================================================================
- * PRUNING (Session 9.6.2)
+ * PRUNING
  * ============================================================================
  */
 

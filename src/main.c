@@ -12,8 +12,6 @@
  *    - Perform periodic maintenance
  * 5. Shut down gracefully on signal
  *
- * Session 9.5: Observer mode and command-line argument parsing.
- *
  * Build once. Build right. Stop.
  */
 

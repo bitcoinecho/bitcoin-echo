@@ -10,8 +10,6 @@
  *   - RPC method dispatch
  *   - All required RPC methods
  *
- * Session 9.3: RPC Interface implementation.
- *
  * Build once. Build right. Stop.
  */
 
@@ -1057,7 +1055,7 @@ typedef struct {
                            json_builder_t *builder);
 } rpc_method_entry_t;
 
-/* Forward declarations for observer RPC methods (Session 9.5) */
+/* Forward declarations for observer RPC methods */
 static echo_result_t rpc_getobserverstats(node_t *node, const json_value_t *params,
                                           json_builder_t *builder);
 static echo_result_t rpc_getobservedblocks(node_t *node, const json_value_t *params,
@@ -1080,10 +1078,10 @@ static const rpc_method_entry_t rpc_methods[] = {
     {"sendrawtransaction", rpc_sendrawtransaction},
     {"getblocktemplate", rpc_getblocktemplate},
     {"submitblock", rpc_submitblock},
-    {"getobserverstats", rpc_getobserverstats},   /* Session 9.5 */
-    {"getobservedblocks", rpc_getobservedblocks}, /* Session 9.5 */
-    {"getobservedtxs", rpc_getobservedtxs},       /* Session 9.5 */
-    {"pruneblockchain", rpc_pruneblockchain},     /* Session 9.6.2 */
+    {"getobserverstats", rpc_getobserverstats},
+    {"getobservedblocks", rpc_getobservedblocks},
+    {"getobservedtxs", rpc_getobservedtxs},
+    {"pruneblockchain", rpc_pruneblockchain},
     {"getsyncstatus", rpc_getsyncstatus},         /* IBD performance */
     {NULL, NULL}};
 
@@ -1658,12 +1656,12 @@ echo_result_t rpc_getblockchaininfo(node_t *node, const json_value_t *params,
   json_builder_append(builder, ",\"chainwork\":");
   json_builder_string(builder, chainwork_hex);
 
-  /* Get actual disk usage from block storage (Session 9.6.2) */
+  /* Get actual disk usage from block storage */
   uint64_t disk_usage = node_get_block_storage_size(node);
   json_builder_append(builder, ",\"size_on_disk\":");
   json_builder_uint(builder, disk_usage);
 
-  /* Pruning information (Session 9.6.2) */
+  /* Pruning information */
   bool is_pruned = node_is_pruning_enabled(node);
   json_builder_append(builder, ",\"pruned\":");
   json_builder_bool(builder, is_pruned);
@@ -1876,7 +1874,7 @@ echo_result_t rpc_getrawtransaction(node_t *node, const json_value_t *params,
 /**
  * sendrawtransaction - Submit a raw transaction to the mempool.
  *
- * Session 9.6.3: Full UTXO validation before mempool acceptance.
+ * Performs full UTXO validation before mempool acceptance.
  *
  * Parameters:
  *   [0] hexstring - The serialized transaction in hex
@@ -2286,7 +2284,7 @@ echo_result_t rpc_submitblock(node_t *node, const json_value_t *params,
   }
 
   /*
-   * Apply block with persistence (Session 9.6.0).
+   * Apply block with persistence.
    * This updates consensus engine, block files, and databases atomically.
    */
   res = node_apply_block(node, &block);
@@ -2304,7 +2302,7 @@ echo_result_t rpc_submitblock(node_t *node, const json_value_t *params,
 
 /*
  * ============================================================================
- * OBSERVER MODE RPC METHODS (Session 9.5)
+ * OBSERVER MODE RPC METHODS
  * ============================================================================
  */
 
@@ -2534,7 +2532,7 @@ static echo_result_t rpc_getobservedtxs(node_t *node,
 
 /*
  * ============================================================================
- * PRUNING RPC METHOD (Session 9.6.2)
+ * PRUNING RPC METHOD
  * ============================================================================
  */
 

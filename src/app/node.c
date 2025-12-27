@@ -1,8 +1,7 @@
 /**
  * Bitcoin Echo — Node Lifecycle Implementation
  *
- * This module implements the node initialization and shutdown sequences
- * as specified in Session 9.1.
+ * This module implements the node initialization and shutdown sequences.
  *
  * Initialization sequence:
  *   1. Platform layer init (via plat_* functions)
@@ -92,7 +91,7 @@ struct node {
   /* Sync manager */
   sync_manager_t *sync_mgr;
 
-  /* Chase event system (Phase 3 IBD rewrite) */
+  /* Chase event system */
   chase_dispatcher_t *dispatcher;
   chaser_validate_t *chaser_validate;
   chaser_confirm_t *chaser_confirm;
@@ -105,10 +104,10 @@ struct node {
   plat_socket_t *listen_socket;
   bool is_listening;
 
-  /* Observer mode statistics (Session 9.5) */
+  /* Observer mode statistics */
   observer_stats_t observer_stats;
 
-  /* Block pipeline tracking (Session 9.6.1) */
+  /* Block pipeline tracking */
   #define NODE_MAX_INVALID_BLOCKS 1000
   hash256_t invalid_blocks[NODE_MAX_INVALID_BLOCKS];
   size_t invalid_block_count;
@@ -149,7 +148,7 @@ static echo_result_t node_init_chase(node_t *node);
 static void node_cleanup(node_t *node);
 static echo_result_t node_cleanup_orphan_block_files(node_t *node);
 
-/* Sync manager callbacks (Session 9.6.1) */
+/* Sync manager callbacks */
 static echo_result_t sync_cb_get_block(const hash256_t *hash, block_t *block_out,
                                        void *ctx);
 static echo_result_t sync_cb_store_block(const block_t *block, void *ctx);
@@ -165,7 +164,7 @@ static echo_result_t sync_cb_validate_and_apply_block(const block_t *block,
 /* Helper functions */
 static uint64_t generate_nonce(void);
 
-/* Sync manager send callbacks (Session 9.6.6) */
+/* Sync manager send callbacks */
 static void sync_cb_send_getheaders(peer_t *peer, const hash256_t *locator,
                                     size_t locator_len,
                                     const hash256_t *stop_hash, void *ctx);
@@ -432,7 +431,7 @@ node_t *node_create(const node_config_t *config) {
       return NULL;
     }
 
-    /* Step 5: Initialize sync manager (full node only) - Session 9.6.1 */
+    /* Step 5: Initialize sync manager (full node only) */
     result = node_init_sync(node);
     if (result != ECHO_OK) {
       node_cleanup(node);
@@ -619,8 +618,6 @@ static bool utxo_restore_callback(const utxo_entry_t *entry, void *user_data) {
  *   3. Restore the chain tip in the consensus engine
  *   4. Restore UTXO set from database into memory
  *   5. Verify UTXO database consistency (count check)
- *
- * Session 9.6.0: Storage Foundation & Chain Restoration
  */
 static echo_result_t node_restore_chain_state(node_t *node) {
   echo_result_t result;
@@ -947,8 +944,6 @@ static echo_result_t node_init_consensus(node_t *node) {
    * This loads block headers from block_index_db into the consensus engine
    * and sets up the chain tip. The UTXO set will be queried from utxo_db
    * during validation.
-   *
-   * Session 9.6.0: Storage Foundation & Chain Restoration
    */
   echo_result_t result = node_restore_chain_state(node);
   if (result != ECHO_OK) {
@@ -964,7 +959,7 @@ static echo_result_t node_init_consensus(node_t *node) {
  *
  * Creates the event dispatcher and validation/confirmation chasers.
  * These components handle parallel block validation and sequential
- * confirmation as part of the IBD rewrite (Phase 3).
+ * confirmation.
  */
 static echo_result_t node_init_chase(node_t *node) {
   /* Create chase event dispatcher */
@@ -1007,7 +1002,7 @@ static echo_result_t node_init_chase(node_t *node) {
 
 /*
  * ============================================================================
- * MEMPOOL CALLBACKS (Session 9.6.3)
+ * MEMPOOL CALLBACKS
  * ============================================================================
  *
  * These callbacks connect the mempool to the node's UTXO database,
@@ -1152,9 +1147,9 @@ static void mempool_cb_announce_tx(const hash256_t *txid, void *ctx) {
   }
 
   /*
-   * IBD Optimization (Phase 1): During initial block download, don't
-   * announce transactions to peers. We shouldn't have any in our mempool
-   * anyway (we're dropping incoming txs), but this is a safety check.
+   * During initial block download, don't announce transactions to peers.
+   * We shouldn't have any in our mempool anyway (we're dropping incoming
+   * txs), but this is a safety check.
    */
   if (node->ibd_mode) {
     return;
@@ -1194,7 +1189,6 @@ static echo_result_t node_init_mempool(node_t *node) {
 
   /*
    * Set up mempool callbacks to connect to UTXO database and P2P layer.
-   * Session 9.6.3: Transaction Processing Pipeline
    */
   mempool_callbacks_t callbacks = {
       .get_utxo = mempool_cb_get_utxo,
@@ -1212,7 +1206,7 @@ static echo_result_t node_init_mempool(node_t *node) {
 
 /*
  * ============================================================================
- * TRANSACTION ACCEPTANCE (Session 9.6.3)
+ * TRANSACTION ACCEPTANCE
  * ============================================================================
  *
  * Helper function for validating and accepting transactions into the mempool.
@@ -1365,7 +1359,7 @@ static echo_result_t node_accept_transaction(node_t *node, const tx_t *tx,
 
 /*
  * ============================================================================
- * SYNC MANAGER CALLBACKS (Session 9.6.1)
+ * SYNC MANAGER CALLBACKS
  * ============================================================================
  *
  * These callbacks connect the sync manager to the node's storage and
@@ -1801,7 +1795,7 @@ static echo_result_t sync_cb_validate_and_apply_block(const block_t *block,
     db_checkpoint(&node->block_index_db.db);
   }
 
-  /* Step 4: Prune old blocks if pruning enabled (Session 9.6.6) */
+  /* Step 4: Prune old blocks if pruning enabled */
   if (node_is_pruning_enabled(node)) {
     result = node_maybe_prune(node);
     if (result != ECHO_OK && result != ECHO_ERR_INVALID_STATE) {
@@ -1840,8 +1834,6 @@ static echo_result_t sync_cb_validate_and_apply_block(const block_t *block,
 
 /**
  * Send getheaders message to peer.
- *
- * Session 9.6.6: Headers-First Sync Integration
  */
 static void sync_cb_send_getheaders(peer_t *peer, const hash256_t *locator,
                                     size_t locator_len,
@@ -1888,8 +1880,6 @@ static void sync_cb_send_getheaders(peer_t *peer, const hash256_t *locator,
 
 /**
  * Send getdata message for blocks to peer.
- *
- * Session 9.6.6: Headers-First Sync Integration
  */
 static void sync_cb_send_getdata_blocks(peer_t *peer, const hash256_t *hashes,
                                         size_t count, void *ctx) {
@@ -1980,8 +1970,6 @@ static void sync_cb_commit_header_batch(void *ctx) {
 
 /**
  * Initialize sync manager with callbacks.
- *
- * Session 9.6.1: Block Processing Pipeline
  */
 static echo_result_t node_init_sync(node_t *node) {
   if (node == NULL || node->consensus == NULL) {
@@ -2084,14 +2072,11 @@ echo_result_t node_start(node_t *node) {
   discovery_query_dns_seeds(&node->addr_manager);
 
   /*
-   * TODO: The full start sequence will be implemented in Session 9.2:
-   *
+   * Start sequence:
    * 1. Create and start listening socket on configured port
    * 2. Start connection manager thread
    * 3. Connect to outbound peers
    * 4. Create and start sync manager for initial block download
-   *
-   * For now, we just transition to running state.
    */
 
   node->state = NODE_STATE_RUNNING;
@@ -2668,15 +2653,15 @@ static void node_handle_peer_message(node_t *node, peer_t *peer,
 
   case MSG_TX:
     /*
-     * IBD Optimization (Phase 1): During initial block download, drop all
-     * incoming transactions. They waste CPU (validation), memory (mempool),
-     * and will be in the blocks we download anyway.
+     * IBD Optimization: During initial block download, drop all incoming
+     * transactions. They waste CPU (validation), memory (mempool), and
+     * will be in the blocks we download anyway.
      */
     if (node->ibd_mode) {
       break; /* Silently drop transactions during IBD */
     }
 
-    /* Session 9.6.3: Validate and accept transaction into mempool */
+    /* Validate and accept transaction into mempool */
     if (node->mempool != NULL && !node->config.observer_mode) {
       mempool_accept_result_t result;
       echo_result_t tx_res =
@@ -2748,10 +2733,8 @@ static void node_handle_peer_message(node_t *node, peer_t *peer,
 
         if (inv->type == INV_BLOCK || inv->type == INV_WITNESS_BLOCK) {
           /*
-           * Block request handling (Session 9.6.2 - Pruning)
-           *
-           * If pruning is enabled and we've pruned this block, send NOTFOUND.
-           * Otherwise, serving blocks from storage is deferred to later sessions.
+           * Block request handling (Pruning): If pruning is enabled and
+           * we've pruned this block, send NOTFOUND.
            */
           if (node_is_pruning_enabled(node) && node->block_index_db_open) {
             bool is_pruned = false;
@@ -2769,14 +2752,14 @@ static void node_handle_peer_message(node_t *node, peer_t *peer,
               notfound_msg.payload.notfound.inventory = &notfound_inv;
               peer_queue_message(peer, &notfound_msg);
             }
-            /* If block is not pruned, we could serve it (future session) */
+            /* If block is not pruned, we could serve it */
           }
-          /* Full block serving will be implemented in a later session */
+          /* TODO: Full block serving */
         } else if (inv->type == INV_TX || inv->type == INV_WITNESS_TX) {
           /*
-           * IBD Optimization (Phase 1): During initial block download,
-           * don't serve transactions to peers. Our mempool is empty anyway
-           * (we're dropping incoming txs), and serving wastes bandwidth.
+           * IBD Optimization: During initial block download, don't serve
+           * transactions to peers. Our mempool is empty anyway (we're
+           * dropping incoming txs), and serving wastes bandwidth.
            */
           if (node->ibd_mode) {
             continue; /* Skip transaction requests during IBD */
@@ -3001,8 +2984,7 @@ echo_result_t node_process_blocks(node_t *node) {
    * - Block relay to other peers
    * - Mempool cleanup after new blocks
    *
-   * For Session 9.2, the sync manager does the heavy lifting.
-   * Additional logic can be added here in future sessions if needed.
+   * The sync manager does the heavy lifting.
    */
 
   return ECHO_OK;
@@ -3068,15 +3050,12 @@ echo_result_t node_maintenance(node_t *node) {
     sync_tick(node->sync_mgr);
 
     /*
-     * IBD Optimization (Phase 1): Detect IBD completion.
-     *
-     * When sync transitions from HEADERS/BLOCKS mode to DONE, we:
-     * 1. Set ibd_mode = false to enable transaction processing
-     * 2. Switch database to normal mode (safer, slightly slower)
-     *
-     * After this, the node participates in mempool traffic normally.
-     * UTXO persistence continues with the existing batching logic,
-     * just with synchronous writes for safety.
+     * IBD Completion Detection: When sync transitions from HEADERS/BLOCKS
+     * mode to DONE, we set ibd_mode = false to enable transaction
+     * processing and switch database to normal mode (safer, slightly
+     * slower). After this, the node participates in mempool traffic
+     * normally. UTXO persistence continues with the existing batching
+     * logic, just with synchronous writes for safety.
      */
     if (node->ibd_mode && sync_is_complete(node->sync_mgr)) {
       node->ibd_mode = false;
@@ -3288,7 +3267,7 @@ bool node_shutdown_requested(const node_t *node) {
 
 /*
  * ============================================================================
- * BLOCK APPLICATION WITH PERSISTENCE (Session 9.6.0)
+ * BLOCK APPLICATION WITH PERSISTENCE
  * ============================================================================
  */
 
@@ -3479,7 +3458,7 @@ echo_result_t node_apply_block(node_t *node, const block_t *block) {
 
 /*
  * ============================================================================
- * UTXO FLUSH (Session 9.6.7+)
+ * UTXO FLUSH
  * ============================================================================
  */
 
@@ -3743,7 +3722,7 @@ static echo_result_t node_flush_utxo_deltas_to_db(node_t *node, uint32_t height)
 
 /*
  * ============================================================================
- * OBSERVER MODE FUNCTIONS (Session 9.5)
+ * OBSERVER MODE FUNCTIONS
  * ============================================================================
  */
 
@@ -3868,7 +3847,7 @@ void node_observe_message(node_t *node, const char *command) {
 
 /*
  * ============================================================================
- * BLOCK PIPELINE PUBLIC API (Session 9.6.1)
+ * BLOCK PIPELINE PUBLIC API
  * ============================================================================
  */
 
@@ -3933,7 +3912,7 @@ echo_result_t node_process_received_block(node_t *node, const block_t *block) {
 
 /*
  * ============================================================================
- * PRUNING SUPPORT (Session 9.6.2)
+ * PRUNING SUPPORT
  * ============================================================================
  */
 

@@ -1,8 +1,6 @@
 /**
  * Bitcoin Echo — RPC Interface Tests
  *
- * Tests for Session 9.3: RPC Interface
- *
  * Verifies:
  * - JSON parsing (embedded minimal parser)
  * - JSON building (response construction)
@@ -645,7 +643,7 @@ static void test_json_parse_null_output(void) {
 
 /*
  * ============================================================================
- * TEST: Batch Request Parsing (Session 9.5+)
+ * TEST: Batch Request Parsing
  * ============================================================================
  */
 

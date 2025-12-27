@@ -39,7 +39,7 @@ typedef struct {
   size_t headers_validated;
   size_t blocks_validated;
 
-  /* Send callback tracking (Session 9.6.6) */
+  /* Send callback tracking */
   size_t getheaders_sent;
   size_t getdata_blocks_sent;
   peer_t *last_getheaders_peer;
@@ -114,7 +114,7 @@ static echo_result_t mock_validate_and_apply_block(const block_t *block,
   return ECHO_OK;
 }
 
-/* Mock callback: send getheaders (Session 9.6.6) */
+/* Mock callback: send getheaders */
 static void mock_send_getheaders(peer_t *peer, const hash256_t *locator,
                                  size_t locator_len, const hash256_t *stop_hash,
                                  void *ctx) {
@@ -127,7 +127,7 @@ static void mock_send_getheaders(peer_t *peer, const hash256_t *locator,
   tctx->last_locator_len = locator_len;
 }
 
-/* Mock callback: send getdata for blocks (Session 9.6.6) */
+/* Mock callback: send getdata for blocks */
 static void mock_send_getdata_blocks(peer_t *peer, const hash256_t *hashes,
                                      size_t count, void *ctx) {
   test_ctx_t *tctx = (test_ctx_t *)ctx;
@@ -784,7 +784,7 @@ static void test_sync_process_timeouts(void) {
 }
 
 /* ============================================================================
- * Send Callback Tests (Session 9.6.6)
+ * Send Callback Tests
  * ============================================================================
  */
 

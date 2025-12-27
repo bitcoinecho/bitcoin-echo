@@ -817,7 +817,7 @@ static void test_chainstate_multiple_outputs(void) {
 }
 
 /* ========================================================================
- * Block Index Map Tests (Session 6.3)
+ * Block Index Map Tests
  * ======================================================================== */
 
 static void test_block_index_map_create(void) {
@@ -945,7 +945,7 @@ static void test_block_index_map_find_best(void) {
 }
 
 /* ========================================================================
- * Chain Comparison Tests (Session 6.3)
+ * Chain Comparison Tests
  * ======================================================================== */
 
 static void test_chain_compare_equal(void) {
@@ -1050,7 +1050,7 @@ static void test_chain_compare_higher_difficulty(void) {
 }
 
 /* ========================================================================
- * Common Ancestor Tests (Session 6.3)
+ * Common Ancestor Tests
  * ======================================================================== */
 
 static void test_chain_find_common_ancestor_same_chain(void) {
@@ -1164,7 +1164,7 @@ static void test_chain_find_common_ancestor_different_heights(void) {
 }
 
 /* ========================================================================
- * Reorganization Planning Tests (Session 6.3)
+ * Reorganization Planning Tests
  * ======================================================================== */
 
 static void test_chain_reorg_create_simple(void) {
@@ -1303,7 +1303,7 @@ static void test_chain_reorg_create_extend_tip(void) {
 }
 
 /* ========================================================================
- * Chain State Integration Tests (Session 6.3)
+ * Chain State Integration Tests
  * ======================================================================== */
 
 static void test_chainstate_add_header(void) {

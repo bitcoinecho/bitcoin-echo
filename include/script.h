@@ -1068,7 +1068,7 @@ const char *script_error_string(script_error_t err);
 
 /*
  * ============================================================================
- * EXISTING FUNCTIONS (from Session 4.1)
+ * SCRIPT BUILDER FUNCTIONS
  * ============================================================================
  */
 
@@ -1323,14 +1323,14 @@ size_t script_push_size(size_t data_len);
 
 /*
  * ============================================================================
- * OPCODE EXECUTION (Session 4.3)
+ * OPCODE EXECUTION
  * ============================================================================
  */
 
 /*
  * Execute a single opcode.
  *
- * Handles all opcodes implemented in Session 4.3:
+ * Handles all standard opcodes:
  *   - Push: OP_0, OP_1NEGATE, OP_1-OP_16, direct pushes
  *   - Flow: OP_NOP, OP_IF, OP_NOTIF, OP_ELSE, OP_ENDIF, OP_VERIFY, OP_RETURN
  *   - Stack: OP_TOALTSTACK, OP_FROMALTSTACK, OP_DEPTH, OP_DROP, OP_DUP, etc.
@@ -1338,7 +1338,7 @@ size_t script_push_size(size_t data_len);
  *   - Comparison: OP_EQUAL, OP_EQUALVERIFY
  *   - Arithmetic: OP_1ADD, OP_1SUB, OP_NEGATE, OP_ABS, OP_NOT, OP_0NOTEQUAL,
  *                 OP_ADD, OP_SUB, OP_BOOLAND, OP_BOOLOR, OP_NUMEQUAL, etc.
- *   - Crypto: Deferred to Session 4.4
+ *   - Crypto: CHECKSIG, CHECKMULTISIG, hash operations
  *
  * Parameters:
  *   ctx      - Script execution context
@@ -1381,7 +1381,7 @@ echo_bool_t script_is_executing(const script_context_t *ctx);
 
 /*
  * ============================================================================
- * TRANSACTION CONTEXT AND SIGHASH (Session 4.5)
+ * TRANSACTION CONTEXT AND SIGHASH
  * ============================================================================
  */
 
@@ -1481,7 +1481,7 @@ echo_result_t script_verify_p2wsh(script_context_t *ctx,
 
 /*
  * ============================================================================
- * TAPROOT SCRIPT EXECUTION (Session 4.6 — BIP-341/342)
+ * TAPROOT SCRIPT EXECUTION (BIP-341/342)
  * ============================================================================
  */
 
@@ -1652,7 +1652,7 @@ echo_result_t script_execute_tapscript(script_context_t *ctx,
 
 /*
  * ============================================================================
- * P2SH EVALUATION (Session 4.7 — BIP-16)
+ * P2SH EVALUATION (BIP-16)
  * ============================================================================
  */
 

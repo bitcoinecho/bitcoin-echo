@@ -1635,7 +1635,7 @@ const char *script_error_string(script_error_t err) {
 
 /*
  * ============================================================================
- * OPCODE EXECUTION (Session 4.3)
+ * OPCODE EXECUTION
  * ============================================================================
  */
 
@@ -2857,7 +2857,7 @@ echo_result_t script_exec_op(script_context_t *ctx, const script_op_t *op) {
 
   /*
    * ============================================
-   * CRYPTO OPERATIONS (Session 4.4)
+   * CRYPTO OPERATIONS
    * ============================================
    */
 
@@ -3326,9 +3326,9 @@ echo_result_t script_exec_op(script_context_t *ctx, const script_op_t *op) {
     return stack_push_bool(&ctx->stack, result);
   }
 
-  /* OP_CHECKSIGADD: Tapscript batch signature verification (Session 4.6) */
+  /* OP_CHECKSIGADD: Tapscript batch signature verification (BIP-342) */
   if (opcode == OP_CHECKSIGADD) {
-    /* Deferred to Taproot implementation in Session 4.6 */
+    /* TODO: Implement for Tapscript */
     return script_set_error(ctx, SCRIPT_ERR_BAD_OPCODE);
   }
 
@@ -3408,7 +3408,7 @@ echo_result_t script_execute(script_context_t *ctx, const uint8_t *data,
 
 /*
  * ============================================================================
- * TRANSACTION CONTEXT AND SIGHASH (Session 4.5)
+ * TRANSACTION CONTEXT AND SIGHASH
  * ============================================================================
  */
 
@@ -4187,7 +4187,7 @@ echo_result_t script_verify_p2wsh(script_context_t *ctx,
 
 /*
  * ============================================================================
- * TAPROOT SCRIPT EXECUTION (Session 4.6 — BIP-341/342)
+ * TAPROOT SCRIPT EXECUTION (BIP-341/342)
  * ============================================================================
  */
 
@@ -4972,7 +4972,7 @@ echo_result_t script_execute_tapscript(script_context_t *ctx,
 
 /*
  * ============================================================================
- * P2SH EVALUATION (Session 4.7 — BIP-16)
+ * P2SH EVALUATION (BIP-16)
  * ============================================================================
  */
 

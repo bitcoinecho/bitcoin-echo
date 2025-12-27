@@ -4,8 +4,8 @@
  *
  * The UTXO (Unspent Transaction Output) set tracks all spendable coins.
  * This module provides the in-memory representation and operations needed
- * for chain state management. The actual persistence layer will use SQLite
- * (implemented in Phase 7), but this interface is database-agnostic.
+ * for chain state management. The actual persistence layer uses SQLite,
+ * but this interface is database-agnostic.
  *
  * Design principles:
  * - Simple, flat data structures

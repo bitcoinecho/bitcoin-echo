@@ -6,8 +6,6 @@
  *   - Block template generation helpers
  *   - Regtest-specific difficulty handling
  *
- * Session 9.6.4: Regtest Mining implementation.
- *
  * Build once. Build right. Stop.
  */
 

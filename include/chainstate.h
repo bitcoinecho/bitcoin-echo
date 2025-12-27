@@ -65,7 +65,7 @@ typedef struct block_index {
   struct block_index *prev; /* Pointer to previous block index (may be NULL) */
 
   /*
-   * Block data file position (Session 9.6.7).
+   * Block data file position.
    * Tracks where this block's data is stored on disk.
    * UINT32_MAX means "not stored" (header-only).
    */
@@ -472,7 +472,7 @@ void block_index_map_foreach(const block_index_map_t *map,
                              block_index_foreach_cb callback, void *user_data);
 
 /* ========================================================================
- * Chain Selection Operations (Session 6.3)
+ * Chain Selection Operations
  * ======================================================================== */
 
 /**

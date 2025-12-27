@@ -980,7 +980,7 @@ void block_index_map_foreach(const block_index_map_t *map,
 }
 
 /* ========================================================================
- * Chain Selection Implementation (Session 6.3)
+ * Chain Selection Implementation
  * ======================================================================== */
 
 chain_compare_result_t chain_compare(const block_index_t *a,

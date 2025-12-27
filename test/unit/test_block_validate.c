@@ -736,7 +736,7 @@ static void test_genesis_nonzero_prev(void) {
 
 /*
  * ============================================================================
- * Difficulty Adjustment Tests (Session 5.2)
+ * Difficulty Adjustment Tests
  * ============================================================================
  */
 
@@ -1115,7 +1115,7 @@ static void test_error_strings(void) {
 
 /*
  * ============================================================================
- * Full Block Validation Tests (Session 5.4)
+ * Full Block Validation Tests
  * ============================================================================
  */
 

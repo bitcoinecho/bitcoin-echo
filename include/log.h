@@ -16,8 +16,6 @@
  *   2025-12-12 14:30:45.123 [INFO] [NET] Connected to 192.168.1.1:8333
  *   2025-12-12 14:30:45.456 [WARN] [CONS] Block 000000... has unusual timestamp
  *
- * Session 9.4: Logging system implementation.
- *
  * Build once. Build right. Stop.
  */
 

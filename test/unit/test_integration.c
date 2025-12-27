@@ -1,5 +1,5 @@
 /*
- * Bitcoin Echo — Session 9.6.5 Integration Tests
+ * Bitcoin Echo — Integration Tests
  *
  * End-to-end integration tests for the full node workflow.
  *
@@ -9,8 +9,6 @@
  *   - Coinbase maturity rules (100 block wait before spending)
  *   - Chain reorganization handling (both modes)
  *   - Performance stress tests
- *
- * Session 9.6.5: Regtest & Pruning Integration Testing
  *
  * Build once. Build right. Stop.
  */
@@ -1344,7 +1342,7 @@ static void test_stress_restart_cycles(void) {
  */
 
 int main(void) {
-  test_suite_begin("Integration Tests (Session 9.6.5)");
+  test_suite_begin("Integration Tests");
 
   test_section("Archival Mode Workflow");
   test_archival_mine_blocks();

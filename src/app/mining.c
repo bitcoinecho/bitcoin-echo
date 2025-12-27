@@ -3,8 +3,6 @@
  *
  * Implementation of mining-related functionality for regtest testing.
  *
- * Session 9.6.4: Regtest Mining implementation.
- *
  * Build once. Build right. Stop.
  */
 

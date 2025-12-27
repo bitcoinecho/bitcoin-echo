@@ -4,10 +4,6 @@
  * This file implements the platform abstraction interface for POSIX systems:
  * Linux, macOS, FreeBSD, and other Unix-like operating systems.
  *
- * Session 1.2: Networking
- * Session 1.3: Threading (to be added)
- * Session 1.4: Files, Time, Entropy (to be added)
- *
  * Build once. Build right. Stop.
  */
 

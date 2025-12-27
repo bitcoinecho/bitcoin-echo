@@ -30,7 +30,6 @@
 #include "tx_validate.h"
 #include "utxo.h"
 
-/* IBD profiling - Session 9.6.7+ Phase 2 */
 #define LOG_COMPONENT LOG_COMP_CONS
 #include "log.h"
 #include "platform.h"

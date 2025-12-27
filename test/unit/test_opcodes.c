@@ -611,7 +611,7 @@ int main(void)
 
     /*
      * ==========================================
-     * CRYPTO OPCODES (Session 4.4)
+     * CRYPTO OPCODES
      * ==========================================
      */
     test_section("Crypto opcode tests");

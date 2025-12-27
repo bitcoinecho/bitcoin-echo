@@ -51,7 +51,7 @@ typedef enum {
   BLOCK_STATUS_VALID_CHAIN = 0x08,   /* Block is part of best chain */
   BLOCK_STATUS_HAVE_DATA = 0x10,     /* Full block data is stored */
   BLOCK_STATUS_FAILED = 0x20,        /* Block validation failed */
-  BLOCK_STATUS_PRUNED = 0x40,        /* Block data has been pruned (Session 9.6.2) */
+  BLOCK_STATUS_PRUNED = 0x40,        /* Block data has been pruned */
 } block_status_flags_t;
 
 /*
@@ -424,7 +424,7 @@ echo_result_t block_index_db_get_chainwork(block_index_db_t *bdb,
                                            work256_t *chainwork);
 
 /* ========================================================================
- * Pruning Operations (Session 9.6.2)
+ * Pruning Operations
  * ======================================================================== */
 
 /**

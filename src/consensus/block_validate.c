@@ -379,8 +379,8 @@ echo_bool_t block_validate_header(const block_header_t *header,
 
   /*
    * Note: Difficulty validation (bits == expected_bits) is NOT done here.
-   * That requires the difficulty adjustment algorithm from Session 5.2.
-   * The ctx->expected_bits field is provided for that future use.
+   * That requires the difficulty adjustment algorithm.
+   * The ctx->expected_bits field is provided for that.
    */
 
   return ECHO_TRUE;
@@ -542,7 +542,7 @@ const char *block_validation_error_str(block_validation_error_t error) {
 
 /*
  * ============================================================================
- * Difficulty Adjustment Implementation (Session 5.2)
+ * Difficulty Adjustment Implementation
  * ============================================================================
  */
 
@@ -865,7 +865,7 @@ echo_bool_t block_validate_difficulty(const block_header_t *header,
 
 /*
  * ============================================================================
- * Coinbase Validation Implementation (Session 5.3)
+ * Coinbase Validation Implementation
  * ============================================================================
  */
 
@@ -1350,7 +1350,7 @@ echo_bool_t coinbase_is_mature(uint32_t coinbase_height,
 
 /*
  * ============================================================================
- * Full Block Validation Implementation (Session 5.4)
+ * Full Block Validation Implementation
  * ============================================================================
  */
 

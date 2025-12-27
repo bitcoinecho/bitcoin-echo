@@ -9,8 +9,6 @@
  *   - Timestamp computation uses platform time functions
  *   - Component enable/disable uses bitfield for efficiency
  *
- * Session 9.4: Logging system implementation.
- *
  * Build once. Build right. Stop.
  */
 
