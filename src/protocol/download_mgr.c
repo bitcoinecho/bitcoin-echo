@@ -297,7 +297,9 @@ void download_mgr_remove_peer(download_mgr_t *mgr, peer_t *peer) {
       item->assigned_peer = NULL;
       item->assigned_time = 0;
       mgr->pending_count++;
-      mgr->inflight_count--;
+      if (mgr->inflight_count > 0) {
+        mgr->inflight_count--;
+      }
     }
   }
 
@@ -431,7 +433,9 @@ bool download_mgr_block_received(download_mgr_t *mgr, peer_t *peer,
       perf->blocks_in_flight--;
     }
   }
-  mgr->inflight_count--;
+  if (mgr->inflight_count > 0) {
+    mgr->inflight_count--;
+  }
 
   /* Update peer performance tracking */
   peer_perf_t *perf = find_peer_perf(mgr, peer);
@@ -514,7 +518,9 @@ void download_mgr_check_performance(download_mgr_t *mgr) {
             item->assigned_peer = NULL;
             item->retry_count++;
             mgr->pending_count++;
-            mgr->inflight_count--;
+            if (mgr->inflight_count > 0) {
+              mgr->inflight_count--;
+            }
           }
         }
         perf->blocks_in_flight = 0;
@@ -593,9 +599,13 @@ size_t download_mgr_split_work(download_mgr_t *mgr, peer_t *slow_peer) {
       item->state = WORK_STATE_PENDING;
       item->assigned_peer = NULL;
       item->retry_count++;
-      perf->blocks_in_flight--;
+      if (perf->blocks_in_flight > 0) {
+        perf->blocks_in_flight--;
+      }
       mgr->pending_count++;
-      mgr->inflight_count--;
+      if (mgr->inflight_count > 0) {
+        mgr->inflight_count--;
+      }
       unassigned++;
     }
   }
