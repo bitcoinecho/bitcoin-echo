@@ -78,9 +78,8 @@ struct node {
   bool block_index_db_open;
   bool block_storage_init;
 
-  /* IBD optimization: defer UTXO persistence for speed */
+  /* IBD optimization: defer UTXO persistence until shutdown */
   bool ibd_mode;                   /* Currently in initial block download */
-  uint32_t last_utxo_persist_height; /* Last height we persisted UTXOs */
 
   /* Consensus engine (NULL if in observer mode) */
   consensus_engine_t *consensus;
@@ -113,20 +112,6 @@ struct node {
   size_t invalid_block_count;
   size_t invalid_block_write_idx;  /* Ring buffer write position */
 
-  /*
-   * UTXO Delta Accumulator (Session IBD optimization)
-   *
-   * Instead of flushing ALL UTXOs at each checkpoint, we only:
-   *   - DELETE spent outpoints (accumulated here)
-   *   - INSERT newly created UTXOs (collected at flush time by filtering
-   *     the in-memory UTXO set by height > last_checkpoint)
-   *
-   * This reduces checkpoint I/O from ~6.6M to ~150k operations.
-   */
-  #define UTXO_ACCUM_INITIAL_CAPACITY 65536
-  outpoint_t *accum_spent;           /* Array of spent outpoints */
-  size_t accum_spent_count;
-  size_t accum_spent_capacity;
 };
 
 /*
@@ -136,7 +121,7 @@ struct node {
  */
 
 static echo_result_t node_init_directories(node_t *node);
-static echo_result_t node_flush_utxo_set_to_db(node_t *node, uint32_t height);
+static echo_result_t node_flush_utxo_shutdown(node_t *node);
 static echo_result_t node_init_databases(node_t *node);
 static echo_result_t node_init_consensus(node_t *node);
 static echo_result_t node_restore_chain_state(node_t *node);
@@ -171,79 +156,6 @@ static echo_result_t sync_cb_get_block_hash_at_height(uint32_t height,
                                                        void *ctx);
 static void sync_cb_disconnect_peer(peer_t *peer, const char *reason,
                                     void *ctx);
-
-/*
- * ============================================================================
- * UTXO DELTA ACCUMULATOR
- * ============================================================================
- *
- * Functions to manage the UTXO delta accumulator for efficient checkpointing.
- */
-
-/**
- * Initialize the spent outpoint accumulator.
- */
-static echo_result_t node_accum_init(node_t *node) {
-  node->accum_spent = calloc(UTXO_ACCUM_INITIAL_CAPACITY, sizeof(outpoint_t));
-  if (node->accum_spent == NULL) {
-    return ECHO_ERR_NOMEM;
-  }
-  node->accum_spent_count = 0;
-  node->accum_spent_capacity = UTXO_ACCUM_INITIAL_CAPACITY;
-
-  return ECHO_OK;
-}
-
-/**
- * Free the accumulator array entirely.
- */
-static void node_accum_free(node_t *node) {
-  free(node->accum_spent);
-  node->accum_spent = NULL;
-  node->accum_spent_count = 0;
-  node->accum_spent_capacity = 0;
-}
-
-/**
- * Accumulate spent outpoints for delta flush at next checkpoint.
- * Grows the array if needed.
- */
-static echo_result_t node_accum_spent(node_t *node, const outpoint_t *outpoints,
-                                       size_t count) {
-  if (count == 0) {
-    return ECHO_OK;
-  }
-
-  /* Grow array if needed */
-  size_t needed = node->accum_spent_count + count;
-  if (needed > node->accum_spent_capacity) {
-    size_t new_cap = node->accum_spent_capacity * 2;
-    while (new_cap < needed) {
-      new_cap *= 2;
-    }
-    outpoint_t *new_arr = realloc(node->accum_spent, new_cap * sizeof(outpoint_t));
-    if (new_arr == NULL) {
-      return ECHO_ERR_NOMEM;
-    }
-    node->accum_spent = new_arr;
-    node->accum_spent_capacity = new_cap;
-  }
-
-  /* Copy outpoints */
-  memcpy(&node->accum_spent[node->accum_spent_count], outpoints,
-         count * sizeof(outpoint_t));
-  node->accum_spent_count += count;
-
-  return ECHO_OK;
-}
-
-/**
- * Clear accumulated spent outpoints (after checkpoint flush).
- * Keeps the array allocated for reuse.
- */
-static void node_accum_clear(node_t *node) {
-  node->accum_spent_count = 0;
-}
 
 /*
  * ============================================================================
@@ -448,13 +360,6 @@ node_t *node_create(const node_config_t *config) {
       return NULL;
     }
 
-    /* Step 5b: Initialize UTXO delta accumulator for efficient checkpointing */
-    result = node_accum_init(node);
-    if (result != ECHO_OK) {
-      node_cleanup(node);
-      free(node);
-      return NULL;
-    }
   }
 
   /* Step 6: Initialize peer discovery (both modes) */
@@ -545,7 +450,6 @@ static echo_result_t node_init_databases(node_t *node) {
   /* Enable IBD mode for fast initial sync (will be disabled when sync complete)
    */
   node->ibd_mode = true;
-  node->last_utxo_persist_height = 0;
   db_set_ibd_mode(&node->utxo_db.db, true);
 
   /* Open block index database */
@@ -1930,22 +1834,40 @@ echo_result_t node_stop(node_t *node) {
   }
 
   node->state = NODE_STATE_STOPPING;
+  log_info(LOG_COMP_MAIN, "Node shutdown initiated...");
 
   /*
    * Shutdown sequence:
-   * 1. Stop accepting new connections
-   * 2. Disconnect all peers
-   * 3. Stop sync manager
-   * 4. Databases will be closed in node_destroy()
-   *
-   * NOTE: We do NOT save validated_tip or flush UTXOs on shutdown.
-   * State is only persisted at fixed 5000-block checkpoints during IBD.
-   * This is intentional: it's simpler and avoids UTXO/stored-block mismatches.
-   * On restart, we always resume from the last 5000-block checkpoint.
-   * Max 4999 blocks of progress may be lost, but the state is always consistent.
+   * 1. Flush UTXO set to database (IBD mode only)
+   * 2. Persist validated tip height
+   * 3. Stop accepting new connections
+   * 4. Disconnect all peers
+   * 5. Databases will be closed in node_destroy()
    */
 
-  /* Stop listening socket */
+  /* Step 1: Flush UTXO set during IBD mode */
+  if (node->ibd_mode && node->consensus != NULL) {
+    log_info(LOG_COMP_MAIN, "Flushing UTXO set to database...");
+    echo_result_t flush_result = node_flush_utxo_shutdown(node);
+    if (flush_result != ECHO_OK) {
+      log_error(LOG_COMP_MAIN, "Failed to flush UTXO set: %d", flush_result);
+      /* Continue shutdown even if flush fails */
+    }
+  }
+
+  /* Step 2: Persist validated tip */
+  if (node->block_index_db_open && node->consensus != NULL) {
+    chainstate_t *cs = consensus_get_chainstate(node->consensus);
+    if (cs != NULL) {
+      uint32_t validated_height = chainstate_get_height(cs);
+      block_index_db_set_validated_tip(&node->block_index_db, validated_height,
+                                       NULL);
+      log_info(LOG_COMP_MAIN, "Persisted validated tip: height=%u",
+               validated_height);
+    }
+  }
+
+  /* Step 3: Stop listening socket */
   if (node->is_listening && node->listen_socket != NULL) {
     plat_socket_close(node->listen_socket);
     plat_socket_free(node->listen_socket);
@@ -1953,13 +1875,14 @@ echo_result_t node_stop(node_t *node) {
     node->is_listening = false;
   }
 
-  /* Disconnect all peers */
+  /* Step 4: Disconnect all peers */
   for (size_t i = 0; i < NODE_MAX_PEERS; i++) {
     if (peer_is_connected(&node->peers[i])) {
       peer_disconnect(&node->peers[i], PEER_DISCONNECT_USER, "Node shutdown");
     }
   }
 
+  log_info(LOG_COMP_MAIN, "Node shutdown complete");
   node->state = NODE_STATE_STOPPED;
   return ECHO_OK;
 }
@@ -1991,9 +1914,6 @@ void node_destroy(node_t *node) {
  * Cleanup all node resources.
  */
 static void node_cleanup(node_t *node) {
-  /* Free UTXO delta accumulator */
-  node_accum_free(node);
-
   /*
    * Destroy chase event system (reverse order of creation).
    * Signal CHASE_STOP first to allow chasers to drain their queues.
@@ -3250,17 +3170,14 @@ echo_result_t node_apply_block(node_t *node, const block_t *block) {
     }
 
     /*
-     * IBD OPTIMIZATION: Skip per-block UTXO persistence during initial sync.
-     * The in-memory UTXO set is sufficient for validation.
+     * UTXO Persistence Strategy:
      *
-     * At checkpoint intervals (every 5,000 blocks), we flush the ENTIRE
-     * in-memory UTXO set to the database. This ensures all accumulated
-     * UTXOs are persisted, not just the current block's changes.
+     * NORMAL MODE: Persist every block to SQLite (real-time durability)
      *
-     * This gives ~10x speedup during IBD by eliminating per-block SQLite writes.
+     * IBD MODE: Skip all per-block persistence. The in-memory UTXO set is
+     * the source of truth. Persistence only happens at clean shutdown.
+     * This eliminates ALL SQLite I/O during IBD for maximum sync speed.
      */
-#define UTXO_PERSIST_INTERVAL 5000
-
     if (!node->ibd_mode) {
       /* Normal operation: persist every block */
       result = utxo_db_apply_block(&node->utxo_db, new_utxos, new_count,
@@ -3269,40 +3186,8 @@ echo_result_t node_apply_block(node_t *node, const block_t *block) {
         log_error(LOG_COMP_DB, "Failed to apply block to UTXO database: %d",
                   result);
       }
-    } else {
-      /* IBD mode: accumulate spent outpoints for delta flush at checkpoint */
-      echo_result_t accum_result = node_accum_spent(node, spent_outpoints, spent_count);
-      if (accum_result != ECHO_OK) {
-        log_error(LOG_COMP_DB, "Failed to accumulate spent outpoints: %d",
-                  accum_result);
-      }
-
-      if (height % UTXO_PERSIST_INTERVAL == 0) {
-        /* IBD checkpoint: delta flush - delete spent, insert new */
-        result = node_flush_utxo_set_to_db(node, height);
-
-        if (result == ECHO_OK) {
-          node->last_utxo_persist_height = height;
-
-          /* Clear accumulator after successful flush */
-          node_accum_clear(node);
-
-          /* Also persist validated tip */
-          if (node->block_index_db_open) {
-            block_index_db_set_validated_tip(&node->block_index_db, height, NULL);
-          }
-
-          log_info(LOG_COMP_DB, "Checkpoint at height %u (UTXO + validated tip)",
-                   height);
-
-          /* Trigger pruning check after each checkpoint during IBD */
-          node_maybe_prune(node);
-        } else {
-          log_error(LOG_COMP_DB, "Failed to flush UTXO set at checkpoint: %d",
-                    result);
-        }
-      }
     }
+    /* IBD mode: no persistence - flush happens at shutdown only */
 
     free(new_utxos);
     free(new_entries);
@@ -3317,62 +3202,52 @@ echo_result_t node_apply_block(node_t *node, const block_t *block) {
 
 /*
  * ============================================================================
- * UTXO FLUSH
+ * UTXO SHUTDOWN FLUSH
  * ============================================================================
+ *
+ * At clean shutdown, rebuild the UTXO database from the in-memory set.
+ * This is the ONLY time we persist UTXOs during IBD - no periodic checkpoints.
+ *
+ * Strategy: DELETE all from SQLite, then INSERT all from memory.
+ * This is simpler and more reliable than delta-tracking.
  */
 
 /* Context for UTXO flush callback */
 typedef struct {
   utxo_db_t *udb;
-  uint32_t min_height; /* Only insert UTXOs created above this height */
   size_t inserted;
-  size_t skipped;
   echo_result_t result;
 } utxo_flush_ctx_t;
 
-/* Callback to insert each UTXO into the database (delta-based) */
+/* Callback to insert each UTXO into the database */
 static bool utxo_flush_callback(const utxo_entry_t *entry, void *user_data) {
   utxo_flush_ctx_t *ctx = (utxo_flush_ctx_t *)user_data;
   if (ctx == NULL || entry == NULL) {
     return false;
   }
 
-  /* Delta-based flush: only insert UTXOs created since last checkpoint.
-   * UTXOs from earlier blocks were already persisted in previous checkpoints.
-   * This reduces checkpoint I/O from ~10M to ~50-100k operations. */
-  if (entry->height <= ctx->min_height) {
-    ctx->skipped++;
-    return true; /* Skip but continue iteration */
-  }
-
-  /* Try to insert (INSERT OR IGNORE handles duplicates) */
   echo_result_t result = utxo_db_insert(ctx->udb, entry);
-  if (result == ECHO_OK) {
+  if (result == ECHO_OK || result == ECHO_ERR_EXISTS) {
     ctx->inserted++;
-  } else if (result == ECHO_ERR_EXISTS) {
-    ctx->skipped++;
-  } else {
-    ctx->result = result;
-    return false; /* Stop iteration on error */
+    return true;
   }
 
-  return true; /* Continue iteration */
+  ctx->result = result;
+  return false; /* Stop iteration on error */
 }
 
 /**
- * Delta-based UTXO flush to database.
+ * Flush entire in-memory UTXO set to database (shutdown only).
  *
- * 1. DELETE spent UTXOs accumulated since last checkpoint
- * 2. INSERT new UTXOs created since last checkpoint (height > last_persist)
- *
- * This reduces checkpoint I/O from ~10M full inserts to ~50-150k delta operations.
+ * Called from node_stop() during clean shutdown to persist all UTXOs.
+ * Replaces the entire database contents with the current in-memory state.
  */
-static echo_result_t node_flush_utxo_set_to_db(node_t *node, uint32_t height) {
+static echo_result_t node_flush_utxo_shutdown(node_t *node) {
   if (node == NULL || node->consensus == NULL) {
     return ECHO_ERR_NULL_PARAM;
   }
 
-  /* IBD profiling - track flush timing */
+  /* Track flush timing */
   uint64_t flush_start = plat_monotonic_ms();
 
   /* Get the chainstate UTXO set */
@@ -3387,16 +3262,10 @@ static echo_result_t node_flush_utxo_set_to_db(node_t *node, uint32_t height) {
   }
 
   size_t utxo_count = utxo_set_size(utxo_set);
+  log_info(LOG_COMP_DB, "Shutdown UTXO flush: persisting %zu UTXOs...",
+           utxo_count);
 
-  /* Delta-based flush: delete spent, insert new */
-  uint32_t min_height = node->last_utxo_persist_height;
-  size_t accum_count = node->accum_spent_count;
-  log_info(LOG_COMP_DB,
-           "Delta UTXO flush: %zu total UTXOs, deleting %zu spent, inserting "
-           "from height %u to %u",
-           utxo_count, accum_count, min_height + 1, height);
-
-  /* Begin transaction for atomic delta flush */
+  /* Begin transaction for atomic flush */
   echo_result_t result = db_begin(&node->utxo_db.db);
   if (result != ECHO_OK) {
     log_error(LOG_COMP_DB, "Failed to begin UTXO flush transaction: %d",
@@ -3404,27 +3273,18 @@ static echo_result_t node_flush_utxo_set_to_db(node_t *node, uint32_t height) {
     return result;
   }
 
-  /* Step 1: DELETE accumulated spent outpoints */
-  size_t deleted = 0;
-  for (size_t i = 0; i < accum_count; i++) {
-    echo_result_t del_result = utxo_db_delete(&node->utxo_db,
-                                               &node->accum_spent[i]);
-    if (del_result == ECHO_OK) {
-      deleted++;
-    } else if (del_result != ECHO_ERR_NOT_FOUND) {
-      /* NOT_FOUND is OK (UTXO created and spent in same interval) */
-      log_error(LOG_COMP_DB, "Failed to delete spent UTXO: %d", del_result);
-      (void)db_rollback(&node->utxo_db.db);
-      return del_result;
-    }
+  /* Step 1: Clear existing UTXOs (fresh start) */
+  result = utxo_db_clear(&node->utxo_db);
+  if (result != ECHO_OK) {
+    log_error(LOG_COMP_DB, "Failed to clear UTXO database: %d", result);
+    (void)db_rollback(&node->utxo_db.db);
+    return result;
   }
 
-  /* Step 2: INSERT new UTXOs (height > min_height) */
+  /* Step 2: Insert all UTXOs from memory */
   utxo_flush_ctx_t ctx = {
       .udb = &node->utxo_db,
-      .min_height = min_height,
       .inserted = 0,
-      .skipped = 0,
       .result = ECHO_OK,
   };
 
@@ -3446,28 +3306,15 @@ static echo_result_t node_flush_utxo_set_to_db(node_t *node, uint32_t height) {
     return result;
   }
 
-  /* IBD profiling - log flush timing */
+  /* Log flush timing */
   uint64_t flush_elapsed = plat_monotonic_ms() - flush_start;
+  double rate = flush_elapsed > 0 ? (double)ctx.inserted / flush_elapsed : 0.0;
   log_info(LOG_COMP_DB,
-           "Delta UTXO flush complete in %lums: %zu deleted, %zu inserted, "
-           "%zu skipped (rate=%.1f ops/ms)",
-           (unsigned long)flush_elapsed, deleted, ctx.inserted, ctx.skipped,
-           flush_elapsed > 0 ? (double)(deleted + ctx.inserted) / flush_elapsed : 0.0);
+           "Shutdown UTXO flush complete in %lums: %zu inserted (%.1f/ms)",
+           (unsigned long)flush_elapsed, ctx.inserted, rate);
 
   return ECHO_OK;
 }
-
-/*
- * ============================================================================
- * DELTA-BASED UTXO FLUSH (IBD Optimization)
- * ============================================================================
- *
- * Instead of flushing all ~6.6M UTXOs at each checkpoint, we:
- *   1. INSERT only UTXOs created since last checkpoint (height > threshold)
- *   2. DELETE only UTXOs that were spent since last checkpoint
- *
- * This reduces checkpoint I/O from ~6.6M to ~150k operations (5000 blocks).
- */
 
 /*
  * ============================================================================

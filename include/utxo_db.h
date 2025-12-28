@@ -221,6 +221,25 @@ echo_result_t utxo_db_apply_block(utxo_db_t *udb,
                                   size_t spent_count);
 
 /* ========================================================================
+ * Database Maintenance
+ * ======================================================================== */
+
+/**
+ * Clear all UTXOs from the database.
+ *
+ * Parameters:
+ *   udb - UTXO database handle
+ *
+ * Returns:
+ *   ECHO_OK on success, error code on failure
+ *
+ * Notes:
+ *   - Should be called within a transaction for atomicity
+ *   - Used during shutdown flush to rebuild from memory
+ */
+echo_result_t utxo_db_clear(utxo_db_t *udb);
+
+/* ========================================================================
  * Statistics and Queries
  * ======================================================================== */
 

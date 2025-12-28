@@ -416,6 +416,22 @@ echo_result_t utxo_db_apply_block(utxo_db_t *udb,
 }
 
 /* ========================================================================
+ * Database Maintenance
+ * ======================================================================== */
+
+echo_result_t utxo_db_clear(utxo_db_t *udb) {
+  ECHO_ASSERT(udb != NULL);
+
+  /* Execute DELETE FROM utxo to clear all entries */
+  echo_result_t res = db_exec(&udb->db, "DELETE FROM utxo");
+  if (res != ECHO_OK) {
+    return res;
+  }
+
+  return ECHO_OK;
+}
+
+/* ========================================================================
  * Statistics and Queries
  * ======================================================================== */
 
