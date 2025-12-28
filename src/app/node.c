@@ -2479,6 +2479,10 @@ static void node_handle_peer_message(node_t *node, peer_t *peer,
     if (node->sync_mgr != NULL) {
       sync_handle_block(node->sync_mgr, peer, &msg->payload.block.block);
     }
+    /* Free block data to prevent memory leak - each block contains
+     * dynamically allocated transactions with inputs/outputs/scripts.
+     * Cast away const: we own this memory (parser allocated it) and are done. */
+    block_free((block_t *)&msg->payload.block.block);
     break;
 
   case MSG_TX:
@@ -2488,6 +2492,7 @@ static void node_handle_peer_message(node_t *node, peer_t *peer,
      * will be in the blocks we download anyway.
      */
     if (node->ibd_mode) {
+      tx_free((tx_t *)&msg->payload.tx.tx);
       break; /* Silently drop transactions during IBD */
     }
 
@@ -2502,6 +2507,9 @@ static void node_handle_peer_message(node_t *node, peer_t *peer,
                   mempool_reject_string(result.reason));
       }
     }
+    /* Free transaction data - mempool clones if accepted.
+     * Cast away const: we own this memory (parser allocated it) and are done. */
+    tx_free((tx_t *)&msg->payload.tx.tx);
     break;
 
   case MSG_INV:
