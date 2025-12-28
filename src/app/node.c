@@ -137,7 +137,6 @@ struct node {
 
 static echo_result_t node_init_directories(node_t *node);
 static echo_result_t node_flush_utxo_set_to_db(node_t *node, uint32_t height);
-static echo_result_t node_flush_utxo_deltas_to_db(node_t *node, uint32_t height);
 static echo_result_t node_init_databases(node_t *node);
 static echo_result_t node_init_consensus(node_t *node);
 static echo_result_t node_restore_chain_state(node_t *node);
@@ -151,17 +150,13 @@ static echo_result_t node_cleanup_orphan_block_files(node_t *node);
 /* Sync manager callbacks */
 static echo_result_t sync_cb_get_block(const hash256_t *hash, block_t *block_out,
                                        void *ctx);
-static echo_result_t sync_cb_store_block(const block_t *block, void *ctx);
+/* node_store_block is public, forward declaration not needed */
 static echo_result_t sync_cb_validate_header(const block_header_t *header,
                                              const hash256_t *hash,
                                              const block_index_t *prev_index,
                                              void *ctx);
 static echo_result_t sync_cb_store_header(const block_header_t *header,
                                           const block_index_t *index, void *ctx);
-/* Direct block validation - not a sync callback, used by node_process_received_block */
-static echo_result_t node_validate_and_apply_block(const block_t *block,
-                                                   const block_index_t *index,
-                                                   node_t *node);
 /* Helper functions */
 static uint64_t generate_nonce(void);
 
@@ -195,36 +190,6 @@ static echo_result_t node_accum_init(node_t *node) {
   node->accum_spent_capacity = UTXO_ACCUM_INITIAL_CAPACITY;
 
   return ECHO_OK;
-}
-
-/**
- * Add a spent outpoint to the accumulator.
- */
-static echo_result_t node_accum_add_spent(node_t *node, const outpoint_t *outpoint) {
-  if (node->accum_spent == NULL) {
-    return ECHO_ERR_INVALID;
-  }
-
-  /* Grow array if needed */
-  if (node->accum_spent_count >= node->accum_spent_capacity) {
-    size_t new_cap = node->accum_spent_capacity * 2;
-    outpoint_t *new_arr = realloc(node->accum_spent, new_cap * sizeof(outpoint_t));
-    if (new_arr == NULL) {
-      return ECHO_ERR_NOMEM;
-    }
-    node->accum_spent = new_arr;
-    node->accum_spent_capacity = new_cap;
-  }
-
-  node->accum_spent[node->accum_spent_count++] = *outpoint;
-  return ECHO_OK;
-}
-
-/**
- * Clear the accumulator (reset count).
- */
-static void node_accum_clear(node_t *node) {
-  node->accum_spent_count = 0;
 }
 
 /**
@@ -1447,8 +1412,7 @@ static echo_result_t sync_cb_get_block(const hash256_t *hash, block_t *block_out
  * to be re-downloaded. Records the file position in the database and
  * in-memory block index for later retrieval.
  */
-static echo_result_t sync_cb_store_block(const block_t *block, void *ctx) {
-  node_t *node = (node_t *)ctx;
+echo_result_t node_store_block(node_t *node, const block_t *block) {
   if (node == NULL || block == NULL) {
     return ECHO_ERR_NULL_PARAM;
   }
@@ -1522,6 +1486,13 @@ static echo_result_t sync_cb_store_block(const block_t *block, void *ctx) {
             pos.file_index, pos.file_offset);
 
   return ECHO_OK;
+}
+
+/**
+ * Sync callback wrapper for node_store_block.
+ */
+static echo_result_t sync_cb_store_block(const block_t *block, void *ctx) {
+  return node_store_block((node_t *)ctx, block);
 }
 
 /**
@@ -1608,7 +1579,11 @@ static echo_result_t sync_cb_store_header(const block_header_t *header,
 
 /**
  * Mark a block as invalid (add to invalid blocks list).
+ *
+ * NOTE: Currently unused but will be needed when handling CHASE_UNVALID events
+ * in the unified validation path. Kept for future use.
  */
+__attribute__((unused))
 static void node_mark_block_invalid(node_t *node, const hash256_t *hash) {
   /* Check if already marked - inline check to avoid forward declaration */
   for (size_t i = 0; i < node->invalid_block_count; i++) {
@@ -1625,225 +1600,6 @@ static void node_mark_block_invalid(node_t *node, const hash256_t *hash) {
   if (node->invalid_block_count < NODE_MAX_INVALID_BLOCKS) {
     node->invalid_block_count++;
   }
-}
-
-/**
- * Validate and apply a full block.
- *
- * This handles direct block processing (blocks from RPC, relay, etc).
- * During IBD, validation is chase-driven instead (CHASE_CHECKED → chaser_validate).
- *
- * Steps:
- *   1. Check if block is already known invalid
- *   2. Validate block via consensus engine
- *   3. If valid, apply to chain state and storage
- *   4. If invalid, mark as invalid and log error
- *   5. Announce valid blocks to peers (if not in IBD)
- */
-static echo_result_t node_validate_and_apply_block(const block_t *block,
-                                                   const block_index_t *index,
-                                                   node_t *node) {
-  if (node == NULL || block == NULL) {
-    return ECHO_ERR_NULL_PARAM;
-  }
-
-  /* Compute block hash */
-  hash256_t block_hash;
-  echo_result_t result = block_header_hash(&block->header, &block_hash);
-  if (result != ECHO_OK) {
-    log_error(LOG_COMP_CONS, "Failed to compute block hash");
-    return result;
-  }
-
-  /* Step 1: Check if block is already known invalid */
-  if (node_is_block_invalid(node, &block_hash)) {
-    log_debug(LOG_COMP_CONS, "Rejecting known-invalid block");
-    return ECHO_ERR_INVALID;
-  }
-
-  /*
-   * Step 2+3: Validate and apply block in one operation.
-   *
-   * This uses consensus_validate_and_apply_block() which computes TXIDs once
-   * and reuses them for both merkle/same-block validation AND UTXO creation.
-   * This saves ~50% of SHA256 operations compared to separate validate+apply.
-   */
-  consensus_result_t validation_result;
-  consensus_result_init(&validation_result);
-
-  result = consensus_validate_and_apply_block(node->consensus, block,
-                                              &validation_result);
-
-  if (result == ECHO_ERR_INVALID) {
-    /* Validation failed - mark as invalid and log error */
-    node_mark_block_invalid(node, &block_hash);
-
-    /* Log detailed error information */
-    uint32_t height = 0;
-    if (index != NULL) {
-      height = index->height;
-    }
-
-    log_error(LOG_COMP_CONS,
-              "Block validation failed at height %u: %s (tx=%zu, input=%zu)",
-              height,
-              consensus_error_str(validation_result.error),
-              validation_result.failing_index,
-              validation_result.failing_input_index);
-
-    /* Log additional detail based on error type */
-    if (validation_result.error == CONSENSUS_ERR_TX_SCRIPT) {
-      log_error(LOG_COMP_CONS, "  Script error: %d", validation_result.script_error);
-    } else if (validation_result.error == CONSENSUS_ERR_BLOCK_HEADER) {
-      log_error(LOG_COMP_CONS, "  Block error: %d", validation_result.block_error);
-    }
-
-    return ECHO_ERR_INVALID;
-  }
-
-  if (result != ECHO_OK) {
-    log_error(LOG_COMP_CONS, "Failed to apply block: %d", result);
-    return result;
-  }
-
-  /*
-   * Accumulate spent outpoints for delta-based checkpoint flushing.
-   * We only track spent outpoints here - created UTXOs are collected at
-   * checkpoint time by filtering the in-memory UTXO set by height.
-   */
-  if (node->ibd_mode && node->accum_spent != NULL) {
-    for (size_t tx_idx = 0; tx_idx < block->tx_count; tx_idx++) {
-      const tx_t *tx = &block->txs[tx_idx];
-      /* Skip coinbase - it has no real inputs */
-      if (tx_is_coinbase(tx)) {
-        continue;
-      }
-      /* Add each spent input's prevout to accumulator */
-      for (size_t in_idx = 0; in_idx < tx->input_count; in_idx++) {
-        node_accum_add_spent(node, &tx->inputs[in_idx].prevout);
-      }
-    }
-  }
-
-  /*
-   * Update block index database with validated status.
-   * Note: Block data storage is already done when block was received.
-   */
-  if (node->block_index_db_open) {
-    const block_index_t *block_idx =
-        consensus_lookup_block_index(node->consensus, &block_hash);
-    work256_t chainwork;
-    if (block_idx != NULL) {
-      chainwork = block_idx->chainwork;
-    } else {
-      work256_zero(&chainwork);
-    }
-
-    uint32_t height = consensus_get_height(node->consensus);
-    block_index_entry_t entry = {
-        .hash = block_hash,
-        .height = height,
-        .header = block->header,
-        .chainwork = chainwork,
-        .status = BLOCK_STATUS_VALID_HEADER | BLOCK_STATUS_VALID_TREE |
-                  BLOCK_STATUS_VALID_SCRIPTS | BLOCK_STATUS_VALID_CHAIN |
-                  BLOCK_STATUS_HAVE_DATA,
-        .data_file = -1,
-        .data_pos = 0};
-
-    echo_result_t db_result = block_index_db_insert(&node->block_index_db, &entry);
-    if (db_result != ECHO_OK && db_result != ECHO_ERR_EXISTS) {
-      log_warn(LOG_COMP_DB, "Failed to update block index: %d", db_result);
-      /* Continue anyway - block is applied */
-    }
-  }
-
-  /*
-   * IBD checkpoint: Flush UTXO deltas and save validated tip every 5000 blocks.
-   * This ensures we can resume from a known-good state on restart.
-   *
-   * Delta flush optimization: Instead of flushing all ~6.6M UTXOs, we only
-   * INSERT newly created UTXOs (height > last_checkpoint) and DELETE spent
-   * outpoints accumulated since the last checkpoint. This reduces checkpoint
-   * I/O from ~6.6M to ~150k operations.
-   */
-#define UTXO_CHECKPOINT_INTERVAL 5000
-  uint32_t height = consensus_get_height(node->consensus);
-  if (node->ibd_mode && node->utxo_db_open &&
-      height % UTXO_CHECKPOINT_INTERVAL == 0 && height > 0) {
-    log_info(LOG_COMP_DB, "IBD checkpoint at height %u - flushing UTXO deltas...",
-             height);
-
-    echo_result_t flush_result = node_flush_utxo_deltas_to_db(node, height);
-    if (flush_result == ECHO_OK) {
-      node->last_utxo_persist_height = height;
-
-      /* Also persist validated tip */
-      if (node->block_index_db_open) {
-        block_index_db_set_validated_tip(&node->block_index_db, height, NULL);
-      }
-
-      /* Checkpoint UTXO WAL right after flush */
-      if (node->utxo_db_open) {
-        db_checkpoint(&node->utxo_db.db);
-      }
-
-      log_info(LOG_COMP_DB, "Checkpoint saved at height %u (UTXO + validated tip)",
-               height);
-    } else {
-      log_error(LOG_COMP_DB, "Failed to flush UTXO deltas at checkpoint: %d",
-                flush_result);
-    }
-  }
-
-  /*
-   * WAL checkpoint for block_index_db every 500 blocks.
-   *
-   * Block index is written every validated block, so its WAL grows quickly.
-   * Without checkpointing, WAL grows to 100s of MB and reads slow down.
-   * UTXO WAL is checkpointed above with the 5000-block flush (not here).
-   */
-#define WAL_CHECKPOINT_INTERVAL 500
-  if (node->ibd_mode && node->block_index_db_open &&
-      height % WAL_CHECKPOINT_INTERVAL == 0 && height > 0) {
-    db_checkpoint(&node->block_index_db.db);
-  }
-
-  /* Step 4: Prune old blocks if pruning enabled */
-  if (node_is_pruning_enabled(node)) {
-    result = node_maybe_prune(node);
-    if (result != ECHO_OK && result != ECHO_ERR_INVALID_STATE) {
-      /* Log but don't fail - pruning is best-effort during sync */
-      log_debug(LOG_COMP_STORE, "Pruning check returned: %d", result);
-    }
-  }
-
-  /* Step 5: Announce valid block to peers (skip during IBD - Core behavior) */
-  if (!node->ibd_mode) {
-    for (size_t i = 0; i < NODE_MAX_PEERS; i++) {
-      peer_t *peer = &node->peers[i];
-      if (peer_is_ready(peer)) {
-        /* Build and send INV message */
-        inv_vector_t inv_vec;
-        inv_vec.type = INV_BLOCK;
-        inv_vec.hash = block_hash;
-
-        msg_t inv_msg;
-        memset(&inv_msg, 0, sizeof(inv_msg));
-        inv_msg.type = MSG_INV;
-        inv_msg.payload.inv.count = 1;
-        inv_msg.payload.inv.inventory = &inv_vec;
-
-        peer_queue_message(peer, &inv_msg);
-      }
-    }
-  }
-
-  /* Log success (height already computed above for checkpoint) */
-  log_info(LOG_COMP_CONS, "Block validated and applied: height=%u, txs=%zu",
-           height, block->tx_count);
-
-  return ECHO_OK;
 }
 
 /**
@@ -3326,7 +3082,7 @@ echo_result_t node_apply_block(node_t *node, const block_t *block) {
   }
 
   /*
-   * Step 2: Update block index status (block already stored by sync_cb_store_block).
+   * Step 2: Update block index status (block already stored by node_store_block).
    * Just update the validation status flags - no duplicate storage.
    */
   if (node->block_index_db_open) {
@@ -3594,146 +3350,6 @@ static echo_result_t node_flush_utxo_set_to_db(node_t *node, uint32_t height) {
  * This reduces checkpoint I/O from ~6.6M to ~150k operations (5000 blocks).
  */
 
-/* Context for collecting newly created UTXOs */
-typedef struct {
-  utxo_db_t *udb;
-  uint32_t min_height;       /* Only collect entries with height > min_height */
-  size_t inserted;
-  size_t skipped;
-  echo_result_t result;
-} utxo_delta_flush_ctx_t;
-
-/* Callback to insert newly created UTXOs */
-static bool utxo_delta_flush_callback(const utxo_entry_t *entry, void *user_data) {
-  utxo_delta_flush_ctx_t *ctx = (utxo_delta_flush_ctx_t *)user_data;
-  if (ctx == NULL || entry == NULL) {
-    return false;
-  }
-
-  /* Only insert UTXOs created after the last checkpoint */
-  if (entry->height <= ctx->min_height) {
-    ctx->skipped++;
-    return true; /* Continue iteration */
-  }
-
-  /* Insert new UTXO */
-  echo_result_t result = utxo_db_insert(ctx->udb, entry);
-  if (result == ECHO_OK) {
-    ctx->inserted++;
-  } else if (result == ECHO_ERR_EXISTS) {
-    /* Already exists - shouldn't happen but handle gracefully */
-    ctx->skipped++;
-  } else {
-    ctx->result = result;
-    return false; /* Stop iteration on error */
-  }
-
-  return true; /* Continue iteration */
-}
-
-/**
- * Flush UTXO deltas to database (optimized checkpoint).
- *
- * Instead of flushing all UTXOs, this function:
- *   1. Iterates in-memory UTXO set, INSERTs entries with height > last_checkpoint
- *   2. DELETEs all spent outpoints accumulated since last checkpoint
- *
- * Parameters:
- *   node   - The node
- *   height - Current block height (for logging)
- *
- * Returns:
- *   ECHO_OK on success, error code on failure
- */
-static echo_result_t node_flush_utxo_deltas_to_db(node_t *node, uint32_t height) {
-  if (node == NULL || node->consensus == NULL) {
-    return ECHO_ERR_NULL_PARAM;
-  }
-
-  uint64_t flush_start = plat_monotonic_ms();
-
-  /* Get the chainstate UTXO set */
-  chainstate_t *chainstate = consensus_get_chainstate(node->consensus);
-  if (chainstate == NULL) {
-    return ECHO_ERR_INVALID;
-  }
-
-  const utxo_set_t *utxo_set = chainstate_get_utxo_set(chainstate);
-  if (utxo_set == NULL) {
-    return ECHO_ERR_INVALID;
-  }
-
-  size_t utxo_count = utxo_set_size(utxo_set);
-  log_info(LOG_COMP_DB,
-           "Delta flush at height %u: %zu in-memory UTXOs, %zu spent outpoints",
-           height, utxo_count, node->accum_spent_count);
-
-  /* Begin transaction for atomic delta update */
-  echo_result_t result = db_begin(&node->utxo_db.db);
-  if (result != ECHO_OK) {
-    log_error(LOG_COMP_DB, "Failed to begin delta flush transaction: %d", result);
-    return result;
-  }
-
-  /*
-   * Step 1: DELETE spent outpoints.
-   * Some may not exist in DB (created and spent in same interval) - that's fine.
-   */
-  size_t deleted = 0;
-  for (size_t i = 0; i < node->accum_spent_count; i++) {
-    result = utxo_db_delete(&node->utxo_db, &node->accum_spent[i]);
-    if (result == ECHO_OK) {
-      deleted++;
-    } else if (result != ECHO_ERR_NOT_FOUND) {
-      /* Real error - rollback and fail */
-      log_error(LOG_COMP_DB, "Failed to delete spent UTXO: %d", result);
-      (void)db_rollback(&node->utxo_db.db);
-      return result;
-    }
-    /* ECHO_ERR_NOT_FOUND is fine - UTXO was created and spent in same interval */
-  }
-
-  /*
-   * Step 2: INSERT newly created UTXOs (height > last_checkpoint).
-   * We iterate the full in-memory set but only insert entries above the threshold.
-   */
-  utxo_delta_flush_ctx_t ctx = {
-      .udb = &node->utxo_db,
-      .min_height = node->last_utxo_persist_height,
-      .inserted = 0,
-      .skipped = 0,
-      .result = ECHO_OK,
-  };
-
-  utxo_set_foreach(utxo_set, utxo_delta_flush_callback, &ctx);
-
-  if (ctx.result != ECHO_OK) {
-    log_error(LOG_COMP_DB, "Delta flush INSERT failed: %d", ctx.result);
-    (void)db_rollback(&node->utxo_db.db);
-    return ctx.result;
-  }
-
-  /* Commit transaction */
-  result = db_commit(&node->utxo_db.db);
-  if (result != ECHO_OK) {
-    log_error(LOG_COMP_DB, "Failed to commit delta flush transaction: %d", result);
-    return result;
-  }
-
-  /* Clear accumulators for next interval */
-  node_accum_clear(node);
-
-  /* Log results */
-  uint64_t flush_elapsed = plat_monotonic_ms() - flush_start;
-  log_info(LOG_COMP_DB,
-           "Delta flush complete in %lums: %zu inserted, %zu deleted, %zu skipped "
-           "(vs %zu total UTXOs)",
-           (unsigned long)flush_elapsed, ctx.inserted, deleted, ctx.skipped,
-           utxo_count);
-
-  return ECHO_OK;
-}
-
 /*
  * ============================================================================
  * OBSERVER MODE FUNCTIONS
@@ -3920,8 +3536,44 @@ echo_result_t node_process_received_block(node_t *node, const block_t *block) {
     return ECHO_ERR_INVALID;
   }
 
-  /* Process through direct validation (not chase-driven, for relay/RPC blocks) */
-  return node_validate_and_apply_block(block, existing, node);
+  /*
+   * Unified validation path: Store block and fire CHASE_CHECKED.
+   * This routes ALL blocks (IBD + relay) through the chase event system:
+   *   CHASE_CHECKED → chaser_validate → CHASE_VALID → chaser_confirm
+   *
+   * This matches libbitcoin-node's unified organize() approach.
+   */
+
+  /* Determine block height from parent */
+  uint32_t height = 0;
+  if (existing != NULL) {
+    /* Header already known - use its height */
+    height = existing->height;
+  } else {
+    /* Look up parent to compute height */
+    const block_index_t *parent = consensus_lookup_block_index(
+        node->consensus, &block->header.prev_hash);
+    if (parent == NULL) {
+      /* Parent unknown - orphan block, can't process yet */
+      log_debug(LOG_COMP_CONS, "Orphan block received (parent unknown)");
+      return ECHO_ERR_NOT_FOUND;
+    }
+    height = parent->height + 1;
+  }
+
+  /* Store block to disk */
+  result = node_store_block(node, block);
+  if (result != ECHO_OK && result != ECHO_ERR_EXISTS) {
+    log_error(LOG_COMP_STORE, "Failed to store received block: %d", result);
+    return result;
+  }
+
+  /* Fire CHASE_CHECKED to trigger validation pipeline */
+  if (node->dispatcher != NULL) {
+    chase_notify_height(node->dispatcher, CHASE_CHECKED, height);
+  }
+
+  return ECHO_OK;
 }
 
 /*
@@ -3935,6 +3587,43 @@ bool node_is_pruning_enabled(const node_t *node) {
     return false;
   }
   return node->config.prune_target_mb > 0;
+}
+
+bool node_is_ibd_mode(const node_t *node) {
+  if (node == NULL) {
+    return false;
+  }
+  return node->ibd_mode;
+}
+
+void node_announce_block_to_peers(node_t *node, const hash256_t *block_hash) {
+  if (node == NULL || block_hash == NULL) {
+    return;
+  }
+
+  /* Skip announcements during IBD - Core behavior */
+  if (node->ibd_mode) {
+    return;
+  }
+
+  /* Announce to all ready peers */
+  for (size_t i = 0; i < NODE_MAX_PEERS; i++) {
+    peer_t *peer = &node->peers[i];
+    if (peer_is_ready(peer)) {
+      /* Build and send INV message */
+      inv_vector_t inv_vec;
+      inv_vec.type = INV_BLOCK;
+      inv_vec.hash = *block_hash;
+
+      msg_t inv_msg;
+      memset(&inv_msg, 0, sizeof(inv_msg));
+      inv_msg.type = MSG_INV;
+      inv_msg.payload.inv.count = 1;
+      inv_msg.payload.inv.inventory = &inv_vec;
+
+      peer_queue_message(peer, &inv_msg);
+    }
+  }
 }
 
 uint64_t node_get_prune_target(const node_t *node) {

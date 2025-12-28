@@ -68,6 +68,12 @@ echo_result_t node_load_block_at_height(void *node, uint32_t height,
 bool node_validate_block(void *node, const void *block) {
     (void)node; (void)block; return true;
 }
+bool node_is_ibd_mode(const void *node) {
+    (void)node; return true; /* Assume IBD mode in tests */
+}
+void node_announce_block_to_peers(void *node, const void *block_hash) {
+    (void)node; (void)block_hash; /* No-op in tests */
+}
 
 /* Fake node for tests - just needs to be non-NULL */
 static int g_fake_node = 0;
@@ -758,8 +764,8 @@ typedef struct {
     atomic_int checked_count;
     atomic_int valid_count;
     atomic_int organized_count;
-    uint32_t last_valid_height;
-    uint32_t last_organized_height;
+    atomic_uint max_valid_height;
+    atomic_uint max_organized_height;
 } pipeline_ctx_t;
 
 static bool pipeline_observer(chase_event_t event, chase_value_t value,
@@ -772,11 +778,29 @@ static bool pipeline_observer(chase_event_t event, chase_value_t value,
         break;
     case CHASE_VALID:
         atomic_fetch_add(&ctx->valid_count, 1);
-        ctx->last_valid_height = value.height;
+        /* Track maximum validated height (blocks may validate out of order) */
+        {
+            uint32_t current = atomic_load(&ctx->max_valid_height);
+            while (value.height > current) {
+                if (atomic_compare_exchange_weak(&ctx->max_valid_height,
+                                                 &current, value.height)) {
+                    break;
+                }
+            }
+        }
         break;
     case CHASE_ORGANIZED:
         atomic_fetch_add(&ctx->organized_count, 1);
-        ctx->last_organized_height = value.height;
+        /* Track maximum organized height */
+        {
+            uint32_t current = atomic_load(&ctx->max_organized_height);
+            while (value.height > current) {
+                if (atomic_compare_exchange_weak(&ctx->max_organized_height,
+                                                 &current, value.height)) {
+                    break;
+                }
+            }
+        }
         break;
     default:
         break;
@@ -802,6 +826,8 @@ static void test_pipeline_single_block(void) {
     atomic_init(&ctx.checked_count, 0);
     atomic_init(&ctx.valid_count, 0);
     atomic_init(&ctx.organized_count, 0);
+    atomic_init(&ctx.max_valid_height, 0);
+    atomic_init(&ctx.max_organized_height, 0);
     chase_subscribe(dispatcher, pipeline_observer, &ctx);
 
     test_case("pipeline: single block CHECKED → VALID → ORGANIZED");
@@ -815,23 +841,25 @@ static void test_pipeline_single_block(void) {
 
     /* Verify CHASE_VALID was fired */
     int valid = atomic_load(&ctx.valid_count);
-    if (valid >= 1 && ctx.last_valid_height == 1) {
+    uint32_t max_valid = atomic_load(&ctx.max_valid_height);
+    if (valid >= 1 && max_valid == 1) {
         test_pass();
     } else {
         char msg[128];
-        snprintf(msg, sizeof(msg), "valid_count=%d, last_height=%u", valid,
-                 ctx.last_valid_height);
+        snprintf(msg, sizeof(msg), "valid_count=%d, max_height=%u", valid,
+                 max_valid);
         test_fail(msg);
     }
 
     test_case("pipeline: CHASE_ORGANIZED fired after confirm");
     int organized = atomic_load(&ctx.organized_count);
-    if (organized >= 1 && ctx.last_organized_height == 1) {
+    uint32_t max_organized = atomic_load(&ctx.max_organized_height);
+    if (organized >= 1 && max_organized == 1) {
         test_pass();
     } else {
         char msg[128];
-        snprintf(msg, sizeof(msg), "organized_count=%d, last_height=%u",
-                 organized, ctx.last_organized_height);
+        snprintf(msg, sizeof(msg), "organized_count=%d, max_height=%u",
+                 organized, max_organized);
         test_fail(msg);
     }
 
@@ -863,6 +891,8 @@ static void test_pipeline_multiple_blocks(void) {
     atomic_init(&ctx.checked_count, 0);
     atomic_init(&ctx.valid_count, 0);
     atomic_init(&ctx.organized_count, 0);
+    atomic_init(&ctx.max_valid_height, 0);
+    atomic_init(&ctx.max_organized_height, 0);
     chase_subscribe(dispatcher, pipeline_observer, &ctx);
 
     test_case("pipeline: sequential blocks 1-10");
@@ -916,6 +946,8 @@ static void test_pipeline_out_of_order(void) {
     atomic_init(&ctx.checked_count, 0);
     atomic_init(&ctx.valid_count, 0);
     atomic_init(&ctx.organized_count, 0);
+    atomic_init(&ctx.max_valid_height, 0);
+    atomic_init(&ctx.max_organized_height, 0);
     chase_subscribe(dispatcher, pipeline_observer, &ctx);
 
     test_case("pipeline: out-of-order blocks don't skip");
@@ -1050,6 +1082,8 @@ static void test_stress_sustained_load(void) {
     atomic_init(&ctx.checked_count, 0);
     atomic_init(&ctx.valid_count, 0);
     atomic_init(&ctx.organized_count, 0);
+    atomic_init(&ctx.max_valid_height, 0);
+    atomic_init(&ctx.max_organized_height, 0);
     chase_subscribe(dispatcher, pipeline_observer, &ctx);
 
     test_case("stress: sustained block flow (validation only)");
@@ -1088,12 +1122,13 @@ static void test_stress_sustained_load(void) {
     }
 
     test_case("stress: final validated height correct");
-    if (ctx.last_valid_height == (uint32_t)total_blocks) {
+    uint32_t max_height = atomic_load(&ctx.max_valid_height);
+    if (max_height == (uint32_t)total_blocks) {
         test_pass();
     } else {
         char msg[128];
-        snprintf(msg, sizeof(msg), "last_valid=%u, expected=%d",
-                 ctx.last_valid_height, total_blocks);
+        snprintf(msg, sizeof(msg), "max_valid=%u, expected=%d",
+                 max_height, total_blocks);
         test_fail(msg);
     }
 

@@ -111,8 +111,6 @@ confirm_result_t chaser_confirm_block(chaser_confirm_t *chaser, uint32_t height,
         return CONFIRM_ERROR_LOOKUP;
     }
 
-    (void)hash; /* Hash not needed for apply-only path */
-
     /* Apply block to chainstate (validation already done by chaser_validate) */
     result = node_apply_block(node, &block);
     block_free(&block);
@@ -130,6 +128,13 @@ confirm_result_t chaser_confirm_block(chaser_confirm_t *chaser, uint32_t height,
 
     /* Notify that block is organized */
     chaser_notify_height(&chaser->base, CHASE_ORGANIZED, height);
+
+    /*
+     * Announce valid block to peers (skip during IBD - Core behavior).
+     * This enables unified validation path: both IBD and post-IBD blocks
+     * flow through the chase system and get announced here.
+     */
+    node_announce_block_to_peers(node, &hash);
 
     return CONFIRM_SUCCESS;
 }

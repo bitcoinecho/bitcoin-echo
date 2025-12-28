@@ -712,6 +712,21 @@ size_t node_get_invalid_block_count(const node_t *node);
  */
 echo_result_t node_process_received_block(node_t *node, const block_t *block);
 
+/**
+ * Store a block to disk.
+ *
+ * Serializes the block and writes it to block storage. Updates the block
+ * index database and in-memory index with the file position.
+ *
+ * Parameters:
+ *   node  - The node
+ *   block - The block to store
+ *
+ * Returns:
+ *   ECHO_OK on success
+ */
+echo_result_t node_store_block(node_t *node, const block_t *block);
+
 /*
  * ============================================================================
  * PRUNING
@@ -728,6 +743,32 @@ echo_result_t node_process_received_block(node_t *node, const block_t *block);
  *   true if prune_target_mb > 0 in config
  */
 bool node_is_pruning_enabled(const node_t *node);
+
+/**
+ * Check if the node is in IBD (Initial Block Download) mode.
+ *
+ * During IBD, the node is catching up with the network and certain
+ * behaviors are modified (e.g., no block announcements to peers).
+ *
+ * Parameters:
+ *   node - The node
+ *
+ * Returns:
+ *   true if in IBD mode
+ */
+bool node_is_ibd_mode(const node_t *node);
+
+/**
+ * Announce a block to all connected peers via INV message.
+ *
+ * This is used after a block has been validated and applied to notify
+ * peers about the new block. Skipped during IBD (node_is_ibd_mode).
+ *
+ * Parameters:
+ *   node       - The node
+ *   block_hash - Hash of the block to announce
+ */
+void node_announce_block_to_peers(node_t *node, const hash256_t *block_hash);
 
 /**
  * Get the configured pruning target in MB.
