@@ -897,6 +897,21 @@ echo_result_t node_load_block_at_height(node_t *node, uint32_t height,
 bool node_validate_block(node_t *node, const block_t *block);
 
 /**
+ * Get the current validated/confirmed height.
+ *
+ * Returns the height of the highest block that has been validated and applied
+ * to the chainstate. Used by parallel validators to skip blocks that have
+ * already been confirmed.
+ *
+ * Parameters:
+ *   node - The node
+ *
+ * Returns:
+ *   Current validated height, or 0 if node not initialized
+ */
+uint32_t node_get_validated_height(node_t *node);
+
+/**
  * Apply a validated block to chainstate.
  *
  * Updates the UTXO set. Must be called sequentially in height order.

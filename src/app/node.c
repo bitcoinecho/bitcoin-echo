@@ -3770,6 +3770,13 @@ bool node_validate_block(node_t *node, const block_t *block) {
   return consensus_validate_block(node->consensus, block, &result);
 }
 
+uint32_t node_get_validated_height(node_t *node) {
+  if (node == NULL || node->consensus == NULL) {
+    return 0;
+  }
+  return consensus_get_height(node->consensus);
+}
+
 uint32_t node_prune_blocks(node_t *node, uint32_t target_height) {
   if (node == NULL || !node->block_storage_init || !node->block_index_db_open) {
     return 0;

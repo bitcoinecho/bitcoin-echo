@@ -281,9 +281,20 @@ static void *worker_thread(void *arg) {
 
         /* Perform validation */
         int result = 0; /* 0 = success */
+        size_t prev;
 
         if (!work->bypass) {
             node_t *node = chaser->base.node;
+
+            /* Skip validation if block already confirmed.
+             * This can happen due to race: block was queued for validation
+             * but confirmed before worker got to it. UTXO state has moved
+             * past this height, so validation would fail with UTXO errors. */
+            uint32_t confirmed_height = node_get_validated_height(node);
+            if (work->height <= confirmed_height) {
+                /* Already confirmed - treat as valid */
+                goto notify_valid;
+            }
 
             /* Load block from storage */
             block_t block;
@@ -308,8 +319,9 @@ static void *worker_thread(void *arg) {
             }
         }
 
+notify_valid:
         /* Decrement backlog */
-        size_t prev = atomic_fetch_sub(&chaser->backlog, 1);
+        prev = atomic_fetch_sub(&chaser->backlog, 1);
 
         /* Notify completion */
         if (result == 0) {

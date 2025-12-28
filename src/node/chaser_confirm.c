@@ -9,6 +9,7 @@
 
 #include "chaser_confirm.h"
 
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -214,8 +215,48 @@ static bool confirm_handle_event(chaser_t *self, chase_event_t event,
     case CHASE_RESUME:
     case CHASE_START:
     case CHASE_BUMP:
-        /* Check for blocks to confirm */
-        /* TODO: Query database for validated blocks ready to confirm */
+        /* Check for blocks to confirm in sequence */
+        {
+            node_t *node = chaser->base.node;
+            uint32_t confirmed = chaser_confirm_height(chaser);
+
+            /* Try to confirm blocks in sequence */
+            while (1) {
+                uint32_t next_height = confirmed + 1;
+
+                /* Try to load block at next height */
+                block_t block;
+                hash256_t hash;
+                echo_result_t result =
+                    node_load_block_at_height(node, next_height, &block, &hash);
+
+                if (result != ECHO_OK) {
+                    break; /* Block not stored/validated yet */
+                }
+
+                block_free(&block); /* We just needed to check it exists */
+
+                /* Confirm the block */
+                bool bypass = chaser_confirm_is_bypass(chaser, next_height);
+
+                if (bypass) {
+                    /* Just update height for checkpoint blocks */
+                    chaser_lock(&chaser->base);
+                    chaser->confirmed_height = next_height;
+                    chaser_unlock(&chaser->base);
+                    chaser_notify_height(&chaser->base, CHASE_ORGANIZED,
+                                         next_height);
+                } else {
+                    if (chaser_confirm_block(chaser, next_height, hash.bytes) !=
+                        CONFIRM_SUCCESS) {
+                        break; /* Confirmation failed */
+                    }
+                }
+
+                chaser_set_position(self, next_height);
+                confirmed = next_height;
+            }
+        }
         break;
 
     case CHASE_VALID:
