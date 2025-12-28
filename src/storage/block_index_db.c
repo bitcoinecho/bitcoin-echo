@@ -287,9 +287,15 @@ echo_result_t block_index_db_open(block_index_db_t *bdb, const char *path) {
   memset(bdb, 0, sizeof(block_index_db_t));
   bdb->stmts_prepared = false;
 
+  /* Initialize mutex for thread-safe access to prepared statements */
+  if (pthread_mutex_init(&bdb->mutex, NULL) != 0) {
+    return ECHO_ERR_MEMORY;
+  }
+
   /* Open database */
   result = db_open(&bdb->db, path);
   if (result != ECHO_OK) {
+    pthread_mutex_destroy(&bdb->mutex);
     return result;
   }
 
@@ -297,6 +303,7 @@ echo_result_t block_index_db_open(block_index_db_t *bdb, const char *path) {
   result = create_schema(&bdb->db);
   if (result != ECHO_OK) {
     db_close(&bdb->db);
+    pthread_mutex_destroy(&bdb->mutex);
     return result;
   }
 
@@ -304,6 +311,7 @@ echo_result_t block_index_db_open(block_index_db_t *bdb, const char *path) {
   result = prepare_statements(bdb);
   if (result != ECHO_OK) {
     db_close(&bdb->db);
+    pthread_mutex_destroy(&bdb->mutex);
     return result;
   }
 
@@ -314,6 +322,7 @@ void block_index_db_close(block_index_db_t *bdb) {
   if (bdb) {
     finalize_statements(bdb);
     db_close(&bdb->db);
+    pthread_mutex_destroy(&bdb->mutex);
     memset(bdb, 0, sizeof(block_index_db_t));
   }
 }
@@ -341,28 +350,37 @@ echo_result_t block_index_db_lookup_by_hash(block_index_db_t *bdb,
                                             block_index_entry_t *entry) {
   echo_result_t result;
 
+  pthread_mutex_lock(&bdb->mutex);
+
   /* Reset statement */
   result = db_stmt_reset(&bdb->lookup_hash_stmt);
-  if (result != ECHO_OK)
+  if (result != ECHO_OK) {
+    pthread_mutex_unlock(&bdb->mutex);
     return result;
+  }
 
   /* Bind hash parameter */
   result = db_bind_blob(&bdb->lookup_hash_stmt, 1, hash->bytes, 32);
-  if (result != ECHO_OK)
+  if (result != ECHO_OK) {
+    pthread_mutex_unlock(&bdb->mutex);
     return result;
+  }
 
   /* Execute query */
   result = db_step(&bdb->lookup_hash_stmt);
   if (result == ECHO_DONE) {
+    pthread_mutex_unlock(&bdb->mutex);
     return ECHO_ERR_NOT_FOUND;
   }
   if (result != ECHO_OK) {
+    pthread_mutex_unlock(&bdb->mutex);
     return result;
   }
 
   /* Populate entry from result row */
   populate_entry_from_row(&bdb->lookup_hash_stmt, entry);
 
+  pthread_mutex_unlock(&bdb->mutex);
   return ECHO_OK;
 }
 
@@ -371,28 +389,37 @@ echo_result_t block_index_db_lookup_by_height(block_index_db_t *bdb,
                                               block_index_entry_t *entry) {
   echo_result_t result;
 
+  pthread_mutex_lock(&bdb->mutex);
+
   /* Reset statement */
   result = db_stmt_reset(&bdb->lookup_height_stmt);
-  if (result != ECHO_OK)
+  if (result != ECHO_OK) {
+    pthread_mutex_unlock(&bdb->mutex);
     return result;
+  }
 
   /* Bind height parameter */
   result = db_bind_int(&bdb->lookup_height_stmt, 1, (int)height);
-  if (result != ECHO_OK)
+  if (result != ECHO_OK) {
+    pthread_mutex_unlock(&bdb->mutex);
     return result;
+  }
 
   /* Execute query */
   result = db_step(&bdb->lookup_height_stmt);
   if (result == ECHO_DONE) {
+    pthread_mutex_unlock(&bdb->mutex);
     return ECHO_ERR_NOT_FOUND;
   }
   if (result != ECHO_OK) {
+    pthread_mutex_unlock(&bdb->mutex);
     return result;
   }
 
   /* Populate entry from result row */
   populate_entry_from_row(&bdb->lookup_height_stmt, entry);
 
+  pthread_mutex_unlock(&bdb->mutex);
   return ECHO_OK;
 }
 
@@ -418,49 +445,69 @@ echo_result_t block_index_db_insert(block_index_db_t *bdb,
   echo_result_t result;
   uint8_t header_buf[80];
 
+  pthread_mutex_lock(&bdb->mutex);
+
   /* Reset statement */
   result = db_stmt_reset(&bdb->insert_stmt);
-  if (result != ECHO_OK)
+  if (result != ECHO_OK) {
+    pthread_mutex_unlock(&bdb->mutex);
     return result;
+  }
 
   /* Bind hash (parameter 1) */
   result = db_bind_blob(&bdb->insert_stmt, 1, entry->hash.bytes, 32);
-  if (result != ECHO_OK)
+  if (result != ECHO_OK) {
+    pthread_mutex_unlock(&bdb->mutex);
     return result;
+  }
 
   /* Bind height (parameter 2) */
   result = db_bind_int(&bdb->insert_stmt, 2, (int)entry->height);
-  if (result != ECHO_OK)
+  if (result != ECHO_OK) {
+    pthread_mutex_unlock(&bdb->mutex);
     return result;
+  }
 
   /* Bind header (parameter 3) */
   serialize_header(&entry->header, header_buf);
   result = db_bind_blob(&bdb->insert_stmt, 3, header_buf, 80);
-  if (result != ECHO_OK)
+  if (result != ECHO_OK) {
+    pthread_mutex_unlock(&bdb->mutex);
     return result;
+  }
 
   /* Bind chainwork (parameter 4) */
   result = db_bind_blob(&bdb->insert_stmt, 4, entry->chainwork.bytes, 32);
-  if (result != ECHO_OK)
+  if (result != ECHO_OK) {
+    pthread_mutex_unlock(&bdb->mutex);
     return result;
+  }
 
   /* Bind status (parameter 5) */
   result = db_bind_int(&bdb->insert_stmt, 5, (int)entry->status);
-  if (result != ECHO_OK)
+  if (result != ECHO_OK) {
+    pthread_mutex_unlock(&bdb->mutex);
     return result;
+  }
 
   /* Bind data_file (parameter 6) */
   result = db_bind_int(&bdb->insert_stmt, 6, entry->data_file);
-  if (result != ECHO_OK)
+  if (result != ECHO_OK) {
+    pthread_mutex_unlock(&bdb->mutex);
     return result;
+  }
 
   /* Bind data_pos (parameter 7) */
   result = db_bind_int(&bdb->insert_stmt, 7, (int)entry->data_pos);
-  if (result != ECHO_OK)
+  if (result != ECHO_OK) {
+    pthread_mutex_unlock(&bdb->mutex);
     return result;
+  }
 
   /* Execute insert */
   result = db_step(&bdb->insert_stmt);
+  pthread_mutex_unlock(&bdb->mutex);
+
   if (result == ECHO_DONE) {
     return ECHO_OK;
   }
@@ -474,33 +521,47 @@ echo_result_t block_index_db_update_data_pos(block_index_db_t *bdb,
                                              uint32_t data_pos) {
   echo_result_t result;
 
+  pthread_mutex_lock(&bdb->mutex);
+
   /* Reset statement */
   result = db_stmt_reset(&bdb->update_data_pos_stmt);
-  if (result != ECHO_OK)
+  if (result != ECHO_OK) {
+    pthread_mutex_unlock(&bdb->mutex);
     return result;
+  }
 
   /* Bind data_file (parameter 1) */
   result = db_bind_int(&bdb->update_data_pos_stmt, 1, (int)data_file);
-  if (result != ECHO_OK)
+  if (result != ECHO_OK) {
+    pthread_mutex_unlock(&bdb->mutex);
     return result;
+  }
 
   /* Bind data_pos (parameter 2) */
   result = db_bind_int(&bdb->update_data_pos_stmt, 2, (int)data_pos);
-  if (result != ECHO_OK)
+  if (result != ECHO_OK) {
+    pthread_mutex_unlock(&bdb->mutex);
     return result;
+  }
 
   /* Bind HAVE_DATA flag (parameter 3) */
   result = db_bind_int(&bdb->update_data_pos_stmt, 3, BLOCK_STATUS_HAVE_DATA);
-  if (result != ECHO_OK)
+  if (result != ECHO_OK) {
+    pthread_mutex_unlock(&bdb->mutex);
     return result;
+  }
 
   /* Bind hash (parameter 4) */
   result = db_bind_blob(&bdb->update_data_pos_stmt, 4, hash->bytes, 32);
-  if (result != ECHO_OK)
+  if (result != ECHO_OK) {
+    pthread_mutex_unlock(&bdb->mutex);
     return result;
+  }
 
   /* Execute update */
   result = db_step(&bdb->update_data_pos_stmt);
+  pthread_mutex_unlock(&bdb->mutex);
+
   if (result == ECHO_DONE) {
     return ECHO_OK;
   }
@@ -513,32 +574,42 @@ echo_result_t block_index_db_update_status(block_index_db_t *bdb,
                                            uint32_t status) {
   echo_result_t result;
 
+  pthread_mutex_lock(&bdb->mutex);
+
   /* Reset statement */
   result = db_stmt_reset(&bdb->update_status_stmt);
-  if (result != ECHO_OK)
+  if (result != ECHO_OK) {
+    pthread_mutex_unlock(&bdb->mutex);
     return result;
+  }
 
   /* Bind status (parameter 1) */
   result = db_bind_int(&bdb->update_status_stmt, 1, (int)status);
-  if (result != ECHO_OK)
+  if (result != ECHO_OK) {
+    pthread_mutex_unlock(&bdb->mutex);
     return result;
+  }
 
   /* Bind hash (parameter 2) */
   result = db_bind_blob(&bdb->update_status_stmt, 2, hash->bytes, 32);
-  if (result != ECHO_OK)
+  if (result != ECHO_OK) {
+    pthread_mutex_unlock(&bdb->mutex);
     return result;
+  }
 
   /* Execute update */
   result = db_step(&bdb->update_status_stmt);
   if (result == ECHO_DONE) {
     /* Check if any rows were updated */
     int changes = db_changes(&bdb->db);
+    pthread_mutex_unlock(&bdb->mutex);
     if (changes == 0) {
       return ECHO_ERR_NOT_FOUND;
     }
     return ECHO_OK;
   }
 
+  pthread_mutex_unlock(&bdb->mutex);
   return result;
 }
 
@@ -550,28 +621,37 @@ echo_result_t block_index_db_get_best_chain(block_index_db_t *bdb,
                                             block_index_entry_t *entry) {
   echo_result_t result;
 
+  pthread_mutex_lock(&bdb->mutex);
+
   /* Reset statement */
   result = db_stmt_reset(&bdb->best_chain_stmt);
-  if (result != ECHO_OK)
+  if (result != ECHO_OK) {
+    pthread_mutex_unlock(&bdb->mutex);
     return result;
+  }
 
   /* Bind BLOCK_STATUS_VALID_CHAIN filter (parameter 1) */
   result = db_bind_int(&bdb->best_chain_stmt, 1, BLOCK_STATUS_VALID_CHAIN);
-  if (result != ECHO_OK)
+  if (result != ECHO_OK) {
+    pthread_mutex_unlock(&bdb->mutex);
     return result;
+  }
 
   /* Execute query */
   result = db_step(&bdb->best_chain_stmt);
   if (result == ECHO_DONE) {
+    pthread_mutex_unlock(&bdb->mutex);
     return ECHO_ERR_NOT_FOUND; /* Database is empty */
   }
   if (result != ECHO_OK) {
+    pthread_mutex_unlock(&bdb->mutex);
     return result;
   }
 
   /* Populate entry from result row */
   populate_entry_from_row(&bdb->best_chain_stmt, entry);
 
+  pthread_mutex_unlock(&bdb->mutex);
   return ECHO_OK;
 }
 
@@ -580,6 +660,8 @@ echo_result_t block_index_db_get_chain_block(block_index_db_t *bdb,
                                              block_index_entry_t *entry) {
   echo_result_t result;
   db_stmt_t stmt;
+
+  pthread_mutex_lock(&bdb->mutex);
 
   /*
    * Get block at height, preferring VALID_CHAIN status but falling back
@@ -593,13 +675,16 @@ echo_result_t block_index_db_get_chain_block(block_index_db_t *bdb,
                  "data_pos FROM blocks "
                  "WHERE height = ? ORDER BY status DESC LIMIT 1",
                  &stmt);
-  if (result != ECHO_OK)
+  if (result != ECHO_OK) {
+    pthread_mutex_unlock(&bdb->mutex);
     return result;
+  }
 
   /* Bind height */
   result = db_bind_int(&stmt, 1, (int)height);
   if (result != ECHO_OK) {
     db_stmt_finalize(&stmt);
+    pthread_mutex_unlock(&bdb->mutex);
     return result;
   }
 
@@ -607,10 +692,12 @@ echo_result_t block_index_db_get_chain_block(block_index_db_t *bdb,
   result = db_step(&stmt);
   if (result == ECHO_DONE) {
     db_stmt_finalize(&stmt);
+    pthread_mutex_unlock(&bdb->mutex);
     return ECHO_ERR_NOT_FOUND;
   }
   if (result != ECHO_OK) {
     db_stmt_finalize(&stmt);
+    pthread_mutex_unlock(&bdb->mutex);
     return result;
   }
 
@@ -618,6 +705,7 @@ echo_result_t block_index_db_get_chain_block(block_index_db_t *bdb,
   populate_entry_from_row(&stmt, entry);
 
   db_stmt_finalize(&stmt);
+  pthread_mutex_unlock(&bdb->mutex);
   return ECHO_OK;
 }
 
@@ -695,17 +783,22 @@ echo_result_t block_index_db_mark_best_chain(block_index_db_t *bdb,
   db_stmt_t stmt;
   size_t i;
 
+  pthread_mutex_lock(&bdb->mutex);
+
   /* Prepare update statement */
   result = db_prepare(
       &bdb->db, "UPDATE blocks SET status = status | ? WHERE hash = ?", &stmt);
-  if (result != ECHO_OK)
+  if (result != ECHO_OK) {
+    pthread_mutex_unlock(&bdb->mutex);
     return result;
+  }
 
   /* Update each block */
   for (i = 0; i < count; i++) {
     result = db_stmt_reset(&stmt);
     if (result != ECHO_OK) {
       db_stmt_finalize(&stmt);
+      pthread_mutex_unlock(&bdb->mutex);
       return result;
     }
 
@@ -713,6 +806,7 @@ echo_result_t block_index_db_mark_best_chain(block_index_db_t *bdb,
     result = db_bind_int(&stmt, 1, BLOCK_STATUS_VALID_CHAIN);
     if (result != ECHO_OK) {
       db_stmt_finalize(&stmt);
+      pthread_mutex_unlock(&bdb->mutex);
       return result;
     }
 
@@ -720,6 +814,7 @@ echo_result_t block_index_db_mark_best_chain(block_index_db_t *bdb,
     result = db_bind_blob(&stmt, 2, hashes[i].bytes, 32);
     if (result != ECHO_OK) {
       db_stmt_finalize(&stmt);
+      pthread_mutex_unlock(&bdb->mutex);
       return result;
     }
 
@@ -727,11 +822,13 @@ echo_result_t block_index_db_mark_best_chain(block_index_db_t *bdb,
     result = db_step(&stmt);
     if (result != ECHO_DONE) {
       db_stmt_finalize(&stmt);
+      pthread_mutex_unlock(&bdb->mutex);
       return result;
     }
   }
 
   db_stmt_finalize(&stmt);
+  pthread_mutex_unlock(&bdb->mutex);
   return ECHO_OK;
 }
 
@@ -742,11 +839,15 @@ echo_result_t block_index_db_unmark_best_chain(block_index_db_t *bdb,
   db_stmt_t stmt;
   size_t i;
 
+  pthread_mutex_lock(&bdb->mutex);
+
   /* Prepare update statement */
   result = db_prepare(
       &bdb->db, "UPDATE blocks SET status = status & ? WHERE hash = ?", &stmt);
-  if (result != ECHO_OK)
+  if (result != ECHO_OK) {
+    pthread_mutex_unlock(&bdb->mutex);
     return result;
+  }
 
   /* Compute bitmask to clear BLOCK_STATUS_VALID_CHAIN */
   int clear_mask = ~BLOCK_STATUS_VALID_CHAIN;
@@ -756,6 +857,7 @@ echo_result_t block_index_db_unmark_best_chain(block_index_db_t *bdb,
     result = db_stmt_reset(&stmt);
     if (result != ECHO_OK) {
       db_stmt_finalize(&stmt);
+      pthread_mutex_unlock(&bdb->mutex);
       return result;
     }
 
@@ -763,6 +865,7 @@ echo_result_t block_index_db_unmark_best_chain(block_index_db_t *bdb,
     result = db_bind_int(&stmt, 1, clear_mask);
     if (result != ECHO_OK) {
       db_stmt_finalize(&stmt);
+      pthread_mutex_unlock(&bdb->mutex);
       return result;
     }
 
@@ -770,6 +873,7 @@ echo_result_t block_index_db_unmark_best_chain(block_index_db_t *bdb,
     result = db_bind_blob(&stmt, 2, hashes[i].bytes, 32);
     if (result != ECHO_OK) {
       db_stmt_finalize(&stmt);
+      pthread_mutex_unlock(&bdb->mutex);
       return result;
     }
 
@@ -777,11 +881,13 @@ echo_result_t block_index_db_unmark_best_chain(block_index_db_t *bdb,
     result = db_step(&stmt);
     if (result != ECHO_DONE) {
       db_stmt_finalize(&stmt);
+      pthread_mutex_unlock(&bdb->mutex);
       return result;
     }
   }
 
   db_stmt_finalize(&stmt);
+  pthread_mutex_unlock(&bdb->mutex);
   return ECHO_OK;
 }
 
@@ -793,19 +899,25 @@ echo_result_t block_index_db_count(block_index_db_t *bdb, size_t *count) {
   echo_result_t result;
   db_stmt_t stmt;
 
+  pthread_mutex_lock(&bdb->mutex);
+
   result = db_prepare(&bdb->db, "SELECT COUNT(*) FROM blocks", &stmt);
-  if (result != ECHO_OK)
+  if (result != ECHO_OK) {
+    pthread_mutex_unlock(&bdb->mutex);
     return result;
+  }
 
   result = db_step(&stmt);
   if (result != ECHO_OK) {
     db_stmt_finalize(&stmt);
+    pthread_mutex_unlock(&bdb->mutex);
     return result;
   }
 
   *count = (size_t)db_column_int(&stmt, 0);
 
   db_stmt_finalize(&stmt);
+  pthread_mutex_unlock(&bdb->mutex);
   return ECHO_OK;
 }
 

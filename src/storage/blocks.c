@@ -222,6 +222,9 @@ echo_result_t block_storage_write(block_file_manager_t *mgr,
 
 /*
  * Read a block from disk.
+ *
+ * NOTE: If reading from the current write file, we must flush first
+ * to ensure buffered writes are visible to the separate read handle.
  */
 echo_result_t block_storage_read(block_file_manager_t *mgr,
                                  block_file_pos_t pos, uint8_t **block_out,
@@ -233,6 +236,12 @@ echo_result_t block_storage_read(block_file_manager_t *mgr,
   /* Initialize outputs */
   *block_out = NULL;
   *size_out = 0;
+
+  /* CRITICAL: If reading from the current write file, flush buffered writes.
+   * Without this, the read handle won't see data still in stdio's buffer. */
+  if (pos.file_index == mgr->current_file_index && mgr->current_file != NULL) {
+    fflush((FILE *)mgr->current_file);
+  }
 
   /* Get path to file */
   char path[512];

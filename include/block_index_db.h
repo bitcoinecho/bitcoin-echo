@@ -36,6 +36,7 @@
 #include "chainstate.h"
 #include "db.h"
 #include "echo_types.h"
+#include <pthread.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -71,6 +72,10 @@ typedef struct {
 /*
  * Block index database handle.
  * Wraps a SQLite database configured for block index storage.
+ *
+ * Thread Safety:
+ *   All operations are protected by a mutex. Multiple threads can safely
+ *   call block_index_db functions concurrently.
  */
 typedef struct {
   db_t db;                        /* Underlying database handle */
@@ -81,6 +86,7 @@ typedef struct {
   db_stmt_t update_data_pos_stmt; /* Prepared statement for data position */
   db_stmt_t best_chain_stmt;      /* Prepared statement for best chain query */
   bool stmts_prepared;            /* Whether statements are prepared */
+  pthread_mutex_t mutex;          /* Protects all prepared statement access */
 } block_index_db_t;
 
 /* ========================================================================
