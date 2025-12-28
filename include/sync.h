@@ -133,6 +133,10 @@ typedef struct {
   uint32_t blocks_requested;  /* Blocks requested from this peer */
   uint64_t first_block_time;  /* When peer started delivering blocks (ms) */
   uint64_t last_delivery_time; /* When peer last delivered a block (ms) */
+
+  /* Header race metrics (best-of-N selection) */
+  uint32_t headers_race_responses;    /* Number of full header batches during race */
+  uint64_t headers_race_total_ms;     /* Total response time during race */
 } peer_sync_state_t;
 
 /**

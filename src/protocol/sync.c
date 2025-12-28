@@ -38,6 +38,13 @@
 #define SYNC_MAX_PEERS 128
 
 /**
+ * Number of rounds in header race before selecting winner.
+ * Higher = more accurate selection, but slower to start single-peer mode.
+ * 3 rounds is a good balance: filters out lucky first responses.
+ */
+#define HEADERS_RACE_ROUNDS 3
+
+/**
  * Pending header entry for deferred persistence.
  *
  * During SYNC_MODE_HEADERS, we keep headers in memory and defer database
@@ -103,6 +110,12 @@ struct sync_manager {
 
   /* Network latency baseline (kept for API compatibility, currently always 0) */
   uint64_t network_median_latency_ms;
+
+  /* Headers race: all peers compete, fastest wins and becomes designated peer.
+   * This avoids wasting bandwidth on duplicate headers from slower peers. */
+  bool headers_race_complete;       /* True once we've identified the fastest peer */
+  size_t fastest_header_peer_idx;   /* Index of winning peer in peers[] array */
+  uint64_t headers_race_start_time; /* When the race started */
 
   /* Deferred header persistence: queue headers during SYNC_MODE_HEADERS,
    * flush all at once when transitioning to SYNC_MODE_BLOCKS. */
@@ -707,6 +720,49 @@ echo_result_t sync_handle_headers(sync_manager_t *mgr, peer_t *peer,
   /* Clear in-flight flag */
   ps->headers_in_flight = false;
 
+  /* Track response time for peer performance ranking.
+   * Used to identify the fastest peer in header sync race. */
+  uint64_t now = plat_time_ms();
+  if (ps->headers_sent_time > 0 && count == SYNC_MAX_HEADERS_PER_REQUEST) {
+    uint64_t response_ms = now - ps->headers_sent_time;
+
+    /* Accumulate race statistics for best-of-N selection */
+    if (mgr->mode == SYNC_MODE_HEADERS && !mgr->headers_race_complete) {
+      ps->headers_race_responses++;
+      ps->headers_race_total_ms += response_ms;
+
+      /* Check if this peer has completed all race rounds */
+      if (ps->headers_race_responses >= HEADERS_RACE_ROUNDS) {
+        /* Check if ANY peer has completed the race - select best so far */
+        size_t best_idx = 0;
+        uint64_t best_avg = UINT64_MAX;
+        bool have_candidate = false;
+
+        for (size_t i = 0; i < mgr->peer_count; i++) {
+          peer_sync_state_t *candidate = &mgr->peers[i];
+          if (candidate->headers_race_responses >= HEADERS_RACE_ROUNDS) {
+            uint64_t avg = candidate->headers_race_total_ms /
+                           candidate->headers_race_responses;
+            if (avg < best_avg) {
+              best_avg = avg;
+              best_idx = i;
+              have_candidate = true;
+            }
+          }
+        }
+
+        if (have_candidate) {
+          mgr->headers_race_complete = true;
+          mgr->fastest_header_peer_idx = best_idx;
+          log_info(LOG_COMP_SYNC,
+                   "Headers race winner: peer %s (avg=%lums over %u rounds)",
+                   mgr->peers[best_idx].peer->address, (unsigned long)best_avg,
+                   HEADERS_RACE_ROUNDS);
+        }
+      }
+    }
+  }
+
   /* Reset sent time to allow immediate follow-up request (fixes 5-second throttle bug).
    * The SYNC_HEADER_RETRY_INTERVAL_MS is meant for retries on timeout, not as a
    * throttle between successful responses. */
@@ -1176,51 +1232,84 @@ void sync_tick(sync_manager_t *mgr) {
   switch (mgr->mode) {
   case SYNC_MODE_HEADERS: {
     /*
-     * Parallel header sync: request headers from ALL sync-candidate peers.
+     * Race-to-win header sync: all peers compete, fastest wins.
      *
-     * libbitcoin-node style: Each peer runs an independent getheaders loop.
-     * This maximizes throughput by using all available peer bandwidth.
-     * Duplicate headers are harmless - sync_handle_headers() uses block_index_map
-     * lookup to detect and skip already-known headers efficiently.
+     * Phase 1 (race): Send getheaders to ALL sync-candidate peers.
+     * Phase 2 (winner): First peer to return 2000 headers wins.
+     *                   Only use that peer for remaining headers.
+     *
+     * This combines parallel discovery (find fastest) with single-peer
+     * efficiency (no duplicate processing). Much faster than pure parallel
+     * which wastes 90%+ bandwidth on duplicates.
      */
     uint64_t now = plat_time_ms();
 
-    for (size_t i = 0; i < mgr->peer_count; i++) {
-      peer_sync_state_t *ps = &mgr->peers[i];
+    /* Check if race winner is still valid */
+    if (mgr->headers_race_complete) {
+      if (mgr->fastest_header_peer_idx >= mgr->peer_count) {
+        /* Winner index is out of bounds (peers removed) - reset race */
+        log_info(LOG_COMP_SYNC, "Headers race winner gone (index OOB), restarting race");
+        mgr->headers_race_complete = false;
+      } else {
+        peer_sync_state_t *winner = &mgr->peers[mgr->fastest_header_peer_idx];
+        if (!winner->sync_candidate || !peer_is_ready(winner->peer)) {
+          /* Winner is no longer usable - reset race */
+          log_info(LOG_COMP_SYNC, "Headers race winner disconnected, restarting race");
+          mgr->headers_race_complete = false;
+        }
+      }
+    }
 
-      /* Skip non-sync-candidate or disconnected peers */
-      if (!ps->sync_candidate || !peer_is_ready(ps->peer)) {
-        continue;
+    if (!mgr->headers_race_complete) {
+      /* RACE MODE: Send to ALL peers to find the fastest */
+      if (mgr->headers_race_start_time == 0) {
+        mgr->headers_race_start_time = now;
       }
 
-      /* Only send if no request in flight and retry interval passed */
+      for (size_t i = 0; i < mgr->peer_count; i++) {
+        peer_sync_state_t *ps = &mgr->peers[i];
+
+        if (!ps->sync_candidate || !peer_is_ready(ps->peer)) {
+          continue;
+        }
+
+        if (!ps->headers_in_flight &&
+            now - ps->headers_sent_time >= SYNC_HEADER_RETRY_INTERVAL_MS) {
+          ps->headers_in_flight = true;
+          ps->headers_sent_time = now;
+
+          if (mgr->callbacks.send_getheaders) {
+            hash256_t locator[SYNC_MAX_LOCATOR_HASHES];
+            size_t locator_len = 0;
+
+            block_index_t *locator_tip = mgr->best_header;
+            if (locator_tip != NULL) {
+              block_index_map_t *map =
+                  chainstate_get_block_index_map(mgr->chainstate);
+              sync_build_locator_from(map, locator_tip, locator, &locator_len);
+            } else {
+              sync_build_locator(mgr->chainstate, locator, &locator_len);
+            }
+
+            mgr->callbacks.send_getheaders(ps->peer, locator, locator_len, NULL,
+                                           mgr->callbacks.ctx);
+          }
+        }
+      }
+    } else {
+      /* WINNER MODE: Only send to the fastest peer */
+      peer_sync_state_t *ps = &mgr->peers[mgr->fastest_header_peer_idx];
+
       if (!ps->headers_in_flight &&
           now - ps->headers_sent_time >= SYNC_HEADER_RETRY_INTERVAL_MS) {
         ps->headers_in_flight = true;
         ps->headers_sent_time = now;
 
-        /* Build block locator and send getheaders */
         if (mgr->callbacks.send_getheaders) {
           hash256_t locator[SYNC_MAX_LOCATOR_HASHES];
           size_t locator_len = 0;
 
-          /*
-           * Per-peer header tracking: Each peer requests from its OWN tip.
-           *
-           * This is the key to parallel header sync efficiency. Without this,
-           * all peers request from the same global best_header and return the
-           * same headers, wasting 90%+ bandwidth on duplicates.
-           *
-           * Priority:
-           * 1. peer_best_header - where THIS peer left off
-           * 2. global best_header - for new peers joining mid-sync
-           * 3. chainstate tip (genesis) - initial state
-           */
-          block_index_t *locator_tip = ps->peer_best_header;
-          if (!locator_tip) {
-            locator_tip = mgr->best_header;
-          }
-
+          block_index_t *locator_tip = mgr->best_header;
           if (locator_tip != NULL) {
             block_index_map_t *map =
                 chainstate_get_block_index_map(mgr->chainstate);
