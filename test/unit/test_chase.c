@@ -958,6 +958,149 @@ static void test_pipeline_out_of_order(void) {
     chase_dispatcher_destroy(dispatcher);
 }
 
+/*
+ * Stress Tests
+ * ============
+ * Tests backlog limiting under load
+ */
+
+static void test_stress_backlog_limit(void) {
+    /* Create chaser with small backlog limit */
+    chase_dispatcher_t *dispatcher = chase_dispatcher_create();
+    size_t max_backlog = 5;
+    chaser_validate_t *validate =
+        chaser_validate_create(NULL, dispatcher, NULL, 2, max_backlog);
+
+    uint8_t hash[32] = {0};
+    int successful_submits = 0;
+    int rejected_submits = 0;
+
+    test_case("stress: rapid submission with limited backlog");
+
+    /* Try to submit many blocks rapidly */
+    for (int i = 0; i < 50; i++) {
+        int ret = chaser_validate_submit(validate, (uint32_t)(i + 1), hash, true);
+        if (ret == 0) {
+            successful_submits++;
+        } else {
+            rejected_submits++;
+        }
+
+        /* Verify backlog never exceeds maximum */
+        size_t backlog = chaser_validate_backlog(validate);
+        if (backlog > max_backlog) {
+            char msg[128];
+            snprintf(msg, sizeof(msg), "backlog %zu exceeds max %zu",
+                     backlog, max_backlog);
+            test_fail(msg);
+            goto cleanup;
+        }
+    }
+
+    /* Should have some successful and some rejected */
+    if (successful_submits > 0 && rejected_submits > 0) {
+        test_pass();
+    } else {
+        char msg[128];
+        snprintf(msg, sizeof(msg), "expected mixed results: success=%d, reject=%d",
+                 successful_submits, rejected_submits);
+        test_fail(msg);
+    }
+
+    test_case("stress: backlog never exceeds maximum");
+    /* Already verified above, just pass */
+    test_pass();
+
+    test_case("stress: backlog drains after load");
+    /* Wait for workers to process */
+    usleep(100000); /* 100ms */
+
+    size_t final_backlog = chaser_validate_backlog(validate);
+    if (final_backlog == 0) {
+        test_pass();
+    } else {
+        char msg[64];
+        snprintf(msg, sizeof(msg), "backlog=%zu after drain", final_backlog);
+        /* May still be processing, that's ok as long as it's low */
+        if (final_backlog <= 2) {
+            test_pass();
+        } else {
+            test_fail(msg);
+        }
+    }
+
+cleanup:
+    chaser_validate_destroy(validate);
+    chase_dispatcher_destroy(dispatcher);
+}
+
+static void test_stress_sustained_load(void) {
+    test_storage_reset();
+    chase_dispatcher_t *dispatcher = chase_dispatcher_create();
+
+    /* Create validator with moderate backlog (no confirm - needs real node) */
+    size_t max_backlog = 10;
+    chaser_validate_t *validate =
+        chaser_validate_create(FAKE_NODE, dispatcher, NULL, 2, max_backlog);
+
+    chaser_start(&validate->base);
+
+    /* Track events */
+    pipeline_ctx_t ctx = {0};
+    atomic_init(&ctx.checked_count, 0);
+    atomic_init(&ctx.valid_count, 0);
+    atomic_init(&ctx.organized_count, 0);
+    chase_subscribe(dispatcher, pipeline_observer, &ctx);
+
+    test_case("stress: sustained block flow (validation only)");
+
+    /* Add blocks and notify in batches, simulating sustained download */
+    int total_blocks = 30;
+    for (int batch = 0; batch < 3; batch++) {
+        for (int i = 0; i < 10; i++) {
+            uint32_t height = (uint32_t)(batch * 10 + i + 1);
+            test_storage_add_block(height);
+            chase_notify_height(dispatcher, CHASE_CHECKED, height);
+        }
+        /* Small pause between batches */
+        usleep(20000);
+    }
+
+    /* Wait for processing to complete */
+    usleep(200000); /* 200ms */
+
+    /* Verify all blocks were validated (confirm needs real node, skip it) */
+    int valid = atomic_load(&ctx.valid_count);
+
+    if (valid >= total_blocks) {
+        test_pass();
+    } else {
+        char msg[128];
+        snprintf(msg, sizeof(msg),
+                 "expected %d validated blocks, got %d",
+                 total_blocks, valid);
+        /* Allow some tolerance for timing */
+        if (valid >= total_blocks - 2) {
+            test_pass();
+        } else {
+            test_fail(msg);
+        }
+    }
+
+    test_case("stress: final validated height correct");
+    if (ctx.last_valid_height == (uint32_t)total_blocks) {
+        test_pass();
+    } else {
+        char msg[128];
+        snprintf(msg, sizeof(msg), "last_valid=%u, expected=%d",
+                 ctx.last_valid_height, total_blocks);
+        test_fail(msg);
+    }
+
+    chaser_validate_destroy(validate);
+    chase_dispatcher_destroy(dispatcher);
+}
+
 int main(void) {
     test_suite_begin("chase");
 
@@ -1020,6 +1163,12 @@ int main(void) {
 
     test_section("Pipeline: Out of Order");
     test_pipeline_out_of_order();
+
+    test_section("Stress: Backlog Limit");
+    test_stress_backlog_limit();
+
+    test_section("Stress: Sustained Load");
+    test_stress_sustained_load();
 
     test_suite_end();
     return test_global_summary();

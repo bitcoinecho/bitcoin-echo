@@ -119,6 +119,9 @@ struct sync_manager {
 
   /* Chase event dispatcher for chaser-based validation */
   chase_dispatcher_t *dispatcher;
+
+  /* Subscription for receiving chase events */
+  chase_subscription_t *subscription;
 };
 
 /* ============================================================================
@@ -147,6 +150,59 @@ static void dm_disconnect_peer(peer_t *peer, const char *reason, void *ctx) {
   log_warn(LOG_COMP_SYNC, "Download manager requests disconnect of %s: %s",
            peer->address, reason);
   /* TODO: Actually disconnect the peer via peer_disconnect() */
+}
+
+/* ============================================================================
+ * Chase Event Handler
+ * ============================================================================
+ */
+
+/**
+ * Handle chase events for download coordination.
+ *
+ * Responds to:
+ * - CHASE_STARVED: A chaser needs more work, distribute pending blocks
+ * - CHASE_SPLIT: Split work from a slow peer
+ */
+static bool sync_chase_handler(chase_event_t event, chase_value_t value,
+                               void *context) {
+  sync_manager_t *mgr = (sync_manager_t *)context;
+  if (!mgr) {
+    return false;
+  }
+
+  switch (event) {
+  case CHASE_STARVED:
+    /* A downstream chaser needs more blocks - distribute pending work */
+    log_debug(LOG_COMP_SYNC, "CHASE_STARVED: distributing pending work");
+    download_mgr_distribute_work(mgr->download_mgr);
+    break;
+
+  case CHASE_SPLIT: {
+    /* Split work from a slow peer (peer pointer in value.object) */
+    peer_t *slow_peer = (peer_t *)value.object;
+    if (slow_peer) {
+      log_debug(LOG_COMP_SYNC, "CHASE_SPLIT: splitting work from peer %s",
+                slow_peer->address);
+      size_t split = download_mgr_split_work(mgr->download_mgr, slow_peer);
+      if (split > 0) {
+        /* Redistribute the split work to other peers */
+        download_mgr_distribute_work(mgr->download_mgr);
+      }
+    }
+    break;
+  }
+
+  case CHASE_STOP:
+    /* Stop receiving events */
+    return false;
+
+  default:
+    /* Ignore other events */
+    break;
+  }
+
+  return true; /* Continue receiving events */
 }
 
 /* ============================================================================
@@ -502,7 +558,17 @@ sync_manager_t *sync_create(chainstate_t *chainstate,
   mgr->chainstate = chainstate;
   mgr->callbacks = *callbacks;
   mgr->dispatcher = dispatcher;
+  mgr->subscription = NULL;
   mgr->mode = SYNC_MODE_IDLE;
+
+  /* Subscribe to chase events for download coordination */
+  if (dispatcher != NULL) {
+    mgr->subscription =
+        chase_subscribe(dispatcher, sync_chase_handler, mgr);
+    if (mgr->subscription != NULL) {
+      log_debug(LOG_COMP_SYNC, "Subscribed to chase events");
+    }
+  }
   mgr->peer_count = 0;
   mgr->download_window = download_window;
 
@@ -531,6 +597,13 @@ void sync_destroy(sync_manager_t *mgr) {
   if (!mgr) {
     return;
   }
+
+  /* Unsubscribe from chase events */
+  if (mgr->subscription != NULL && mgr->dispatcher != NULL) {
+    chase_unsubscribe(mgr->dispatcher, mgr->subscription);
+    mgr->subscription = NULL;
+  }
+
   download_mgr_destroy(mgr->download_mgr);
   free(mgr->pending_headers);
   free(mgr);

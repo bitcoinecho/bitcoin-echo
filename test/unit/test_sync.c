@@ -97,22 +97,8 @@ static echo_result_t mock_validate_header(const block_header_t *header,
   return ECHO_OK;
 }
 
-/* Mock callback: validate and apply block */
-static echo_result_t mock_validate_and_apply_block(const block_t *block,
-                                                   const block_index_t *index,
-                                                   void *ctx) {
-  test_ctx_t *tctx = (test_ctx_t *)ctx;
-  (void)block;
-  (void)index;
-
-  tctx->blocks_validated++;
-
-  if (!tctx->accept_blocks) {
-    return ECHO_ERR_INVALID;
-  }
-
-  return ECHO_OK;
-}
+/* NOTE: mock_validate_and_apply_block removed - sync.c no longer uses this callback.
+ * Validation is now event-driven via chase system (CHASE_CHECKED events). */
 
 /* Mock callback: send getheaders */
 static void mock_send_getheaders(peer_t *peer, const hash256_t *locator,
@@ -184,7 +170,6 @@ static void test_sync_create(void) {
       .get_block = mock_get_block,
       .store_block = mock_store_block,
       .validate_header = mock_validate_header,
-      .validate_and_apply_block = mock_validate_and_apply_block,
       .ctx = &tctx,
   };
 
@@ -797,7 +782,6 @@ static void test_sync_send_getheaders_callback(void) {
       .get_block = mock_get_block,
       .store_block = mock_store_block,
       .validate_header = mock_validate_header,
-      .validate_and_apply_block = mock_validate_and_apply_block,
       .send_getheaders = mock_send_getheaders,
       .send_getdata_blocks = mock_send_getdata_blocks,
       .ctx = &tctx,
@@ -878,7 +862,6 @@ static void test_sync_callbacks_with_all_fields(void) {
       .get_block = mock_get_block,
       .store_block = mock_store_block,
       .validate_header = mock_validate_header,
-      .validate_and_apply_block = mock_validate_and_apply_block,
       .send_getheaders = mock_send_getheaders,
       .send_getdata_blocks = mock_send_getdata_blocks,
       .ctx = &tctx,

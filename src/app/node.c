@@ -158,9 +158,10 @@ static echo_result_t sync_cb_validate_header(const block_header_t *header,
                                              void *ctx);
 static echo_result_t sync_cb_store_header(const block_header_t *header,
                                           const block_index_t *index, void *ctx);
-static echo_result_t sync_cb_validate_and_apply_block(const block_t *block,
-                                                      const block_index_t *index,
-                                                      void *ctx);
+/* Direct block validation - not a sync callback, used by node_process_received_block */
+static echo_result_t node_validate_and_apply_block(const block_t *block,
+                                                   const block_index_t *index,
+                                                   node_t *node);
 /* Helper functions */
 static uint64_t generate_nonce(void);
 
@@ -996,7 +997,21 @@ static echo_result_t node_init_chase(node_t *node) {
     return ECHO_ERR_OUT_OF_MEMORY;
   }
 
-  log_info(LOG_COMP_MAIN, "Chase event system initialized");
+  /* Start chasers (subscribes them to events) */
+  if (chaser_start(&node->chaser_validate->base) != 0) {
+    log_error(LOG_COMP_MAIN, "Failed to start validation chaser");
+    return ECHO_ERR_INVALID;
+  }
+
+  if (chaser_start(&node->chaser_confirm->base) != 0) {
+    log_error(LOG_COMP_MAIN, "Failed to start confirmation chaser");
+    return ECHO_ERR_INVALID;
+  }
+
+  /* Fire CHASE_START to begin chaser operations */
+  chase_notify_default(node->dispatcher, CHASE_START);
+
+  log_info(LOG_COMP_MAIN, "Chase event system initialized and started");
   return ECHO_OK;
 }
 
@@ -1615,20 +1630,19 @@ static void node_mark_block_invalid(node_t *node, const hash256_t *hash) {
 /**
  * Validate and apply a full block.
  *
- * This is the critical callback that wires consensus validation to the
- * block pipeline. Called by sync manager when a block is received.
+ * This handles direct block processing (blocks from RPC, relay, etc).
+ * During IBD, validation is chase-driven instead (CHASE_CHECKED → chaser_validate).
  *
  * Steps:
  *   1. Check if block is already known invalid
  *   2. Validate block via consensus engine
- *   3. If valid, apply to chain state and storage via node_apply_block
+ *   3. If valid, apply to chain state and storage
  *   4. If invalid, mark as invalid and log error
- *   5. Announce valid blocks to peers
+ *   5. Announce valid blocks to peers (if not in IBD)
  */
-static echo_result_t sync_cb_validate_and_apply_block(const block_t *block,
-                                                      const block_index_t *index,
-                                                      void *ctx) {
-  node_t *node = (node_t *)ctx;
+static echo_result_t node_validate_and_apply_block(const block_t *block,
+                                                   const block_index_t *index,
+                                                   node_t *node) {
   if (node == NULL || block == NULL) {
     return ECHO_ERR_NULL_PARAM;
   }
@@ -1991,7 +2005,7 @@ static echo_result_t node_init_sync(node_t *node) {
       .store_block = sync_cb_store_block,
       .validate_header = sync_cb_validate_header,
       .store_header = sync_cb_store_header,
-      .validate_and_apply_block = sync_cb_validate_and_apply_block,
+      /* NOTE: validate_and_apply_block removed - validation is now chase-driven */
       .send_getheaders = sync_cb_send_getheaders,
       .send_getdata_blocks = sync_cb_send_getdata_blocks,
       .get_block_hash_at_height = sync_cb_get_block_hash_at_height,
@@ -3906,8 +3920,8 @@ echo_result_t node_process_received_block(node_t *node, const block_t *block) {
     return ECHO_ERR_INVALID;
   }
 
-  /* Process through sync manager callback (which handles validation and storage) */
-  return sync_cb_validate_and_apply_block(block, existing, node);
+  /* Process through direct validation (not chase-driven, for relay/RPC blocks) */
+  return node_validate_and_apply_block(block, existing, node);
 }
 
 /*

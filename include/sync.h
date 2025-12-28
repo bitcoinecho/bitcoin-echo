@@ -214,16 +214,11 @@ typedef struct {
   echo_result_t (*store_header)(const block_header_t *header,
                                 const block_index_t *index, void *ctx);
 
-  /**
-   * Validate and apply a full block.
-   *
-   * Returns:
-   *   ECHO_OK if valid and applied
-   *   ECHO_ERR_INVALID if block invalid
+  /* NOTE: validate_and_apply_block callback removed in Phase 3 IBD rewrite.
+   * Validation is now event-driven via chase system:
+   *   sync.c fires CHASE_CHECKED → chaser_validate → chaser_confirm
+   * Direct block processing uses node_validate_and_apply_block() instead.
    */
-  echo_result_t (*validate_and_apply_block)(const block_t *block,
-                                            const block_index_t *index,
-                                            void *ctx);
 
   /**
    * Send getheaders message to peer.
