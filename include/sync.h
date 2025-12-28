@@ -88,6 +88,9 @@ typedef struct chase_dispatcher chase_dispatcher_t;
 /* Stale tip threshold - consider sync stalled if no progress in this time */
 #define SYNC_STALE_TIP_THRESHOLD_MS (30ULL * 60 * 1000) /* 30 minutes */
 
+/* Rolling window size for header peer response time tracking */
+#define SYNC_HEADER_RESPONSE_WINDOW 3
+
 /* ============================================================================
  * Sync State
  * ============================================================================
@@ -138,10 +141,10 @@ typedef struct {
   uint32_t headers_race_responses;    /* Number of full header batches during race */
   uint64_t headers_race_total_ms;     /* Total response time during race */
 
-  /* Post-race monitoring: track recent performance to detect slow winners */
-  uint32_t recent_responses;    /* Recent response count (rolling window) */
-  uint64_t recent_total_ms;     /* Recent total response time (rolling window) */
-  uint64_t last_response_ms;    /* Last individual response time */
+  /* Post-race monitoring: ring buffer for accurate rolling window of response times */
+  uint64_t recent_times[SYNC_HEADER_RESPONSE_WINDOW]; /* Ring buffer of response times (ms) */
+  uint32_t recent_times_idx;    /* Next write position in ring buffer */
+  uint32_t recent_times_count;  /* Number of valid entries (0 to SYNC_HEADER_RESPONSE_WINDOW) */
 } peer_sync_state_t;
 
 /**
