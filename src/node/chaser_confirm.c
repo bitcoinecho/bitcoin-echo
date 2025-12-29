@@ -149,6 +149,17 @@ bool chaser_confirm_is_bypass(chaser_confirm_t *chaser, uint32_t height) {
     return height <= chaser->top_checkpoint;
 }
 
+void chaser_confirm_set_checkpoint(chaser_confirm_t *chaser, uint32_t height) {
+    if (!chaser) {
+        return;
+    }
+
+    chaser->top_checkpoint = height;
+    log_info(LOG_COMP_SYNC,
+             "chaser_confirm: checkpoint set to %u (blocks <= this bypass confirmation)",
+             height);
+}
+
 bool chaser_confirm_reorganize(chaser_confirm_t *chaser, uint32_t fork_point) {
     if (!chaser) {
         return false;

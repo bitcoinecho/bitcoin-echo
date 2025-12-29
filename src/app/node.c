@@ -910,13 +910,31 @@ static echo_result_t node_init_chase(node_t *node) {
   }
 
   /* Set checkpoint for validation bypass.
-   * Blocks at or below the current validated height have already been
-   * validated (from checkpoint restore or previous runs), so skip
-   * full validation during IBD. This is a critical libbitcoin-node
-   * optimization for fast sync. */
-  uint32_t checkpoint_height = consensus_get_height(node->consensus);
+   *
+   * libbitcoin-style: Use PLATFORM_ASSUMEVALID_HEIGHT as the checkpoint
+   * for fresh IBD. This skips full validation (including script verification)
+   * for historical blocks that have been network-validated for years.
+   *
+   * We use the MAX of:
+   * 1. Current validated height (from checkpoint restore or previous runs)
+   * 2. AssumeValid height (for fresh IBD optimization)
+   *
+   * This prevents validation failures during parallel block download, where
+   * block N might be validated before block N-1's UTXOs are applied.
+   */
+  uint32_t validated_height = consensus_get_height(node->consensus);
+  uint32_t checkpoint_height = validated_height;
+
+  /* During fresh IBD (validated_height < assumevalid), use assumevalid */
+  if (validated_height < PLATFORM_ASSUMEVALID_HEIGHT) {
+    checkpoint_height = PLATFORM_ASSUMEVALID_HEIGHT;
+    log_info(LOG_COMP_MAIN, "Fresh IBD: using AssumeValid checkpoint at %u",
+             checkpoint_height);
+  }
+
   if (checkpoint_height > 0 && checkpoint_height != UINT32_MAX) {
     chaser_validate_set_checkpoint(node->chaser_validate, checkpoint_height);
+    chaser_confirm_set_checkpoint(node->chaser_confirm, checkpoint_height);
   }
 
   /* Start chasers (subscribes them to events) */

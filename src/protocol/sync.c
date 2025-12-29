@@ -1741,15 +1741,19 @@ void sync_tick(sync_manager_t *mgr) {
     }
 
     /* Blocking work stealing: If a peer is holding the next block needed for
-     * validation for too long (3 seconds), take ALL their work. This prevents
-     * a single slow peer from blocking the entire validation pipeline.
+     * validation for too long, take ALL their work. This prevents a single
+     * slow peer from blocking the entire validation pipeline.
      *
      * Unlike steal_from_slowest (which optimizes throughput), this targets
-     * the specific peer blocking sequential validation progress. */
+     * the specific peer blocking sequential validation progress.
+     *
+     * We use DOWNLOAD_BLOCKING_TIMEOUT_MS (10 seconds) which is long enough
+     * to handle normal network variance but short enough to detect stuck peers.
+     */
     uint32_t validated_height = chainstate_get_height(mgr->chainstate);
     size_t blocking_stolen =
         download_mgr_steal_blocking_work(mgr->download_mgr, validated_height,
-                                         3000); /* 3 second timeout */
+                                         DOWNLOAD_BLOCKING_TIMEOUT_MS);
     if (blocking_stolen > 0) {
       /* Redistribute immediately so another peer can fetch the block */
       download_mgr_distribute_work(mgr->download_mgr);

@@ -400,37 +400,50 @@ bool download_mgr_block_received(download_mgr_t *mgr, peer_t *peer,
     return false;
   }
 
+  /* Update peer performance tracking FIRST - they delivered data regardless.
+   * libbitcoin-style: accept "unrequested" blocks, just don't count them
+   * for work tracking. The peer still gets throughput credit because they
+   * DID send us bytes, and late deliveries happen normally during reassignment.
+   */
+  peer_perf_t *perf = find_peer_perf(mgr, peer);
+  if (perf != NULL) {
+    perf->bytes_this_window += block_size;
+    perf->last_delivery_time = plat_time_ms();
+    perf->stalled = false;
+  }
+
   /* Find the work item */
   work_item_t *item = find_work_by_hash(mgr, hash);
   if (item == NULL) {
-    LOG_WARN("download_mgr: received unexpected block");
-    return false;
+    /* libbitcoin-style: accept unrequested/late blocks gracefully.
+     * This happens normally when:
+     * 1. A slow peer's work was reassigned, then they deliver late
+     * 2. The window advanced past this block's height
+     * 3. Block was already completed by another peer
+     *
+     * The block will still be stored by sync.c - we just don't track it.
+     * Don't log a warning since this is normal during high-performance IBD.
+     */
+    LOG_DEBUG("download_mgr: received late/unrequested block (already handled)");
+    return true; /* Accept the block, just don't track it */
   }
 
   /* Verify it was assigned to this peer */
   if (item->assigned_peer != peer) {
-    /* Could be a late delivery from a previous assignment - accept anyway */
+    /* Late delivery from a previous assignment - accept anyway */
     LOG_DEBUG("download_mgr: block from different peer than assigned");
   }
 
   /* Update work item state */
   item->state = WORK_STATE_RECEIVED;
   if (item->assigned_peer != NULL) {
-    peer_perf_t *perf = find_peer_perf(mgr, item->assigned_peer);
-    if (perf != NULL && perf->blocks_in_flight > 0) {
-      perf->blocks_in_flight--;
+    peer_perf_t *assigned_perf = find_peer_perf(mgr, item->assigned_peer);
+    if (assigned_perf != NULL && assigned_perf->blocks_in_flight > 0) {
+      assigned_perf->blocks_in_flight--;
     }
   }
   if (mgr->inflight_count > 0) {
     mgr->inflight_count--;
-  }
-
-  /* Update peer performance tracking */
-  peer_perf_t *perf = find_peer_perf(mgr, peer);
-  if (perf != NULL) {
-    perf->bytes_this_window += block_size;
-    perf->last_delivery_time = plat_time_ms();
-    perf->stalled = false;
   }
 
   return true;
@@ -722,7 +735,16 @@ size_t download_mgr_steal_blocking_work(download_mgr_t *mgr,
     return 0; /* Haven't waited long enough */
   }
 
-  /* This peer is blocking validation. Unassign ALL their work. */
+  /* This peer is blocking validation - but is it actually underperforming?
+   *
+   * libbitcoin-style: Use performance-based logic, not just absolute timeout.
+   * Only steal if the peer is:
+   * 1. Unmeasured (zero throughput - haven't delivered anything yet), OR
+   * 2. Below average throughput compared to other peers
+   *
+   * If a fast peer is temporarily slow on ONE block, don't penalize them.
+   * The absolute timeout is just a backstop for truly stuck peers.
+   */
   peer_t *blocking_peer = item->assigned_peer;
   peer_perf_t *perf = find_peer_perf(mgr, blocking_peer);
 
@@ -730,10 +752,24 @@ size_t download_mgr_steal_blocking_work(download_mgr_t *mgr,
     return 0;
   }
 
+  /* Performance-based check: only steal from underperforming peers */
+  float mean = calc_speed_mean(mgr);
+  bool is_slow = (perf->bytes_per_second < mean * 0.5f); /* Below 50% of mean */
+  bool is_unmeasured = (perf->bytes_per_second == 0.0f);
+
+  if (!is_slow && !is_unmeasured) {
+    /* Peer is performing well - don't steal despite timeout.
+     * Log at debug level since this is expected behavior. */
+    LOG_DEBUG("download_mgr: blocking peer at height %u is fast (%.0f B/s vs mean %.0f), "
+              "not stealing",
+              blocking_height, (double)perf->bytes_per_second, (double)mean);
+    return 0;
+  }
+
   LOG_INFO("download_mgr: peer blocking validation at height %u "
-           "(held for %llu ms, rate=%.0f B/s), unassigning all %u blocks",
+           "(held for %llu ms, rate=%.0f B/s vs mean %.0f), unassigning all %u blocks",
            blocking_height, (unsigned long long)held_time,
-           (double)perf->bytes_per_second, perf->blocks_in_flight);
+           (double)perf->bytes_per_second, (double)mean, perf->blocks_in_flight);
 
   /* Unassign ALL work from this peer */
   size_t unassigned = 0;

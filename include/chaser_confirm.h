@@ -121,4 +121,16 @@ bool chaser_confirm_is_bypass(chaser_confirm_t *chaser, uint32_t height);
  */
 bool chaser_confirm_reorganize(chaser_confirm_t *chaser, uint32_t fork_point);
 
+/**
+ * Set the checkpoint height for confirmation bypass
+ *
+ * Blocks at or below this height bypass full confirmation and just
+ * update the height counter. Used during IBD to skip confirmation
+ * of historically-validated blocks.
+ *
+ * @param chaser     Chaser to configure
+ * @param height     Height of the checkpoint (blocks <= this are bypassed)
+ */
+void chaser_confirm_set_checkpoint(chaser_confirm_t *chaser, uint32_t height);
+
 #endif /* ECHO_CHASER_CONFIRM_H */

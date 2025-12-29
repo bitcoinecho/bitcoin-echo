@@ -458,7 +458,7 @@ static void test_block_received(void) {
 }
 
 static void test_unexpected_block(void) {
-  test_case("unexpected block from peer");
+  test_case("late/unrequested block from peer (libbitcoin-style accept)");
 
   test_ctx_t ctx = {0};
   download_callbacks_t callbacks = {.send_getdata = mock_send_getdata,
@@ -472,10 +472,13 @@ static void test_unexpected_block(void) {
   hash256_t hash;
   make_test_hash(&hash, 999); /* Not in queue */
 
+  /* libbitcoin-style: accept unrequested/late blocks gracefully.
+   * The block will still be stored by sync.c, just not tracked for work.
+   * The peer still gets throughput credit for the bytes delivered. */
   bool result = download_mgr_block_received(mgr, (peer_t *)&peer1, &hash, 1000);
 
-  if (result) {
-    test_fail("should reject unexpected block");
+  if (!result) {
+    test_fail("should accept late/unrequested block (libbitcoin-style)");
     download_mgr_destroy(mgr);
     return;
   }

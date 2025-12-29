@@ -43,6 +43,19 @@
  */
 #define DOWNLOAD_STALL_TIMEOUT_MS 30000
 
+/* Blocking timeout: if a peer is holding the next block needed for sequential
+ * validation for this duration, unassign ALL their work (10 seconds).
+ *
+ * This is shorter than STALL_TIMEOUT because blocking validation is more
+ * urgent - the entire validation pipeline stalls waiting for one block.
+ * However, it must be long enough to handle normal network variance during IBD.
+ *
+ * libbitcoin uses performance-based stealing (split from slowest peer) rather
+ * than absolute timeouts. We use both: performance-based for throughput
+ * optimization, and this timeout for detecting truly stuck peers.
+ */
+#define DOWNLOAD_BLOCKING_TIMEOUT_MS 10000
+
 /* Minimum peers required for standard deviation calculation.
  * Below this count, we don't drop "slow" peers.
  */
