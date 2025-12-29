@@ -1663,22 +1663,26 @@ void sync_tick(sync_manager_t *mgr) {
       download_mgr_distribute_work(mgr->download_mgr);
     }
 
-    /* Blocking work stealing: If a peer is holding the next block needed for
-     * validation for too long, take ALL their work. This prevents a single
-     * slow peer from blocking the entire validation pipeline.
+    /* libbitcoin-style blocking block handling:
      *
-     * Unlike steal_from_slowest (which optimizes throughput), this targets
-     * the specific peer blocking sequential validation progress.
+     * When validation is blocked waiting for the next sequential block, we
+     * DON'T flood multiple peers with duplicate requests (which was DDoS-like
+     * behavior sending 50+ requests for the same block every few seconds).
      *
-     * We use DOWNLOAD_BLOCKING_TIMEOUT_MS (10 seconds) which is long enough
-     * to handle normal network variance but short enough to detect stuck peers.
+     * Instead, we:
+     * 1. Unassign the blocking block from its current peer (make it pending)
+     * 2. Put that peer on cooldown so they don't immediately get it back
+     * 3. Let distribute_work() assign it to a different peer
+     *
+     * This is the libbitcoin model: each block is only ever assigned to ONE
+     * peer at a time. No duplicate requests. Clean, efficient, network-friendly.
      */
     uint32_t validated_height = chainstate_get_height(mgr->chainstate);
-    size_t blocking_stolen =
-        download_mgr_steal_blocking_work(mgr->download_mgr, validated_height,
-                                         DOWNLOAD_BLOCKING_TIMEOUT_MS);
+    size_t blocking_stolen = download_mgr_steal_blocking_work(
+        mgr->download_mgr, validated_height,
+        DOWNLOAD_BLOCKING_TIMEOUT_MS);  /* 2 seconds before reassignment */
     if (blocking_stolen > 0) {
-      /* Redistribute immediately so another peer can fetch the block */
+      /* Redistribute the unassigned work to another peer immediately */
       download_mgr_distribute_work(mgr->download_mgr);
     }
 

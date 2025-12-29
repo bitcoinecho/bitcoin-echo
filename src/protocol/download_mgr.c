@@ -404,12 +404,17 @@ bool download_mgr_block_received(download_mgr_t *mgr, peer_t *peer,
    * libbitcoin-style: accept "unrequested" blocks, just don't count them
    * for work tracking. The peer still gets throughput credit because they
    * DID send us bytes, and late deliveries happen normally during reassignment.
+   *
+   * NOTE: We do NOT clear the stalled flag here! If a peer was stalled due to
+   * blocking validation, they have a cooldown period before getting new work.
+   * Delivering old/late blocks doesn't mean they're ready for new assignments.
+   * The stalled flag is cleared in check_performance() when cooldown expires.
    */
   peer_perf_t *perf = find_peer_perf(mgr, peer);
   if (perf != NULL) {
     perf->bytes_this_window += block_size;
     perf->last_delivery_time = plat_time_ms();
-    perf->stalled = false;
+    /* Don't clear stalled - respect the cooldown */
   }
 
   /* Find the work item */
@@ -484,6 +489,14 @@ void download_mgr_check_performance(download_mgr_t *mgr) {
       continue;
     }
 
+    /* Check if stall cooldown has expired */
+    if (perf->stalled && perf->stall_until > 0 && now >= perf->stall_until) {
+      LOG_DEBUG("download_mgr: peer %s cooldown expired, ready for work",
+                perf->peer->address);
+      perf->stalled = false;
+      perf->stall_until = 0;
+    }
+
     /* Check if window has elapsed */
     uint64_t elapsed = now - perf->window_start_time;
     if (elapsed >= DOWNLOAD_PERF_WINDOW_MS) {
@@ -504,9 +517,10 @@ void download_mgr_check_performance(download_mgr_t *mgr) {
     if (perf->blocks_in_flight > 0 && !perf->stalled) {
       uint64_t since_delivery = now - perf->last_delivery_time;
       if (since_delivery > DOWNLOAD_STALL_TIMEOUT_MS) {
-        LOG_INFO("download_mgr: peer stalled, reassigning %u blocks",
+        LOG_INFO("download_mgr: peer stalled, reassigning %u blocks (10s cooldown)",
                       perf->blocks_in_flight);
         perf->stalled = true;
+        perf->stall_until = now + 10000; /* 10 second cooldown */
 
         /* Unassign all work from this peer */
         for (uint32_t h = mgr->lowest_pending_height;
@@ -735,67 +749,76 @@ size_t download_mgr_steal_blocking_work(download_mgr_t *mgr,
     return 0; /* Haven't waited long enough */
   }
 
-  /* This peer is blocking validation - but is it actually underperforming?
+  /* UNCONDITIONAL steal for blocking block - AND ALL WORK FROM THIS PEER.
    *
-   * libbitcoin-style: Use performance-based logic, not just absolute timeout.
-   * Only steal if the peer is:
-   * 1. Unmeasured (zero throughput - haven't delivered anything yet), OR
-   * 2. Below average throughput compared to other peers
+   * Unlike general stall detection (which considers peer performance), the
+   * blocking block is special: it stops ALL validation progress. We don't
+   * care if the peer is "fast" overall - if they've held this specific block
+   * for 5 seconds while we're waiting, we take ALL their work.
    *
-   * If a fast peer is temporarily slow on ONE block, don't penalize them.
-   * The absolute timeout is just a backstop for truly stuck peers.
+   * Why take ALL work, not just the blocking block?
+   * When a peer is assigned blocks [37, 38, 39, 40...] at the same time,
+   * stealing just block 37 means block 38 immediately becomes the new blocker
+   * with the same held_time. This creates a cascade where we steal one block
+   * per tick, wasting validation time.
+   *
+   * libbitcoin's approach: do_split() returns half the work to the pool.
+   * Our approach: When blocking, take ALL work from the peer immediately.
    */
   peer_t *blocking_peer = item->assigned_peer;
   peer_perf_t *perf = find_peer_perf(mgr, blocking_peer);
 
-  if (perf == NULL) {
-    return 0;
+  LOG_INFO("download_mgr: stealing ALL work from blocking peer %s "
+           "(block %u held for %llu ms)",
+           blocking_peer ? blocking_peer->address : "unknown",
+           blocking_height, (unsigned long long)held_time);
+
+  /* Unassign ALL work from the blocking peer */
+  size_t stolen = 0;
+  for (uint32_t h = mgr->lowest_pending_height; h <= mgr->highest_queued_height;
+       h++) {
+    size_t i = h % mgr->work_capacity;
+    work_item_t *work = &mgr->work_items[i];
+
+    if (work->state == WORK_STATE_ASSIGNED &&
+        work->assigned_peer == blocking_peer) {
+      work->state = WORK_STATE_PENDING;
+      work->assigned_peer = NULL;
+      work->retry_count++;
+      mgr->pending_count++;
+      if (mgr->inflight_count > 0) {
+        mgr->inflight_count--;
+      }
+      stolen++;
+    }
   }
 
-  /* Performance-based check: only steal from underperforming peers */
-  float mean = calc_speed_mean(mgr);
-  bool is_slow = (perf->bytes_per_second < mean * 0.5f); /* Below 50% of mean */
-  bool is_unmeasured = (perf->bytes_per_second == 0.0f);
-
-  if (!is_slow && !is_unmeasured) {
-    /* Peer is performing well - don't steal despite timeout.
-     * Log at debug level since this is expected behavior. */
-    LOG_DEBUG("download_mgr: blocking peer at height %u is fast (%.0f B/s vs mean %.0f), "
-              "not stealing",
-              blocking_height, (double)perf->bytes_per_second, (double)mean);
-    return 0;
+  if (perf != NULL) {
+    perf->blocks_in_flight = 0;
+    perf->stalled = true;
+    /* 10 second cooldown - don't give this peer new work for a while.
+     * This prevents the cycle of: steal -> reassign to same peer -> steal again.
+     * The peer may still deliver blocks they were working on, which is fine,
+     * but they won't get NEW work until the cooldown expires.
+     */
+    perf->stall_until = now + 10000;
   }
 
-  LOG_INFO("download_mgr: peer blocking validation at height %u "
-           "(held for %llu ms, rate=%.0f B/s vs mean %.0f), unassigning blocking block only",
-           blocking_height, (unsigned long long)held_time,
-           (double)perf->bytes_per_second, (double)mean);
+  LOG_INFO("download_mgr: unassigned %zu blocks from blocking peer %s (10s cooldown)",
+           stolen, blocking_peer ? blocking_peer->address : "unknown");
 
-  /* Unassign ONLY the blocking block, not all work from this peer.
-   *
-   * libbitcoin-style: Minimize churn. Taking just the blocking block allows:
-   * 1. The peer to continue delivering other blocks they're working on
-   * 2. Another peer to pick up the one blocking block
-   * 3. Validation to resume without disrupting the entire download pipeline
-   *
-   * If the peer is truly slow, the performance-based stealing (split_work)
-   * will naturally rebalance work over time.
-   */
-  item->state = WORK_STATE_PENDING;
-  item->assigned_peer = NULL;
-  item->retry_count++;
-  mgr->pending_count++;
-  if (mgr->inflight_count > 0) {
-    mgr->inflight_count--;
-  }
-
-  if (perf->blocks_in_flight > 0) {
-    perf->blocks_in_flight--;
-  }
-  /* Don't mark peer as stalled - they may be fine for other blocks */
-
-  return 1;
+  return stolen;
 }
+
+/* NOTE: download_mgr_request_blocking_parallel() was REMOVED.
+ *
+ * That function sent duplicate block requests to multiple peers simultaneously,
+ * which is fundamentally wrong and network-hostile. libbitcoin's model is:
+ * each block is only ever assigned to ONE peer at a time.
+ *
+ * When blocking, we use steal_blocking_work() to UNASSIGN the blocking block
+ * and redistribute it to a single different peer. No duplicate requests.
+ */
 
 /* ============================================================================
  * Query Functions

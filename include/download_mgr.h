@@ -44,19 +44,16 @@
 #define DOWNLOAD_STALL_TIMEOUT_MS 30000
 
 /* Blocking timeout: if a peer is holding the next block needed for sequential
- * validation for this duration, unassign that specific block (30 seconds).
+ * validation for this duration, unassign ALL their work (2 seconds).
  *
- * This matches STALL_TIMEOUT since blocks at higher heights can be 1MB+ and
- * legitimately take 20+ seconds to transfer from slower peers.
+ * CRITICAL: This must be VERY SHORT! A blocking block stops ALL validation.
+ * 2 seconds is enough for early tiny blocks (~200 bytes) and later larger
+ * blocks will generally arrive faster due to peer performance tracking.
  *
- * libbitcoin uses performance-based stealing (split from slowest peer) rather
- * than absolute timeouts. We use both: performance-based for throughput
- * optimization, and this timeout for detecting truly stuck peers.
- *
- * Note: We only unassign the blocking block itself, not all work from the peer.
- * This reduces churn while still unblocking validation progress.
+ * If validation is blocked for 2+ seconds, we aggressively steal ALL work
+ * from that peer and give them a cooldown before new assignments.
  */
-#define DOWNLOAD_BLOCKING_TIMEOUT_MS 30000
+#define DOWNLOAD_BLOCKING_TIMEOUT_MS 2000
 
 /* Minimum peers required for standard deviation calculation.
  * Below this count, we don't drop "slow" peers.
@@ -121,6 +118,7 @@ typedef struct {
   uint32_t blocks_in_flight;  /* Number of blocks currently assigned */
   uint64_t last_delivery_time;/* Time of last block delivery (ms) */
   bool stalled;               /* True if peer has stalled */
+  uint64_t stall_until;       /* Cooldown: no new work until this time (ms) */
 } peer_perf_t;
 
 /* ============================================================================
@@ -342,6 +340,16 @@ size_t download_mgr_steal_from_slowest(download_mgr_t *mgr);
 size_t download_mgr_steal_blocking_work(download_mgr_t *mgr,
                                         uint32_t validated_height,
                                         uint64_t max_wait_ms);
+
+/* NOTE: download_mgr_request_blocking_parallel() was REMOVED.
+ *
+ * Sending duplicate block requests to multiple peers is fundamentally wrong
+ * and network-hostile. The libbitcoin model is: each block is only ever
+ * assigned to ONE peer at a time.
+ *
+ * When blocking, use steal_blocking_work() to UNASSIGN the blocking block
+ * and redistribute it to a single different peer. No duplicate requests.
+ */
 
 /**
  * Check if starved condition exists.
