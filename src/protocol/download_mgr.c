@@ -767,33 +767,34 @@ size_t download_mgr_steal_blocking_work(download_mgr_t *mgr,
   }
 
   LOG_INFO("download_mgr: peer blocking validation at height %u "
-           "(held for %llu ms, rate=%.0f B/s vs mean %.0f), unassigning all %u blocks",
+           "(held for %llu ms, rate=%.0f B/s vs mean %.0f), unassigning blocking block only",
            blocking_height, (unsigned long long)held_time,
-           (double)perf->bytes_per_second, (double)mean, perf->blocks_in_flight);
+           (double)perf->bytes_per_second, (double)mean);
 
-  /* Unassign ALL work from this peer */
-  size_t unassigned = 0;
-  for (uint32_t h = mgr->lowest_pending_height; h <= mgr->highest_queued_height;
-       h++) {
-    size_t work_idx = h % mgr->work_capacity;
-    work_item_t *work = &mgr->work_items[work_idx];
-    if (work->assigned_peer == blocking_peer &&
-        work->state == WORK_STATE_ASSIGNED) {
-      work->state = WORK_STATE_PENDING;
-      work->assigned_peer = NULL;
-      work->retry_count++;
-      mgr->pending_count++;
-      if (mgr->inflight_count > 0) {
-        mgr->inflight_count--;
-      }
-      unassigned++;
-    }
+  /* Unassign ONLY the blocking block, not all work from this peer.
+   *
+   * libbitcoin-style: Minimize churn. Taking just the blocking block allows:
+   * 1. The peer to continue delivering other blocks they're working on
+   * 2. Another peer to pick up the one blocking block
+   * 3. Validation to resume without disrupting the entire download pipeline
+   *
+   * If the peer is truly slow, the performance-based stealing (split_work)
+   * will naturally rebalance work over time.
+   */
+  item->state = WORK_STATE_PENDING;
+  item->assigned_peer = NULL;
+  item->retry_count++;
+  mgr->pending_count++;
+  if (mgr->inflight_count > 0) {
+    mgr->inflight_count--;
   }
 
-  perf->blocks_in_flight = 0;
-  perf->stalled = true; /* Mark as stalled so they don't get more work */
+  if (perf->blocks_in_flight > 0) {
+    perf->blocks_in_flight--;
+  }
+  /* Don't mark peer as stalled - they may be fine for other blocks */
 
-  return unassigned;
+  return 1;
 }
 
 /* ============================================================================
