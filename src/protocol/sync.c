@@ -1060,8 +1060,10 @@ echo_result_t sync_handle_headers(sync_manager_t *mgr, peer_t *peer,
     mgr->callbacks.send_getheaders(ps->peer, locator, locator_len, NULL,
                                    mgr->callbacks.ctx);
 
-    /* Every N batches, ALSO send to a random challenger (parallel race) */
-    if (mgr->header_batch_count % HEADER_PROBE_INTERVAL == 0) {
+    /* Every N batches, OR if active peer is slow, send to a random challenger */
+    bool slow_response = mgr->last_header_response_ms > HEADER_SLOW_THRESHOLD_MS;
+    bool probe_interval = (mgr->header_batch_count % HEADER_PROBE_INTERVAL == 0);
+    if (probe_interval || slow_response) {
       /* Find available challenger peers */
       size_t candidates[SYNC_MAX_PEERS];
       size_t candidate_count = 0;
@@ -1089,9 +1091,10 @@ echo_result_t sync_handle_headers(sync_manager_t *mgr, peer_t *peer,
         mgr->callbacks.send_getheaders(challenger->peer, locator, locator_len,
                                        NULL, mgr->callbacks.ctx);
 
-        log_info(LOG_COMP_SYNC, "Header race started: %s vs %s (batch %u)",
+        log_info(LOG_COMP_SYNC, "Header race started: %s vs %s (batch %u%s)",
                  ps->peer->address, challenger->peer->address,
-                 mgr->header_batch_count);
+                 mgr->header_batch_count,
+                 slow_response ? ", slow response triggered" : "");
       }
     }
   }
