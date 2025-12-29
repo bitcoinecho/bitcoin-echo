@@ -31,6 +31,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
+#include <limits.h>
 
 /*
  * Compile-time verification of critical type sizes.
@@ -138,12 +140,19 @@ static int parse_arguments(int argc, char *argv[], node_config_t *config) {
     } else if (strncmp(arg, "--prune=", 8) == 0) {
       const char *prune_str = arg + 8;
       char *endptr = NULL;
-      long prune_mb = strtol(prune_str, &endptr, 10);
-      if (endptr == prune_str || *endptr != '\0' || prune_mb < 0) {
+      errno = 0;
+      unsigned long prune_mb = strtoul(prune_str, &endptr, 10);
+      // Check if conversion was valid
+      if (endptr == prune_str || *endptr != '\0') {
         fprintf(stderr, "Error: Invalid prune value: %s\n", prune_str);
         return -1;
       }
-      if (prune_mb > 0 && prune_mb < PRUNE_TARGET_MIN_MB) {
+      // Check for overflow or underflow
+      if (errno == ERANGE || prune_mb >= ULONG_MAX) {
+        fprintf(stderr, "Error: Prune value out of range: %s\n", prune_str);
+        return -1;
+      }
+      if (prune_mb < PRUNE_TARGET_MIN_MB) {
         fprintf(stderr, "Error: Prune target must be at least %d MB\n",
                 PRUNE_TARGET_MIN_MB);
         return -1;
