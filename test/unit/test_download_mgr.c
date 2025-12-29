@@ -331,8 +331,9 @@ static void test_distribute_work(void) {
     return;
   }
 
-  if (ctx.getdata_calls != 3) {
-    test_fail_uint("getdata calls", 3, ctx.getdata_calls);
+  /* With batching optimization, all 3 blocks go in ONE getdata call */
+  if (ctx.getdata_calls != 1) {
+    test_fail_uint("getdata calls (batched)", 1, ctx.getdata_calls);
     download_mgr_destroy(mgr);
     return;
   }
@@ -362,17 +363,19 @@ static void test_distribute_round_robin(void) {
     download_mgr_add_peer(mgr, (peer_t *)&peers[i]);
   }
 
-  hash256_t hashes[6];
-  uint32_t heights[6];
-  for (uint32_t i = 0; i < 6; i++) {
+  /* With batching, first peer fills to capacity (16) before next peer gets
+   * work. Add enough blocks to require all 3 peers: 48 blocks = 16 per peer */
+  hash256_t hashes[48];
+  uint32_t heights[48];
+  for (uint32_t i = 0; i < 48; i++) {
     make_test_hash(&hashes[i], i + 100);
     heights[i] = i + 100;
   }
-  download_mgr_add_work(mgr, hashes, heights, 6);
+  download_mgr_add_work(mgr, hashes, heights, 48);
 
   download_mgr_distribute_work(mgr);
 
-  /* All three peers should have work */
+  /* All three peers should have work (16 blocks each) */
   download_metrics_t metrics;
   download_mgr_get_metrics(mgr, &metrics);
 

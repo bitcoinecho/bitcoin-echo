@@ -23,7 +23,7 @@ CompileFlags:
 
 Diagnostics:
   UnusedIncludes: Strict
-  MissingIncludes: Strict
+  MissingIncludes: None
   # Suppress common noise from system headers
   Suppress:
     - 'bugprone-reserved-identifier'
@@ -44,19 +44,3 @@ Diagnostics:
 
 Index:
   Background: Build
-
-# clangd include-cleaner on macOS may attribute symbols like pthread_t/socklen_t
-# to private system headers (e.g. sys/_pthread/*), producing noisy
-# clangd(missing-includes) diagnostics. We keep the source clean and suppress
-# MissingIncludes for these translation units instead of including private
-# headers.
----
-If:
-  PathMatch: '(^|.*/)src/platform/posix\.c$'
-Diagnostics:
-  MissingIncludes: None
----
-If:
-  PathMatch: '(^|.*/)src/app/log\.c$'
-Diagnostics:
-  MissingIncludes: None

@@ -44,9 +44,6 @@ struct download_mgr {
   /* Peer performance tracking */
   peer_perf_t peers[DOWNLOAD_MAX_PEERS];
   size_t peer_count;
-
-  /* Round-robin index for work distribution */
-  size_t next_peer_index;
 };
 
 /* ============================================================================
@@ -99,46 +96,6 @@ static work_item_t *find_work_by_height(download_mgr_t *mgr, uint32_t height) {
   if (item->height == height && item->state != WORK_STATE_COMPLETE) {
     return item;
   }
-  return NULL;
-}
-
-/**
- * Find next pending (unassigned) work item starting from lowest height.
- */
-static work_item_t *find_next_pending(download_mgr_t *mgr) {
-  for (uint32_t h = mgr->lowest_pending_height; h <= mgr->highest_queued_height;
-       h++) {
-    size_t idx = h % mgr->work_capacity;
-    work_item_t *item = &mgr->work_items[idx];
-    if (item->state == WORK_STATE_PENDING) {
-      return item;
-    }
-  }
-  return NULL;
-}
-
-/**
- * Find a peer with capacity for more work.
- * Uses round-robin starting from next_peer_index.
- */
-static peer_perf_t *find_peer_with_capacity(download_mgr_t *mgr) {
-  if (mgr->peer_count == 0) {
-    return NULL;
-  }
-
-  size_t start = mgr->next_peer_index % mgr->peer_count;
-  size_t idx = start;
-
-  do {
-    peer_perf_t *perf = &mgr->peers[idx];
-    if (perf->peer != NULL && !perf->stalled &&
-        perf->blocks_in_flight < DOWNLOAD_MAX_IN_FLIGHT_PER_PEER) {
-      mgr->next_peer_index = (idx + 1) % mgr->peer_count;
-      return perf;
-    }
-    idx = (idx + 1) % mgr->peer_count;
-  } while (idx != start);
-
   return NULL;
 }
 
