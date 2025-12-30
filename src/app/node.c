@@ -3089,6 +3089,17 @@ echo_result_t node_maintenance(node_t *node) {
     }
   }
 
+  /* Task 6: Pruning - check if we need to prune old blocks */
+  if (node_is_pruning_enabled(node)) {
+    static uint64_t last_prune_check = 0;
+    /* Check every 10 seconds during IBD, every 60 seconds after */
+    uint64_t prune_interval = node->ibd_mode ? 10000 : 60000;
+    if (now - last_prune_check > prune_interval) {
+      node_maybe_prune(node);
+      last_prune_check = now;
+    }
+  }
+
   return ECHO_OK;
 }
 
