@@ -53,6 +53,7 @@ void block_free(void *block) { (void)block; }
 uint32_t chainstate_get_height(void *cs) { (void)cs; return 0; }
 void log_error(int comp, const char *fmt, ...) { (void)comp; (void)fmt; }
 void log_info(int comp, const char *fmt, ...) { (void)comp; (void)fmt; }
+void log_debug(int comp, const char *fmt, ...) { (void)comp; (void)fmt; }
 echo_result_t node_apply_block(void *node, const void *block) {
     (void)node; (void)block; return ECHO_OK;
 }
