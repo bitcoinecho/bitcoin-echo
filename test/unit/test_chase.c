@@ -7,6 +7,7 @@
 #include "chaser_confirm.h"
 #include "chaser_validate.h"
 #include "test_utils.h"
+#include "../../include/platform.h"
 
 #include <pthread.h>
 #include <stdatomic.h>
@@ -602,7 +603,7 @@ static void test_chaser_validate_submit(void) {
     }
 
     /* Give worker time to process */
-    usleep(10000);
+    plat_sleep_ms(10);
 
     test_case("backlog decrements after processing");
     /* Worker should have processed it by now */
@@ -841,7 +842,7 @@ static void test_pipeline_single_block(void) {
     chase_notify_height(dispatcher, CHASE_CHECKED, 1);
 
     /* Wait for async processing (validation is in worker threads) */
-    usleep(50000); /* 50ms */
+    plat_sleep_ms(50);
 
     /* Verify CHASE_VALID was fired */
     int valid = atomic_load(&ctx.valid_count);
@@ -905,11 +906,11 @@ static void test_pipeline_multiple_blocks(void) {
     for (uint32_t h = 1; h <= 10; h++) {
         test_storage_add_block(h);
         chase_notify_height(dispatcher, CHASE_CHECKED, h);
-        usleep(5000);
+        plat_sleep_ms(5);
     }
 
     /* Wait for all async processing */
-    usleep(100000); /* 100ms */
+    plat_sleep_ms(100);
 
     int organized = atomic_load(&ctx.organized_count);
     uint32_t height = chaser_confirm_height(confirm);
@@ -959,7 +960,7 @@ static void test_pipeline_out_of_order(void) {
     /* Store and notify block 3 before 1 and 2 */
     test_storage_add_block(3);
     chase_notify_height(dispatcher, CHASE_CHECKED, 3);
-    usleep(20000);
+    plat_sleep_ms(20);
 
     /* Block 3 should not be validated yet (needs 1 and 2 first) */
     int valid = atomic_load(&ctx.valid_count);
@@ -973,10 +974,10 @@ static void test_pipeline_out_of_order(void) {
     /* Now fill in blocks 1 and 2 */
     test_storage_add_block(1);
     chase_notify_height(dispatcher, CHASE_CHECKED, 1);
-    usleep(30000);
+    plat_sleep_ms(30);
     test_storage_add_block(2);
     chase_notify_height(dispatcher, CHASE_CHECKED, 2);
-    usleep(50000);
+    plat_sleep_ms(50);
 
     /* Should have validated blocks 1, 2, and 3 via BUMP */
     valid = atomic_load(&ctx.valid_count);
@@ -1049,7 +1050,7 @@ static void test_stress_backlog_limit(void) {
 
     test_case("stress: backlog drains after load");
     /* Wait for workers to process */
-    usleep(100000); /* 100ms */
+    plat_sleep_ms(100);
 
     size_t final_backlog = chaser_validate_backlog(validate);
     if (final_backlog == 0) {
@@ -1101,11 +1102,11 @@ static void test_stress_sustained_load(void) {
             chase_notify_height(dispatcher, CHASE_CHECKED, height);
         }
         /* Small pause between batches */
-        usleep(20000);
+        plat_sleep_ms(20);
     }
 
     /* Wait for processing to complete */
-    usleep(200000); /* 200ms */
+    plat_sleep_ms(200);
 
     /* Verify all blocks were validated (confirm needs real node, skip it) */
     int valid = atomic_load(&ctx.valid_count);
