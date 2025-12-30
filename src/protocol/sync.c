@@ -43,7 +43,7 @@
  * HEADER_PROBE_INTERVAL: Every N successful batches, try one random peer.
  * HEADER_SLOW_THRESHOLD_MS: If active peer takes longer than this, try another.
  */
-#define HEADER_PROBE_INTERVAL 5       /* Probe a random peer every 5 batches (10k headers) */
+#define HEADER_PROBE_INTERVAL 3       /* Probe a random peer every 3 batches (6k headers) */
 #define HEADER_SLOW_THRESHOLD_MS 2000 /* Consider peer slow if batch takes >2s */
 
 /**
