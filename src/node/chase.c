@@ -7,6 +7,9 @@
  * SPDX-License-Identifier: MIT
  */
 
+/* Required for PTHREAD_MUTEX_RECURSIVE on Linux with -std=c11 */
+#define _POSIX_C_SOURCE 200809L
+
 #include "chase.h"
 
 #include <pthread.h>
