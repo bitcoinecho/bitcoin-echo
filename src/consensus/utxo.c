@@ -12,9 +12,12 @@
  * - All memory is explicitly managed (no hidden allocations)
  */
 
+#define LOG_COMPONENT LOG_COMP_CONS
+
 #include "utxo.h"
 #include "echo_assert.h"
 #include "echo_types.h"
+#include "log.h"
 #include "tx.h"
 #include <stdbool.h>
 #include <stdint.h>
@@ -72,8 +75,14 @@ static uint32_t hash_outpoint(const outpoint_t *op) {
  * ======================================================================== */
 
 bool outpoint_equal(const outpoint_t *a, const outpoint_t *b) {
-  ECHO_ASSERT(a != NULL);
-  ECHO_ASSERT(b != NULL);
+  /* Defensive checks with useful debug info */
+  if (a == NULL || b == NULL) {
+    LOG_ERROR("outpoint_equal: NULL pointer (a=%p, b=%p)",
+              (const void *)a, (const void *)b);
+    ECHO_ASSERT(a != NULL);
+    ECHO_ASSERT(b != NULL);
+    return false; /* Unreachable, but prevents compiler warning */
+  }
 
   if (a->vout != b->vout) {
     return false;
@@ -252,6 +261,11 @@ const utxo_entry_t *utxo_set_lookup(const utxo_set_t *set,
 
   utxo_bucket_t *bucket = set->buckets[index];
   while (bucket != NULL) {
+    if (bucket->entry == NULL) {
+      LOG_ERROR("utxo_set_lookup: bucket->entry is NULL at index %zu", index);
+      ECHO_ASSERT(bucket->entry != NULL);
+      return NULL;
+    }
     if (outpoint_equal(&bucket->entry->outpoint, outpoint)) {
       return bucket->entry;
     }
@@ -283,6 +297,13 @@ static echo_result_t utxo_set_resize(utxo_set_t *set, size_t new_capacity) {
     utxo_bucket_t *bucket = set->buckets[i];
     while (bucket != NULL) {
       utxo_bucket_t *next = bucket->next;
+
+      if (bucket->entry == NULL) {
+        LOG_ERROR("utxo_set_resize: bucket->entry is NULL at index %zu", i);
+        ECHO_ASSERT(bucket->entry != NULL);
+        free(new_buckets);
+        return ECHO_ERR_INVALID_PARAM;
+      }
 
       /* Compute new index */
       uint32_t hash = hash_outpoint(&bucket->entry->outpoint);
@@ -358,6 +379,11 @@ echo_result_t utxo_set_remove(utxo_set_t *set, const outpoint_t *outpoint) {
   utxo_bucket_t *prev = NULL;
 
   while (bucket != NULL) {
+    if (bucket->entry == NULL) {
+      LOG_ERROR("utxo_set_remove: bucket->entry is NULL at index %zu", index);
+      ECHO_ASSERT(bucket->entry != NULL);
+      return ECHO_ERR_INVALID_PARAM;
+    }
     if (outpoint_equal(&bucket->entry->outpoint, outpoint)) {
       /* Found it - remove from chain */
       if (prev == NULL) {
