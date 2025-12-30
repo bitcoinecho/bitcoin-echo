@@ -529,14 +529,16 @@ echo_result_t discovery_select_outbound_address(peer_addr_manager_t *manager,
       score += time_since_try / 1000; /* Convert to seconds */
     }
 
-    /* Penalty for failed attempts (stronger penalty) */
+    /* Penalty for failed attempts (saturating subtraction to avoid underflow) */
+    uint64_t penalty = 0;
     if (entry->attempts > 0 && !entry->reachable) {
       /* Non-reachable addresses with many attempts get heavy penalty */
-      score -= (uint64_t)entry->attempts * 50000;
+      penalty = (uint64_t)entry->attempts * 50000;
     } else if (entry->attempts > 0) {
       /* Previously reachable addresses get lighter penalty */
-      score -= (uint64_t)entry->attempts * 10000;
+      penalty = (uint64_t)entry->attempts * 10000;
     }
+    score = (score > penalty) ? (score - penalty) : 0;
 
     /* Consider this address if it's the best so far */
     if (best == NULL || score > best_score) {
