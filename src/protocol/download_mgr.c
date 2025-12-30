@@ -763,10 +763,13 @@ bool download_mgr_check_stall(download_mgr_t *mgr, uint32_t validated_height) {
   size_t block_idx = next_height - blocker_height;
   batch_node_t *blocker_node = (batch_node_t *)(void *)blocker->batch;
 
-  /* Check if blocker is actively delivering blocks */
+  /* Check if blocker is actively delivering blocks.
+   * Use DOWNLOAD_PERF_WINDOW_MS (10 sec) as threshold, not stall_timeout.
+   * stall_timeout starts at 2 sec which is too aggressive - a peer could
+   * just be waiting for network latency. 10 sec gives them time to deliver. */
   uint64_t since_last_delivery = now - blocker->last_delivery_time;
   bool blocker_is_active = (blocker->last_delivery_time > 0 &&
-                            since_last_delivery < stall_timeout);
+                            since_last_delivery < DOWNLOAD_PERF_WINDOW_MS);
 
   LOG_INFO("download_mgr: validation stalled at height %u for %llu ms "
            "(timeout=%llu ms, backoff=%u) - blocker has batch [%u-%u], "

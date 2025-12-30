@@ -2676,7 +2676,7 @@ echo_result_t node_process_peers(node_t *node) {
     /* Find empty peer slot for inbound connection */
     for (size_t i = 0; i < NODE_MAX_PEERS; i++) {
       peer_t *peer = &node->peers[i];
-      if (!peer_is_connected(peer)) {
+      if (peer->state == PEER_STATE_DISCONNECTED) {
         /* Try to accept connection (non-blocking) */
         uint64_t nonce = generate_nonce();
         echo_result_t result = peer_accept(peer, node->listen_socket, nonce);
@@ -2694,6 +2694,38 @@ echo_result_t node_process_peers(node_t *node) {
         }
         break; /* Only accept one per loop iteration */
       }
+    }
+  }
+
+  /* Step 1.5: Check pending async connections */
+  for (size_t i = 0; i < NODE_MAX_PEERS; i++) {
+    peer_t *peer = &node->peers[i];
+    if (peer->state == PEER_STATE_CONNECTING) {
+      echo_result_t result = peer_check_connect(peer);
+      if (result == ECHO_OK) {
+        /* Connection completed! Send version to start handshake */
+        log_info(LOG_COMP_NET, "Async connect completed to %s:%u",
+                 peer->address, peer->port);
+
+        uint32_t our_height = 0;
+        if (node->consensus != NULL) {
+          our_height = consensus_get_height(node->consensus);
+        }
+        uint64_t services = node_is_pruning_enabled(node) ? 0 : 1;
+        peer_send_version(peer, services, (int32_t)our_height, true);
+      } else if (result != ECHO_SUCCESS) {
+        /* Connection failed - release address back to pool */
+        log_debug(LOG_COMP_NET, "Async connect failed to %s:%u: %d",
+                  peer->address, peer->port, result);
+        net_addr_t peer_addr;
+        if (discovery_parse_address(peer->address, peer->port, &peer_addr) ==
+            ECHO_OK) {
+          discovery_mark_address_free(&node->addr_manager, &peer_addr,
+                                      ECHO_FALSE);
+        }
+        /* peer_check_connect already cleaned up the peer struct */
+      }
+      /* result == ECHO_SUCCESS means still connecting, check next time */
     }
   }
 
@@ -2968,18 +3000,21 @@ echo_result_t node_maintenance(node_t *node) {
    * During IBD, bandwidth is critical - fill peer slots aggressively.
    * Many peers are pruned nodes that get disconnected after handshake,
    * so we need to attempt many more connections than we need.
-   * - Below 25%: try up to 20 connections per cycle (aggressive recovery)
-   * - Below 50%: try up to 12 connections per cycle
-   * - Below 75%: try up to 6 connections per cycle
-   * - Below target: try up to 3 connections per cycle
+   *
+   * With 2-second connection timeout (reduced from 5), we can try more
+   * connections per cycle without blocking too long:
+   * - Below 25%: try up to 40 connections (80 sec worst case)
+   * - Below 50%: try up to 25 connections (50 sec worst case)
+   * - Below 75%: try up to 15 connections (30 sec worst case)
+   * - Below target: try up to 8 connections (16 sec worst case)
    */
-  size_t max_attempts = 3; /* Always try at least 3 when below target */
+  size_t max_attempts = 8; /* Default when close to target */
   if (outbound_count < target_peers / 4) {
-    max_attempts = 20; /* Aggressive: only ~30-40% of network is full nodes */
+    max_attempts = 40; /* Aggressive: only ~30-40% of network is full nodes */
   } else if (outbound_count < target_peers / 2) {
-    max_attempts = 12;
+    max_attempts = 25;
   } else if (outbound_count < (target_peers * 3) / 4) {
-    max_attempts = 6;
+    max_attempts = 15;
   }
 
   size_t attempts = 0;
@@ -3001,11 +3036,13 @@ echo_result_t node_maintenance(node_t *node) {
     /* Mark in-use IMMEDIATELY to prevent selecting same address in next loop iteration */
     discovery_mark_address_in_use(&node->addr_manager, &addr);
 
-    /* Find empty slot */
-    bool connected = false;
+    /* Find empty slot (must be DISCONNECTED, not CONNECTING) */
+    bool found_slot = false;
     for (size_t i = 0; i < NODE_MAX_PEERS; i++) {
       peer_t *peer = &node->peers[i];
-      if (!peer_is_connected(peer)) {
+      if (peer->state == PEER_STATE_DISCONNECTED) {
+        found_slot = true;
+
         /* Convert IPv4-mapped IPv6 address to string */
         char ip_str[64];
         snprintf(ip_str, sizeof(ip_str), "%d.%d.%d.%d", addr.ip[12],
@@ -3020,32 +3057,35 @@ echo_result_t node_maintenance(node_t *node) {
         uint64_t nonce = generate_nonce();
         echo_result_t result = peer_connect(peer, ip_str, addr.port, nonce);
         if (result == ECHO_OK) {
+          /* Immediate connection (rare) - send version now */
           log_info(LOG_COMP_NET, "Connected to peer %s:%u", ip_str, addr.port);
 
-          /* Send version message to start handshake */
           uint32_t our_height = 0;
           if (node->consensus != NULL) {
             our_height = consensus_get_height(node->consensus);
           }
-
-          /* Service flags: NODE_NETWORK (1) only if we're not pruned */
           uint64_t services = node_is_pruning_enabled(node) ? 0 : 1;
           peer_send_version(peer, services, (int32_t)our_height, true);
-          connected = true;
+        } else if (result == ECHO_SUCCESS) {
+          /* Async connection started - peer is in CONNECTING state.
+           * node_process_peers will check completion and send version. */
+          log_debug(LOG_COMP_NET, "Async connect started to %s:%u",
+                    ip_str, addr.port);
         } else {
           log_warn(LOG_COMP_NET, "Failed to connect to %s:%u: error %d",
                    ip_str, addr.port, result);
           /* Release address back to pool as failed attempt */
           discovery_mark_address_free(&node->addr_manager, &addr, ECHO_FALSE);
+          /* Continue trying - connection failed but slot exists */
         }
         break;
       }
     }
     attempts++;
-    if (!connected) {
-      /* Release address - we marked it in_use but couldn't use it */
+    if (!found_slot) {
+      /* No empty peer slots - stop trying until one frees up */
       discovery_mark_address_free(&node->addr_manager, &addr, ECHO_FALSE);
-      break; /* No empty slots available */
+      break;
     }
   }
 

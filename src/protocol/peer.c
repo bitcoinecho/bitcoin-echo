@@ -44,7 +44,11 @@ void peer_init(peer_t *peer) {
 }
 
 /**
- * Create outbound connection to remote peer.
+ * Start async outbound connection to remote peer.
+ *
+ * Returns ECHO_SUCCESS if connection started (peer in CONNECTING state).
+ * Returns ECHO_OK if connected immediately (peer in CONNECTED state).
+ * Caller must call peer_check_connect() to poll for completion.
  */
 echo_result_t peer_connect(peer_t *peer, const char *address, uint16_t port,
                            uint64_t nonce) {
@@ -78,10 +82,23 @@ echo_result_t peer_connect(peer_t *peer, const char *address, uint16_t port,
     return ECHO_ERR_NETWORK;
   }
 
-  peer->state = PEER_STATE_CONNECTING;
+  /* Start async connect - returns immediately */
+  int result = plat_socket_connect_async(peer->socket, address, port);
 
-  /* Connect to remote peer */
-  if (plat_socket_connect(peer->socket, address, port) != PLAT_OK) {
+  if (result == PLAT_PENDING) {
+    /* Connection in progress - stay in CONNECTING state */
+    peer->state = PEER_STATE_CONNECTING;
+    peer->connect_time = plat_time_ms(); /* Track when connect started */
+    return ECHO_SUCCESS; /* Caller must poll with peer_check_connect() */
+  } else if (result == PLAT_OK) {
+    /* Immediate connection (rare, localhost) */
+    peer->state = PEER_STATE_CONNECTED;
+    peer->connect_time = plat_time_ms();
+    peer->last_recv = peer->connect_time;
+    peer->last_send = peer->connect_time;
+    return ECHO_OK;
+  } else {
+    /* Connection failed immediately */
     peer->state = PEER_STATE_DISCONNECTED;
     peer->disconnect_reason = PEER_DISCONNECT_NETWORK_ERROR;
     snprintf(peer->disconnect_message, sizeof(peer->disconnect_message),
@@ -91,17 +108,57 @@ echo_result_t peer_connect(peer_t *peer, const char *address, uint16_t port,
     peer->socket = NULL;
     return ECHO_ERR_NETWORK;
   }
+}
 
-  /* Set socket to non-blocking for event loop compatibility */
-  plat_socket_set_nonblocking(peer->socket);
+/**
+ * Check if a pending async connection has completed.
+ *
+ * Returns:
+ *   ECHO_SUCCESS - Connection in progress, check again later
+ *   ECHO_OK      - Connection complete, peer is now CONNECTED
+ *   ECHO_ERR_*   - Connection failed, peer is DISCONNECTED
+ */
+echo_result_t peer_check_connect(peer_t *peer) {
+  if (!peer || peer->state != PEER_STATE_CONNECTING) {
+    return ECHO_ERR_INVALID_PARAM;
+  }
 
-  /* Connection established */
-  peer->state = PEER_STATE_CONNECTED;
-  peer->connect_time = plat_time_ms();
-  peer->last_recv = peer->connect_time;
-  peer->last_send = peer->connect_time;
+  int result = plat_socket_check_connect(peer->socket);
 
-  return ECHO_SUCCESS;
+  if (result == PLAT_PENDING) {
+    /* Still connecting - check timeout (2 seconds) */
+    uint64_t elapsed = plat_time_ms() - peer->connect_time;
+    if (elapsed > 2000) {
+      /* Connection timeout */
+      peer->state = PEER_STATE_DISCONNECTED;
+      peer->disconnect_reason = PEER_DISCONNECT_TIMEOUT;
+      snprintf(peer->disconnect_message, sizeof(peer->disconnect_message),
+               "Connection timeout to %s:%u", peer->address, peer->port);
+      plat_socket_close(peer->socket);
+      plat_socket_free(peer->socket);
+      peer->socket = NULL;
+      return ECHO_ERR_TIMEOUT;
+    }
+    return ECHO_SUCCESS; /* Still pending */
+  } else if (result == PLAT_OK) {
+    /* Connection succeeded! */
+    peer->state = PEER_STATE_CONNECTED;
+    uint64_t now = plat_time_ms();
+    peer->connect_time = now; /* Reset connect_time to NOW, not async start */
+    peer->last_recv = now;
+    peer->last_send = now;
+    return ECHO_OK;
+  } else {
+    /* Connection failed */
+    peer->state = PEER_STATE_DISCONNECTED;
+    peer->disconnect_reason = PEER_DISCONNECT_NETWORK_ERROR;
+    snprintf(peer->disconnect_message, sizeof(peer->disconnect_message),
+             "Connection failed to %s:%u", peer->address, peer->port);
+    plat_socket_close(peer->socket);
+    plat_socket_free(peer->socket);
+    peer->socket = NULL;
+    return ECHO_ERR_NETWORK;
+  }
 }
 
 /**
@@ -766,10 +823,12 @@ echo_bool_t peer_is_ready(const peer_t *peer) {
 }
 
 /**
- * Check if peer is connected.
+ * Check if peer is connected (TCP connection established).
+ * Does NOT include CONNECTING (async connect in progress) or DISCONNECTED.
  */
 echo_bool_t peer_is_connected(const peer_t *peer) {
-  return peer && peer->state != PEER_STATE_DISCONNECTED;
+  return peer && peer->state != PEER_STATE_DISCONNECTED &&
+         peer->state != PEER_STATE_CONNECTING;
 }
 
 /**

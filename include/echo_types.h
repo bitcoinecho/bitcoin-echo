@@ -142,6 +142,7 @@ typedef enum {
   ECHO_ERR_RATE_LIMIT = -96,    /* Rate limit exceeded */
   ECHO_ERR_MEMORY = -97,        /* Memory operation failed */
   ECHO_ERR_DUPLICATE = -98,     /* Duplicate item */
+  ECHO_ERR_TIMEOUT = -99,       /* Operation timed out */
 
   /* Success codes */
   ECHO_SUCCESS = 0 /* Operation succeeded (alias for ECHO_OK) */

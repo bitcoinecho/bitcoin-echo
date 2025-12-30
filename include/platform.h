@@ -50,6 +50,7 @@ typedef struct plat_cond plat_cond_t;
 #define PLAT_ERR_TIMEOUT (-2)   /* Operation timed out */
 #define PLAT_ERR_CLOSED (-3)    /* Connection closed by peer */
 #define PLAT_ERR_WOULD_BLOCK (-4) /* Operation would block (non-blocking socket) */
+#define PLAT_PENDING (-5)       /* Async operation in progress */
 
 /*
  * ============================================================================
@@ -113,6 +114,35 @@ int plat_socket_create(plat_socket_t *sock);
  *   - DNS resolution happens internally if hostname provided
  */
 int plat_socket_connect(plat_socket_t *sock, const char *host, uint16_t port);
+
+/*
+ * Start an asynchronous (non-blocking) connection.
+ *
+ * Parameters:
+ *   sock - Previously created socket
+ *   host - Hostname or IP address
+ *   port - Port number
+ *
+ * Returns:
+ *   PLAT_OK if connected immediately (rare)
+ *   PLAT_PENDING if connection in progress (use plat_socket_check_connect)
+ *   PLAT_ERR on failure
+ */
+int plat_socket_connect_async(plat_socket_t *sock, const char *host,
+                               uint16_t port);
+
+/*
+ * Check if an async connection has completed.
+ *
+ * Parameters:
+ *   sock - Socket with pending connection
+ *
+ * Returns:
+ *   PLAT_OK if connected successfully
+ *   PLAT_PENDING if still connecting
+ *   PLAT_ERR if connection failed
+ */
+int plat_socket_check_connect(plat_socket_t *sock);
 
 /*
  * Bind socket to port and begin listening for connections.

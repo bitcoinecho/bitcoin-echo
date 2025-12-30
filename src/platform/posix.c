@@ -175,9 +175,13 @@ int plat_socket_connect(plat_socket_t *sock, const char *host, uint16_t port) {
       FD_ZERO(&write_fds);
       FD_SET(sock->fd, &write_fds);
 
-      /* 5 second timeout */
-      tv.tv_sec = 5;
-      tv.tv_usec = 0;
+      /* 500ms timeout - very fast fail for unreachable nodes.
+       * During IBD we need to try many addresses quickly. Even 2 seconds
+       * is too long when iterating through 40+ addresses per tick.
+       * 500ms is aggressive but nodes that don't respond quickly are likely
+       * unreachable or overloaded anyway. */
+      tv.tv_sec = 0;
+      tv.tv_usec = 500000; /* 500ms */
 
       ret = select(sock->fd + 1, NULL, &write_fds, NULL, &tv);
       if (ret > 0) {
@@ -273,6 +277,90 @@ int plat_socket_set_nonblocking(plat_socket_t *sock) {
   }
 
   return PLAT_OK;
+}
+
+int plat_socket_connect_async(plat_socket_t *sock, const char *host,
+                               uint16_t port) {
+  struct addrinfo hints;
+  struct addrinfo *result, *rp;
+  char port_str[6];
+  int ret;
+
+  if (sock == NULL || sock->fd < 0 || host == NULL) {
+    return PLAT_ERR;
+  }
+
+  /* Convert port to string for getaddrinfo */
+  snprintf(port_str, sizeof(port_str), "%u", port);
+
+  /* Set up hints for getaddrinfo */
+  memset(&hints, 0, sizeof(hints));
+  hints.ai_family = AF_INET;       /* IPv4 for now */
+  hints.ai_socktype = SOCK_STREAM; /* TCP */
+  hints.ai_protocol = IPPROTO_TCP;
+
+  /* Resolve hostname */
+  ret = getaddrinfo(host, port_str, &hints, &result);
+  if (ret != 0) {
+    return PLAT_ERR;
+  }
+
+  /* Set socket to non-blocking BEFORE connect */
+  int flags = fcntl(sock->fd, F_GETFL, 0);
+  if (flags < 0 || fcntl(sock->fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+    freeaddrinfo(result);
+    return PLAT_ERR;
+  }
+
+  /* Start non-blocking connect - returns immediately with EINPROGRESS */
+  int connected = 0;
+  for (rp = result; rp != NULL && !connected; rp = rp->ai_next) {
+    ret = connect(sock->fd, rp->ai_addr, rp->ai_addrlen);
+    if (ret == 0) {
+      /* Immediate connection (rare, localhost) */
+      connected = 1;
+    } else if (errno == EINPROGRESS) {
+      /* Connection in progress - this is the expected case */
+      freeaddrinfo(result);
+      return PLAT_PENDING; /* Special return for "in progress" */
+    }
+  }
+
+  freeaddrinfo(result);
+  return connected ? PLAT_OK : PLAT_ERR;
+}
+
+int plat_socket_check_connect(plat_socket_t *sock) {
+  if (sock == NULL || sock->fd < 0) {
+    return PLAT_ERR;
+  }
+
+  /* Use select with 0 timeout to check if socket is writable (connected) */
+  fd_set write_fds;
+  struct timeval tv;
+
+  FD_ZERO(&write_fds);
+  FD_SET(sock->fd, &write_fds);
+
+  tv.tv_sec = 0;
+  tv.tv_usec = 0; /* Non-blocking check */
+
+  int ret = select(sock->fd + 1, NULL, &write_fds, NULL, &tv);
+  if (ret < 0) {
+    return PLAT_ERR; /* select error */
+  }
+  if (ret == 0) {
+    return PLAT_PENDING; /* Still connecting */
+  }
+
+  /* Socket is writable - check if connection succeeded or failed */
+  int error = 0;
+  socklen_t len = sizeof(error);
+  if (getsockopt(sock->fd, SOL_SOCKET, SO_ERROR, &error, &len) < 0) {
+    return PLAT_ERR;
+  }
+
+  return (error == 0) ? PLAT_OK : PLAT_ERR;
 }
 
 int plat_socket_set_recv_timeout(plat_socket_t *sock, uint32_t timeout_ms) {

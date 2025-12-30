@@ -145,6 +145,21 @@ echo_result_t peer_connect(peer_t *peer, const char *address, uint16_t port,
                            uint64_t nonce);
 
 /**
+ * Check if a pending async connection has completed.
+ *
+ * Call this periodically for peers in PEER_STATE_CONNECTING.
+ *
+ * Parameters:
+ *   peer - Peer with pending connection
+ *
+ * Returns:
+ *   ECHO_SUCCESS  - Still connecting, check again later
+ *   ECHO_OK       - Connection complete, peer is now CONNECTED
+ *   ECHO_ERR_*    - Connection failed, peer is DISCONNECTED
+ */
+echo_result_t peer_check_connect(peer_t *peer);
+
+/**
  * Accept inbound connection from listening socket.
  *
  * Accepts connection and transitions peer to PEER_STATE_CONNECTED.
