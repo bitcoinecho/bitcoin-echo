@@ -16,6 +16,7 @@
 #include "block.h"
 #include "log.h"
 #include "node.h"
+#include "platform.h"
 
 /* Default configuration
  *
@@ -368,6 +369,27 @@ static void *worker_thread(void *arg) {
                         block_free(&block);
                         goto notify_valid;
                     }
+
+                    /* Check if confirmation is likely in progress (we're exactly 1 ahead).
+                     * The confirm chaser may be applying this block right now, causing
+                     * validation to see an inconsistent UTXO state. Wait briefly and
+                     * recheck - if block gets confirmed, it was a race condition. */
+                    if (work->height == post_confirmed + 1) {
+                        /* Wait up to 100ms for confirmation to complete */
+                        for (int retry = 0; retry < 10; retry++) {
+                            plat_sleep_ms(10);
+                            post_confirmed = node_get_validated_height(node);
+                            if (work->height <= post_confirmed) {
+                                log_debug(LOG_COMP_SYNC,
+                                          "chaser_validate: block %u confirmed during retry "
+                                          "(race with apply), treating as valid",
+                                          work->height);
+                                block_free(&block);
+                                goto notify_valid;
+                            }
+                        }
+                    }
+
                     log_error(LOG_COMP_SYNC,
                               "chaser_validate: block %u validation failed (confirmed=%u)",
                               work->height, post_confirmed);
