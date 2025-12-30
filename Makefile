@@ -104,7 +104,7 @@ TEST_CHASE           = test/unit/test_chase
 all: $(TARGET)
 
 $(TARGET): $(OBJS) $(LIBSECP_OBJS)
-	$(CC) $(LDFLAGS) -o $@ $(OBJS) $(LIBSECP_OBJS)
+	$(CC) -o $@ $(OBJS) $(LIBSECP_OBJS) $(LDFLAGS)
 
 # Default rule for our source files
 %.o: %.c
