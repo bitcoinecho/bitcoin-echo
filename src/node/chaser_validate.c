@@ -325,6 +325,9 @@ static void *worker_thread(void *arg) {
             uint32_t confirmed_height = node_get_validated_height(node);
             if (work->height <= confirmed_height) {
                 /* Already confirmed - treat as valid */
+                log_debug(LOG_COMP_SYNC,
+                          "chaser_validate: block %u already confirmed (height=%u), skipping",
+                          work->height, confirmed_height);
                 goto notify_valid;
             }
 
@@ -340,11 +343,34 @@ static void *worker_thread(void *arg) {
                           work->height, load_result);
                 result = -1;
             } else {
+                /* Re-check confirmation state right before validation.
+                 * There's a race window between the first check and here where
+                 * chaser_confirm may have applied this block via CHASE_BUMP. */
+                confirmed_height = node_get_validated_height(node);
+                if (work->height <= confirmed_height) {
+                    log_debug(LOG_COMP_SYNC,
+                              "chaser_validate: block %u confirmed during load (height=%u), skipping",
+                              work->height, confirmed_height);
+                    block_free(&block);
+                    goto notify_valid;
+                }
+
                 /* Validate block (read-only, no chainstate modification) */
                 if (!node_validate_block(node, &block)) {
+                    /* Check if block was confirmed DURING validation (race condition).
+                     * If so, the "failure" is spurious - block was applied correctly. */
+                    uint32_t post_confirmed = node_get_validated_height(node);
+                    if (work->height <= post_confirmed) {
+                        log_debug(LOG_COMP_SYNC,
+                                  "chaser_validate: block %u validation failed but already "
+                                  "confirmed (race condition, height=%u), treating as valid",
+                                  work->height, post_confirmed);
+                        block_free(&block);
+                        goto notify_valid;
+                    }
                     log_error(LOG_COMP_SYNC,
-                              "chaser_validate: block %u validation failed",
-                              work->height);
+                              "chaser_validate: block %u validation failed (confirmed=%u)",
+                              work->height, post_confirmed);
                     result = -1;
                 }
                 block_free(&block);
