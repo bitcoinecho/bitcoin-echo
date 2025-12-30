@@ -153,6 +153,17 @@ static peer_addr_entry_t *find_address(peer_addr_manager_t *manager,
   return NULL;
 }
 
+/* Helper: Find address in manager (const version) */
+static const peer_addr_entry_t *
+find_address_const(const peer_addr_manager_t *manager, const net_addr_t *addr) {
+  for (size_t i = 0; i < manager->count; i++) {
+    if (addr_equal(&manager->addresses[i].addr, addr)) {
+      return &manager->addresses[i];
+    }
+  }
+  return NULL;
+}
+
 /* Helper: Get default port for network */
 static uint16_t get_default_port(network_type_t network) {
   switch (network) {
@@ -464,9 +475,11 @@ echo_result_t discovery_select_outbound_address(peer_addr_manager_t *manager,
   peer_addr_entry_t *best = NULL;
   uint64_t best_score = 0;
   size_t skipped_cooldown = 0;
+  size_t skipped_ibd_banned = 0;
 
   /* Find best address based on:
    * - Not currently in use
+   * - Not IBD-banned
    * - Exponential backoff since last attempt
    * - Previous success
    * - Freshness
@@ -476,6 +489,12 @@ echo_result_t discovery_select_outbound_address(peer_addr_manager_t *manager,
 
     /* Skip if in use */
     if (entry->in_use) {
+      continue;
+    }
+
+    /* Skip if IBD-banned (self-closed during IBD) */
+    if (entry->ibd_ban_until != 0 && now_ms < entry->ibd_ban_until) {
+      skipped_ibd_banned++;
       continue;
     }
 
@@ -529,8 +548,8 @@ echo_result_t discovery_select_outbound_address(peer_addr_manager_t *manager,
   if (best == NULL) {
     log_warn(LOG_COMP_NET,
              "No suitable outbound address found (checked %zu, %zu in "
-             "cooldown)",
-             manager->count, skipped_cooldown);
+             "cooldown, %zu IBD-banned)",
+             manager->count, skipped_cooldown, skipped_ibd_banned);
     return ECHO_ERR_NOT_FOUND;
   }
 
@@ -586,6 +605,27 @@ void discovery_mark_success(peer_addr_manager_t *manager,
      * indefinitely across successful connection cycles */
     entry->attempts = 0;
   }
+}
+
+void discovery_mark_ibd_banned(peer_addr_manager_t *manager,
+                               const net_addr_t *addr) {
+  peer_addr_entry_t *entry = find_address(manager, addr);
+  if (entry != NULL) {
+    uint64_t now = plat_time_ms();
+    entry->ibd_ban_until = now + IBD_BAN_DURATION_MS;
+    log_info(LOG_COMP_NET,
+             "IBD-banned %d.%d.%d.%d:%u for 1 hour (self-closed during IBD)",
+             addr->ip[12], addr->ip[13], addr->ip[14], addr->ip[15], addr->port);
+  }
+}
+
+echo_bool_t discovery_is_ibd_banned(const peer_addr_manager_t *manager,
+                                    const net_addr_t *addr) {
+  const peer_addr_entry_t *entry = find_address_const(manager, addr);
+  if (entry == NULL || entry->ibd_ban_until == 0) {
+    return ECHO_FALSE;
+  }
+  return plat_time_ms() < entry->ibd_ban_until;
 }
 
 echo_bool_t discovery_is_address_valid(const peer_addr_manager_t *manager,

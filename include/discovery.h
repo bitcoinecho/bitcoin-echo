@@ -34,6 +34,15 @@
 /* Maximum age for peer address to be considered valid (7 days in seconds) */
 #define ADDR_MAX_AGE_SEC (7ULL * 24 * 60 * 60)
 
+/* IBD ban duration - addresses that self-close during IBD are banned for 1 hour
+ * This prevents wasting connection slots on pruned nodes that can't serve
+ * historical blocks */
+#define IBD_BAN_DURATION_MS (60ULL * 60 * 1000)
+
+/* Minimum connection duration to avoid IBD ban (2 minutes)
+ * Peers that disconnect themselves within this window get banned */
+#define IBD_BAN_MIN_DURATION_MS (2ULL * 60 * 1000)
+
 /**
  * Network type for seed selection
  */
@@ -52,6 +61,7 @@ typedef struct {
   net_addr_t addr;       /* Network address with timestamp */
   uint64_t last_try;     /* Last connection attempt (plat_time_ms) */
   uint64_t last_success; /* Last successful connection (plat_time_ms) */
+  uint64_t ibd_ban_until; /* IBD ban expiry time (plat_time_ms), 0 = not banned */
   uint32_t attempts;     /* Number of connection attempts */
   echo_bool_t in_use;    /* Whether address is currently being used */
   echo_bool_t reachable; /* Whether we've successfully connected before */
@@ -239,6 +249,35 @@ void discovery_mark_attempt(peer_addr_manager_t *manager,
  */
 void discovery_mark_success(peer_addr_manager_t *manager,
                             const net_addr_t *addr);
+
+/**
+ * Mark address as IBD-banned.
+ *
+ * Called when a peer self-closes (PEER_CLOSED) during IBD after a short
+ * connection duration. These are typically pruned nodes that can't serve
+ * historical blocks. The ban expires after IBD_BAN_DURATION_MS.
+ *
+ * Parameters:
+ *   manager - Address manager
+ *   addr    - Address to ban
+ */
+void discovery_mark_ibd_banned(peer_addr_manager_t *manager,
+                               const net_addr_t *addr);
+
+/**
+ * Check if address is IBD-banned.
+ *
+ * Returns true if the address has an active IBD ban (ban_until > now).
+ *
+ * Parameters:
+ *   manager - Address manager
+ *   addr    - Address to check
+ *
+ * Returns:
+ *   true if address is currently IBD-banned
+ */
+echo_bool_t discovery_is_ibd_banned(const peer_addr_manager_t *manager,
+                                    const net_addr_t *addr);
 
 /**
  * Check if address is valid for connection.

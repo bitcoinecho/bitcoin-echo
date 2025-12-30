@@ -2925,6 +2925,17 @@ echo_result_t node_maintenance(node_t *node) {
                       peer->address, peer->port, peer->disconnect_reason,
                       (unsigned long long)connection_duration_ms);
           }
+
+          /*
+           * IBD Ban: If peer self-closed during IBD with short connection,
+           * they're likely a pruned node that can't serve historical blocks.
+           * Ban them for 1 hour to avoid wasting connection slots.
+           */
+          if (node->ibd_mode &&
+              peer->disconnect_reason == PEER_DISCONNECT_PEER_CLOSED &&
+              connection_duration_ms < IBD_BAN_MIN_DURATION_MS) {
+            discovery_mark_ibd_banned(&node->addr_manager, &peer_addr);
+          }
         }
       }
 
