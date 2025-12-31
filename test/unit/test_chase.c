@@ -7,7 +7,7 @@
 #include "chaser_confirm.h"
 #include "chaser_validate.h"
 #include "test_utils.h"
-#include "../../include/platform.h"
+#include "platform.h"
 
 #include <pthread.h>
 #include <stdatomic.h>

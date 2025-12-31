@@ -15,8 +15,8 @@
  * Build once. Build right. Stop.
  */
 
-#include "../../include/utxo_db.h"
-#include "../../include/echo_assert.h"
+#include "utxo_db.h"
+#include "echo_assert.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>

@@ -8,8 +8,8 @@
  * Build once. Build right. Stop.
  */
 
-#include "../../include/db.h"
-#include "../../include/echo_types.h"
+#include "db.h"
+#include "echo_types.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

@@ -14,11 +14,11 @@
  * - Block connect/disconnect handling
  */
 
-#include "../../include/block.h"
-#include "../../include/echo_types.h"
-#include "../../include/mempool.h"
-#include "../../include/tx.h"
-#include "../../include/utxo.h"
+#include "block.h"
+#include "echo_types.h"
+#include "mempool.h"
+#include "tx.h"
+#include "utxo.h"
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>

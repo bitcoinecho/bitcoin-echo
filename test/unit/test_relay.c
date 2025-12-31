@@ -10,13 +10,13 @@
  * - DoS prevention (rate limiting, banning)
  */
 
-#include "../../include/block.h"
-#include "../../include/echo_types.h"
-#include "../../include/peer.h"
-#include "../../include/platform.h"
-#include "../../include/protocol.h"
-#include "../../include/relay.h"
-#include "../../include/tx.h"
+#include "block.h"
+#include "echo_types.h"
+#include "peer.h"
+#include "platform.h"
+#include "protocol.h"
+#include "relay.h"
+#include "tx.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
