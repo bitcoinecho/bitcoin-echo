@@ -3155,6 +3155,9 @@ echo_result_t node_apply_block(node_t *node, const block_t *block) {
     height = parent->height + 1;
   }
 
+  /* Timing instrumentation for validation performance analysis */
+  uint64_t t_start = plat_time_ms();
+
   /*
    * Step 1: Apply block to consensus engine (in-memory state).
    * This updates the UTXO set and chain tip in memory.
@@ -3162,6 +3165,7 @@ echo_result_t node_apply_block(node_t *node, const block_t *block) {
   consensus_result_t validation_result;
   consensus_result_init(&validation_result);
   result = consensus_apply_block(node->consensus, block, &validation_result);
+  uint64_t t_consensus = plat_time_ms();
   if (result != ECHO_OK) {
     log_error(LOG_COMP_CONS, "Failed to apply block to consensus engine: %d",
               result);
@@ -3287,8 +3291,17 @@ echo_result_t node_apply_block(node_t *node, const block_t *block) {
     free(spent_outpoints);
   }
 
-  log_info(LOG_COMP_CONS, "Block applied: height=%u txs=%zu", height,
-           block->tx_count);
+  uint64_t t_end = plat_time_ms();
+  uint64_t consensus_ms = t_consensus - t_start;
+  uint64_t total_ms = t_end - t_start;
+
+  /* Log timing every 1000 blocks or if validation took >100ms */
+  if (height % 1000 == 0 || total_ms > 100) {
+    log_info(LOG_COMP_CONS,
+             "Block applied: height=%u txs=%zu time=%llums (consensus=%llums)",
+             height, block->tx_count, (unsigned long long)total_ms,
+             (unsigned long long)consensus_ms);
+  }
 
   return ECHO_OK;
 }

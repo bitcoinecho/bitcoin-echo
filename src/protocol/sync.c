@@ -1898,11 +1898,12 @@ void sync_get_metrics(sync_manager_t *mgr, sync_metrics_t *metrics) {
         mgr->blocks_received_total - validated_this_session;
   }
 
-  /* ETA in seconds (based on download rate - validation catches up naturally) */
-  if (metrics->download_rate > 0 &&
+  /* ETA in seconds (based on validation rate - the true sync bottleneck).
+   * Downloads may race ahead, but validation determines actual sync progress. */
+  if (metrics->validation_rate > 0 &&
       progress.best_header_height > progress.tip_height) {
     uint32_t remaining = progress.best_header_height - progress.tip_height;
-    metrics->eta_seconds = (uint64_t)(remaining / metrics->download_rate);
+    metrics->eta_seconds = (uint64_t)(remaining / metrics->validation_rate);
   }
 
   /* Network median latency from peer quality system */
