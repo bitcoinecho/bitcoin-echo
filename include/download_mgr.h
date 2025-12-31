@@ -26,13 +26,13 @@
  * ============================================================================
  */
 
-/* Batch size: 16 blocks per peer (matches Bitcoin Core MAX_BLOCKS_IN_TRANSIT_PER_PEER).
+/* Batch size: 16 blocks per peer (matches Bitcoin Core).
  *
- * This is the practical maximum a peer will deliver before needing more
- * getdata requests. Larger batches just assign more work than peers can
- * deliver at once, increasing head-of-line blocking risk.
+ * Testing showed larger batches (128, 256) cause excessive peer churn due to
+ * false "slow" detection when comparing byte-rates across different chain
+ * heights (early blocks are ~300 bytes, later blocks are ~1-2 MB).
  */
-#define DOWNLOAD_BATCH_SIZE_16 16
+#define DOWNLOAD_BATCH_SIZE 16
 
 /* Maximum batch size (for array allocation) */
 #define DOWNLOAD_BATCH_SIZE_MAX 16
@@ -91,6 +91,8 @@ typedef struct work_batch {
   size_t remaining;                          /* Blocks not yet received */
   uint64_t assigned_time;                    /* When assigned to peer (0 if queued) */
   bool received[DOWNLOAD_BATCH_SIZE_MAX];    /* Bitmap: true if block already received */
+  bool sticky;           /* If true, clone on assign instead of consuming from queue */
+  uint32_t sticky_height; /* Block height that resolves this sticky batch */
 } work_batch_t;
 
 /* ============================================================================

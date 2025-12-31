@@ -86,6 +86,26 @@ static batch_node_t *batch_node_create(void) {
 static void batch_node_destroy(batch_node_t *node) { free(node); }
 
 /**
+ * Clone a batch node (for sticky batches).
+ * Creates a new node with copied batch data but NOT sticky (the clone is normal).
+ */
+static batch_node_t *batch_node_clone(const batch_node_t *src) {
+  batch_node_t *node = batch_node_create();
+  if (node == NULL) {
+    return NULL;
+  }
+  /* Copy batch data */
+  memcpy(&node->batch, &src->batch, sizeof(work_batch_t));
+  /* Clone is NOT sticky - only the original queue entry is sticky */
+  node->batch.sticky = false;
+  node->batch.sticky_height = 0;
+  /* Reset link pointers */
+  node->next = NULL;
+  node->prev = NULL;
+  return node;
+}
+
+/**
  * Get batch size for a given block height.
  *
  * Bitcoin Core uses MAX_BLOCKS_IN_TRANSIT_PER_PEER = 16 as a fixed limit.
@@ -93,11 +113,11 @@ static void batch_node_destroy(batch_node_t *node) { free(node); }
  * getdata requests, so larger batches just assign more work than peers
  * can deliver at once.
  *
- * We use 16 blocks per batch universally, matching Bitcoin Core's approach.
+ * We use 16 blocks per batch, matching Bitcoin Core.
  */
 static size_t get_batch_size_for_height(uint32_t height) {
   (void)height; /* Unused - fixed batch size */
-  return DOWNLOAD_BATCH_SIZE_16;
+  return DOWNLOAD_BATCH_SIZE;
 }
 
 /**
@@ -450,11 +470,26 @@ bool download_mgr_peer_request_work(download_mgr_t *mgr, peer_t *peer) {
   }
 
   /* Try to get a batch from the queue */
-  batch_node_t *node = queue_pop_front(mgr);
-  if (node == NULL) {
+  if (mgr->queue_head == NULL) {
     /* Queue empty - peer is starved */
     LOG_DEBUG("download_mgr: no work available, peer starved");
     return false;
+  }
+
+  batch_node_t *node;
+  bool is_sticky_clone = false;
+
+  if (mgr->queue_head->batch.sticky) {
+    /* Sticky batch: clone it, leave original in queue for other peers */
+    node = batch_node_clone(mgr->queue_head);
+    if (node == NULL) {
+      LOG_WARN("download_mgr: failed to clone sticky batch");
+      return false;
+    }
+    is_sticky_clone = true;
+  } else {
+    /* Normal batch: pop from queue */
+    node = queue_pop_front(mgr);
   }
 
   /* Assign batch to peer */
@@ -485,7 +520,8 @@ bool download_mgr_peer_request_work(download_mgr_t *mgr, peer_t *peer) {
 
   uint32_t batch_start = node->batch.heights[0];
   uint32_t batch_end = batch_start + (uint32_t)node->batch.count - 1;
-  LOG_INFO("download_mgr: assigned batch [%u-%u] (%zu blocks) to peer",
+  LOG_INFO("download_mgr: assigned %sbatch [%u-%u] (%zu blocks) to peer",
+           is_sticky_clone ? "PRIORITY " : "",
            batch_start, batch_end, node->batch.count);
   return true;
 }
@@ -650,6 +686,18 @@ bool download_mgr_check_stall(download_mgr_t *mgr, uint32_t validated_height) {
     mgr->last_validated_height = validated_height;
     mgr->last_progress_time = now;
     mgr->stall_backoff_count = 0;  /* Reset backoff on progress */
+
+    /* Remove any sticky batch whose blocking height has been validated.
+     * The sticky batch served its purpose - the blocking block arrived. */
+    if (mgr->queue_head != NULL && mgr->queue_head->batch.sticky &&
+        mgr->queue_head->batch.sticky_height <= validated_height) {
+      batch_node_t *resolved = queue_pop_front(mgr);
+      LOG_INFO("download_mgr: removed resolved sticky batch (blocking height %u "
+               "validated, current height %u)",
+               resolved->batch.sticky_height, validated_height);
+      batch_node_destroy(resolved);
+    }
+
     return false;
   }
 
@@ -785,49 +833,40 @@ bool download_mgr_check_stall(download_mgr_t *mgr, uint32_t validated_height) {
 
   if (blocker_is_active) {
     /* Blocker is actively delivering - use block race strategy.
-     * Create a 1-block priority batch with just the blocking block.
-     * ALSO queue the remainder of the batch so faster peers can grab it.
-     * The original peer keeps their batch and might still deliver. */
+     * Create a STICKY batch with ALL remaining blocks. Sticky means every idle
+     * peer will get a clone of this batch until the blocking block is delivered.
+     * This maximizes parallelism on the critical path. */
 
-    /* First, queue the remainder of the batch (blocks after the blocking one).
-     * This goes to front of queue first, then priority batch goes in front of it. */
-    size_t remainder_count = blocker_node->batch.count - block_idx - 1;
-    if (remainder_count > 0) {
-      batch_node_t *remainder = batch_node_create();
-      if (remainder != NULL) {
-        for (size_t i = 0; i < remainder_count; i++) {
-          size_t src_idx = block_idx + 1 + i;
-          memcpy(&remainder->batch.hashes[i], &blocker_node->batch.hashes[src_idx],
-                 sizeof(hash256_t));
-          remainder->batch.heights[i] = blocker_node->batch.heights[src_idx];
-          remainder->batch.received[i] = false;
-        }
-        remainder->batch.count = remainder_count;
-        remainder->batch.remaining = remainder_count;
-        remainder->batch.assigned_time = 0;
-
-        queue_push_front(mgr, remainder);
-        LOG_INFO("download_mgr: queued remainder batch [%u-%u] (%zu blocks) "
-                 "for faster peers",
-                 next_height + 1, blocker_end, remainder_count);
-      }
+    /* Check if we already have a sticky batch for this height */
+    if (mgr->queue_head != NULL && mgr->queue_head->batch.sticky &&
+        mgr->queue_head->batch.sticky_height == next_height) {
+      LOG_DEBUG("download_mgr: sticky batch for height %u already exists",
+                next_height);
+      /* Reset stall timer but don't create duplicate */
+      mgr->last_progress_time = now;
+      return false;
     }
 
-    /* Now create priority batch for just the blocking block (goes in front) */
-    batch_node_t *priority = batch_node_create();
-    if (priority != NULL) {
-      memcpy(&priority->batch.hashes[0], &blocker_node->batch.hashes[block_idx],
-             sizeof(hash256_t));
-      priority->batch.heights[0] = next_height;
-      priority->batch.count = 1;
-      priority->batch.remaining = 1;
-      priority->batch.assigned_time = 0;
-      priority->batch.received[0] = false;
+    size_t remaining_count = blocker_node->batch.count - block_idx;
+    batch_node_t *race_batch = batch_node_create();
+    if (race_batch != NULL) {
+      for (size_t i = 0; i < remaining_count; i++) {
+        size_t src_idx = block_idx + i;
+        memcpy(&race_batch->batch.hashes[i], &blocker_node->batch.hashes[src_idx],
+               sizeof(hash256_t));
+        race_batch->batch.heights[i] = blocker_node->batch.heights[src_idx];
+        race_batch->batch.received[i] = false;
+      }
+      race_batch->batch.count = remaining_count;
+      race_batch->batch.remaining = remaining_count;
+      race_batch->batch.assigned_time = 0;
+      race_batch->batch.sticky = true;
+      race_batch->batch.sticky_height = next_height;
 
-      queue_push_front(mgr, priority);
-      LOG_INFO("download_mgr: queued priority request for blocking block %u "
-               "(race against active peer)",
-               next_height);
+      queue_push_front(mgr, race_batch);
+      LOG_INFO("download_mgr: queued STICKY race batch [%u-%u] (%zu blocks) - "
+               "every idle peer will race for block %u",
+               next_height, blocker_end, remaining_count, next_height);
     }
     /* Don't disconnect - let them race */
   } else {

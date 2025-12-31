@@ -40,18 +40,6 @@ typedef struct chase_dispatcher chase_dispatcher_t;
 /* Maximum block locator hashes to include in getheaders */
 #define SYNC_MAX_LOCATOR_HASHES 32
 
-/* Maximum parallel block downloads per peer.
- * Bitcoin Core limits serving to 16 blocks at a time (MAX_BLOCKS_IN_TRANSIT_PER_PEER).
- * Requesting more than 16 just queues on the peer side, inflating our in-flight
- * count without actually downloading. Match Core's limit for accurate tracking.
- */
-#define SYNC_MAX_BLOCKS_PER_PEER 16
-
-/* Maximum total parallel block downloads.
- * 512 = 16 blocks × 32 peers for full parallelism.
- */
-#define SYNC_MAX_PARALLEL_BLOCKS 512
-
 /* Timeout for getheaders response (30 seconds) */
 #define SYNC_HEADERS_TIMEOUT_MS 30000
 
@@ -78,7 +66,7 @@ typedef struct chase_dispatcher chase_dispatcher_t;
  * libbitcoin-node uses 50000 as the maximum_concurrency default.
  *
  * Note: The actual work queue and batch distribution is handled by
- * download_mgr which limits per-peer in-flight to 16 blocks.
+ * download_mgr which assigns 16-block batches per peer.
  */
 #define SYNC_BLOCK_DOWNLOAD_WINDOW_ARCHIVAL 100000
 #define SYNC_BLOCK_DOWNLOAD_WINDOW_PRUNED 100000

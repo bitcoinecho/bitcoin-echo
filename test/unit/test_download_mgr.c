@@ -259,7 +259,7 @@ static void test_add_work(void) {
     return;
   }
 
-  /* Should have created 1 batch (10 < 16 blocks per batch) */
+  /* Should have created 1 batch (10 < DOWNLOAD_BATCH_SIZE blocks per batch) */
   if (download_mgr_queue_count(mgr) != 1) {
     test_fail_uint("queue count", 1, download_mgr_queue_count(mgr));
     download_mgr_destroy(mgr);
@@ -280,8 +280,8 @@ static void test_add_work_multiple_batches(void) {
 
   download_mgr_t *mgr = download_mgr_create(&callbacks);
 
-  /* Add enough blocks for 3 batches (16 blocks each). */
-  size_t num_blocks = (size_t)DOWNLOAD_BATCH_SIZE_16 * 2 + 1;
+  /* Add enough blocks for 3 batches. */
+  size_t num_blocks = (size_t)DOWNLOAD_BATCH_SIZE * 2 + 1;
   hash256_t *hashes = malloc(num_blocks * sizeof(hash256_t));
   uint32_t *heights = malloc(num_blocks * sizeof(uint32_t));
   for (size_t i = 0; i < num_blocks; i++) {
@@ -501,8 +501,8 @@ static void test_multiple_peers_pull(void) {
     download_mgr_add_peer(mgr, (peer_t *)&peers[i]);
   }
 
-  /* Add exactly 3 batches worth of blocks (16 blocks each). */
-  size_t num_blocks = (size_t)DOWNLOAD_BATCH_SIZE_16 * 3;
+  /* Add exactly 3 batches worth of blocks. */
+  size_t num_blocks = (size_t)DOWNLOAD_BATCH_SIZE * 3;
   hash256_t *hashes = malloc(num_blocks * sizeof(hash256_t));
   uint32_t *heights = malloc(num_blocks * sizeof(uint32_t));
   for (size_t i = 0; i < num_blocks; i++) {
