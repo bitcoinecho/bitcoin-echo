@@ -3900,18 +3900,16 @@ uint32_t node_prune_blocks(node_t *node, uint32_t target_height) {
     return current_pruned_height;
   }
 
-  log_info(LOG_COMP_STORE, "Pruning blocks from height %u to %u",
-           current_pruned_height, target_height);
+  log_info(LOG_COMP_STORE, "Pruning blocks starting from height %u",
+           current_pruned_height);
 
   /*
-   * Strategy: Delete old block files that contain only prunable blocks.
+   * Strategy: Delete old block files and mark their blocks as pruned.
    *
-   * For simplicity, we delete entire block files. A more sophisticated
-   * approach would track exactly which blocks are in each file, but
-   * this is sufficient for the initial implementation.
-   *
-   * Block files are ~128 MB each, containing roughly 1000 blocks at
-   * current sizes.
+   * We delete entire block files (blk*.dat), querying the database
+   * to find the actual max height in each file before deletion.
+   * This handles early blocks correctly (which were tiny and packed
+   * many per file) as well as modern blocks (~1-2 MB each).
    */
 
   /* Get the lowest file index */
@@ -3934,11 +3932,24 @@ uint32_t node_prune_blocks(node_t *node, uint32_t target_height) {
   /* Delete old block files until we've freed enough space */
   uint32_t files_deleted = 0;
   uint64_t bytes_freed = 0;
+  uint32_t actual_max_pruned_height = current_pruned_height;
+
   for (uint32_t file_idx = lowest_file; file_idx < current_file; file_idx++) {
     /* Check if file exists */
     bool exists = false;
     result = block_storage_file_exists(&node->block_storage, file_idx, &exists);
     if (result != ECHO_OK || !exists) {
+      continue;
+    }
+
+    /* Get max block height in this file BEFORE deleting */
+    uint32_t file_max_height = 0;
+    result = block_index_db_get_file_max_height(
+        (block_index_db_t *)&node->block_index_db, file_idx, &file_max_height);
+    if (result != ECHO_OK) {
+      log_warn(LOG_COMP_STORE,
+               "Could not determine max height in blk%05u.dat, skipping",
+               file_idx);
       continue;
     }
 
@@ -3952,8 +3963,16 @@ uint32_t node_prune_blocks(node_t *node, uint32_t target_height) {
     if (result == ECHO_OK) {
       files_deleted++;
       bytes_freed += file_size;
-      log_info(LOG_COMP_STORE, "Deleted block file blk%05u.dat (%llu MB)",
-               file_idx, (unsigned long long)(file_size / (1024 * 1024)));
+
+      /* Track highest block in all deleted files */
+      if (file_max_height + 1 > actual_max_pruned_height) {
+        actual_max_pruned_height = file_max_height + 1;
+      }
+
+      log_info(LOG_COMP_STORE,
+               "Deleted blk%05u.dat (%llu MB, blocks up to height %u)",
+               file_idx, (unsigned long long)(file_size / (1024 * 1024)),
+               file_max_height);
     } else {
       log_warn(LOG_COMP_STORE, "Failed to delete blk%05u.dat: %d",
                file_idx, result);
@@ -3965,11 +3984,11 @@ uint32_t node_prune_blocks(node_t *node, uint32_t target_height) {
     }
   }
 
-  /* Mark blocks as pruned in the database */
-  if (files_deleted > 0) {
+  /* Mark blocks as pruned in the database using ACTUAL heights, not estimate */
+  if (files_deleted > 0 && actual_max_pruned_height > current_pruned_height) {
     result = block_index_db_mark_pruned(
         (block_index_db_t *)&node->block_index_db,
-        current_pruned_height, target_height);
+        current_pruned_height, actual_max_pruned_height);
     if (result != ECHO_OK) {
       log_warn(LOG_COMP_DB, "Failed to mark blocks as pruned: %d", result);
     }

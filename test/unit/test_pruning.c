@@ -570,6 +570,89 @@ done:
 }
 
 /*
+ * Test: Block index database get file max height.
+ */
+static void test_block_index_db_get_file_max_height(void) {
+  cleanup_test_dir();
+  mkdir(TEST_DATA_DIR, 0755);
+  bool passed = true;
+
+  char db_path[512];
+  snprintf(db_path, sizeof(db_path), "%s/blocks.db", TEST_DATA_DIR);
+
+  block_index_db_t db;
+  if (block_index_db_open(&db, db_path) != ECHO_OK) {
+    passed = false;
+    goto done;
+  }
+
+  /* Create blocks in different files:
+   * File 0: blocks 0-99 (simulating early tiny blocks)
+   * File 1: blocks 100-104 (modern blocks)
+   */
+  for (uint32_t i = 0; i < 105; i++) {
+    block_index_entry_t entry;
+    memset(&entry, 0, sizeof(entry));
+    entry.height = i;
+    entry.hash.bytes[0] = (uint8_t)(i & 0xff);
+    entry.hash.bytes[1] = (uint8_t)((i >> 8) & 0xff);
+    entry.status = BLOCK_STATUS_VALID_HEADER | BLOCK_STATUS_HAVE_DATA;
+    entry.data_file = (i < 100) ? 0 : 1; /* File 0 or 1 */
+    entry.data_pos = i * 1000;           /* Arbitrary position */
+
+    if (block_index_db_insert(&db, &entry) != ECHO_OK) {
+      passed = false;
+      block_index_db_close(&db);
+      goto done;
+    }
+  }
+
+  /* File 0 should have max height 99 */
+  uint32_t max_height = 0;
+  if (block_index_db_get_file_max_height(&db, 0, &max_height) != ECHO_OK) {
+    passed = false;
+    block_index_db_close(&db);
+    goto done;
+  }
+  if (max_height != 99) {
+    passed = false;
+    block_index_db_close(&db);
+    goto done;
+  }
+
+  /* File 1 should have max height 104 */
+  if (block_index_db_get_file_max_height(&db, 1, &max_height) != ECHO_OK) {
+    passed = false;
+    block_index_db_close(&db);
+    goto done;
+  }
+  if (max_height != 104) {
+    passed = false;
+    block_index_db_close(&db);
+    goto done;
+  }
+
+  /* File 2 should return NOT_FOUND (no blocks) */
+  if (block_index_db_get_file_max_height(&db, 2, &max_height) !=
+      ECHO_ERR_NOT_FOUND) {
+    passed = false;
+    block_index_db_close(&db);
+    goto done;
+  }
+
+  block_index_db_close(&db);
+
+done:
+  cleanup_test_dir();
+  test_case("Block index DB get file max height");
+  if (passed) {
+    test_pass();
+  } else {
+    test_fail("get file max height failed");
+  }
+}
+
+/*
  * Test: Block index database is_pruned check.
  */
 static void test_block_index_db_is_pruned(void) {
@@ -730,6 +813,7 @@ int main(void) {
   test_block_storage_delete_file();
   test_block_index_db_mark_pruned();
   test_block_index_db_get_pruned_height();
+  test_block_index_db_get_file_max_height();
   test_block_index_db_is_pruned();
   test_node_config_prune_target();
   test_pruning_null_params();

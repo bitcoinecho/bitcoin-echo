@@ -1112,6 +1112,50 @@ echo_result_t block_index_db_is_pruned(block_index_db_t *bdb,
   return ECHO_OK;
 }
 
+echo_result_t block_index_db_get_file_max_height(block_index_db_t *bdb,
+                                                  uint32_t file_index,
+                                                  uint32_t *max_height) {
+  echo_result_t result;
+  db_stmt_t stmt;
+
+  if (bdb == NULL || max_height == NULL) {
+    return ECHO_ERR_NULL_PARAM;
+  }
+
+  /*
+   * Find the maximum block height stored in the given file.
+   * Use ORDER BY + LIMIT 1 instead of MAX() so we get no rows when empty.
+   */
+  result = db_prepare(
+      &bdb->db,
+      "SELECT height FROM blocks WHERE data_file = ? ORDER BY height DESC LIMIT 1",
+      &stmt);
+  if (result != ECHO_OK) {
+    return result;
+  }
+
+  result = db_bind_int(&stmt, 1, (int)file_index);
+  if (result != ECHO_OK) {
+    db_stmt_finalize(&stmt);
+    return result;
+  }
+
+  result = db_step(&stmt);
+  if (result == ECHO_DONE) {
+    /* No rows - no blocks in this file */
+    db_stmt_finalize(&stmt);
+    return ECHO_ERR_NOT_FOUND;
+  }
+  if (result != ECHO_OK) {
+    db_stmt_finalize(&stmt);
+    return result;
+  }
+
+  *max_height = (uint32_t)db_column_int(&stmt, 0);
+  db_stmt_finalize(&stmt);
+  return ECHO_OK;
+}
+
 /* ========================================================================
  * Validated Tip Persistence
  * ======================================================================== */

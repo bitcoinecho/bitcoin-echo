@@ -483,6 +483,24 @@ echo_result_t block_index_db_is_pruned(block_index_db_t *bdb,
                                        bool *pruned);
 
 /**
+ * Get the maximum block height stored in a given file.
+ *
+ * Used during pruning to determine which blocks are in a file
+ * before deleting it.
+ *
+ * Parameters:
+ *   bdb        - Block index database handle
+ *   file_index - Block file index to query (e.g., 0 for blk00000.dat)
+ *   max_height - Output: highest block height in this file
+ *
+ * Returns:
+ *   ECHO_OK on success, ECHO_ERR_NOT_FOUND if no blocks in file
+ */
+echo_result_t block_index_db_get_file_max_height(block_index_db_t *bdb,
+                                                  uint32_t file_index,
+                                                  uint32_t *max_height);
+
+/**
  * Persist the validated chain tip to the database.
  *
  * This stores the height (and optionally hash) of the last fully validated
