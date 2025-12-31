@@ -34,7 +34,7 @@
 #define PLATFORM_MAX_OUTBOUND_PEERS 100
 
 /* Maximum inbound connections (connections others initiate to us) */
-#define PLATFORM_MAX_INBOUND_PEERS 117
+#define PLATFORM_MAX_INBOUND_PEERS 100
 
 /* Total maximum connections */
 #define PLATFORM_MAX_TOTAL_PEERS                                               \

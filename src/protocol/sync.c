@@ -33,9 +33,10 @@
  */
 
 /**
- * Maximum sync peers to track
+ * Maximum sync peers to track.
+ * During IBD we only have outbound peers, so use outbound limit.
  */
-#define SYNC_MAX_PEERS 128
+#define SYNC_MAX_PEERS ECHO_MAX_OUTBOUND_PEERS
 
 /**
  * Simple header sync: one peer at a time, probe occasionally for faster peers.
@@ -1244,6 +1245,34 @@ void sync_process_timeouts(sync_manager_t *mgr) {
                           "Poor block delivery rate during IBD");
           continue;
         }
+      }
+    }
+
+    /*
+     * IBD peer eviction: disconnect non-sync-candidates to free slots
+     *
+     * During IBD, every peer slot is valuable. Peers that can't help with
+     * sync (pruned nodes missing blocks we need, nodes behind our tip) take
+     * slots that could be used by peers who CAN help.
+     *
+     * We give peers a 30-second grace period after connection for:
+     * - Address relay (they may share good peer addresses)
+     * - State to settle (version exchange, sync_candidate determination)
+     *
+     * After grace period, evict unconditionally. No dead weight during IBD.
+     */
+    if (ps->peer && !ps->sync_candidate &&
+        (mgr->mode == SYNC_MODE_HEADERS || mgr->mode == SYNC_MODE_BLOCKS)) {
+      uint64_t connected_ms = now - ps->peer->connect_time;
+
+      /* 30 second grace period, then evict */
+      if (connected_ms >= 30000) {
+        log_info(LOG_COMP_SYNC,
+                 "Evicting non-sync peer after %llus",
+                 (unsigned long long)(connected_ms / 1000));
+        peer_disconnect(ps->peer, PEER_DISCONNECT_RESOURCE_LIMIT,
+                        "Non-sync peer evicted during IBD");
+        continue;
       }
     }
   }
