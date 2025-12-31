@@ -47,12 +47,6 @@
 #define HEADER_SLOW_THRESHOLD_MS 2000 /* Consider peer slow if batch takes >2s */
 
 /**
- * Rolling window size for blocks_per_second calculation.
- * Rate = ROLLING_WINDOW_BLOCKS / time_to_validate_those_blocks
- */
-#define ROLLING_WINDOW_BLOCKS 500
-
-/**
  * Pending header entry for deferred persistence.
  *
  * During SYNC_MODE_HEADERS, we keep headers in memory and defer database
@@ -98,11 +92,6 @@ struct sync_manager {
   uint32_t headers_received_total;
   uint32_t blocks_received_total;
   uint32_t blocks_validated_total;
-
-  /* Rolling window for speed calculation */
-  uint32_t rolling_window_start_height;  /* Height at start of window */
-  uint64_t rolling_window_start_time;    /* Time at start of window */
-  uint32_t last_validated_height;        /* Last known validated height */
 
   /* Best known header chain */
   block_index_t *best_header;
@@ -260,9 +249,9 @@ static bool sync_chase_handler(chase_event_t event, chase_value_t value,
  */
 
 /**
- * Calculate blocks per second using a rolling window.
- * Returns rate based on last ROLLING_WINDOW_BLOCKS (500) blocks.
- * Updates the rolling window as validated height increases.
+ * Calculate blocks per second using lifetime average.
+ * Simple: validated_blocks / uptime_seconds.
+ * Gives smooth, predictable ETA that matches user intuition.
  */
 static float calc_blocks_per_second(struct sync_manager *mgr) {
   if (mgr->block_sync_start_time == 0) {
@@ -270,44 +259,18 @@ static float calc_blocks_per_second(struct sync_manager *mgr) {
   }
 
   uint64_t now = plat_time_ms();
-  uint32_t current_height = chainstate_get_height(mgr->chainstate);
-
-  /* Initialize rolling window on first call */
-  if (mgr->rolling_window_start_time == 0) {
-    mgr->rolling_window_start_height = current_height;
-    mgr->rolling_window_start_time = now;
-    mgr->last_validated_height = current_height;
-    return 0.0f;
-  }
-
-  /* Slide window forward when we've validated ROLLING_WINDOW_BLOCKS */
-  uint32_t blocks_in_window = current_height - mgr->rolling_window_start_height;
-  if (blocks_in_window >= ROLLING_WINDOW_BLOCKS) {
-    /* Move window start to current - ROLLING_WINDOW_BLOCKS */
-    uint32_t new_start = current_height - ROLLING_WINDOW_BLOCKS;
-    /* Estimate time at new_start using linear interpolation */
-    uint32_t old_range = current_height - mgr->rolling_window_start_height;
-    uint32_t shift = new_start - mgr->rolling_window_start_height;
-    uint64_t elapsed = now - mgr->rolling_window_start_time;
-    uint64_t time_shift = (elapsed * shift) / old_range;
-    mgr->rolling_window_start_height = new_start;
-    mgr->rolling_window_start_time += time_shift;
-  }
-
-  mgr->last_validated_height = current_height;
-
-  /* Calculate rate from current window */
-  blocks_in_window = current_height - mgr->rolling_window_start_height;
-  if (blocks_in_window == 0) {
-    return 0.0f;
-  }
-
-  uint64_t elapsed_ms = now - mgr->rolling_window_start_time;
+  uint64_t elapsed_ms = now - mgr->block_sync_start_time;
   if (elapsed_ms == 0) {
     return 0.0f;
   }
 
-  return (float)blocks_in_window / ((float)elapsed_ms / 1000.0f);
+  uint32_t current_height = chainstate_get_height(mgr->chainstate);
+  uint32_t validated_this_session = 0;
+  if (current_height > mgr->block_sync_start_height) {
+    validated_this_session = current_height - mgr->block_sync_start_height;
+  }
+
+  return (float)validated_this_session / ((float)elapsed_ms / 1000.0f);
 }
 
 /* ============================================================================

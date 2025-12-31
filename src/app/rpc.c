@@ -2602,14 +2602,16 @@ static echo_result_t rpc_pruneblockchain(node_t *node, const json_value_t *param
  *
  * Response:
  * {
- *   "mode": "blocks",
+ *   "mode": "BLOCKS",
  *   "blocks_validated": 180000,
  *   "best_header_height": 875000,
  *   "tip_height": 180000,
  *   "blocks_pending": 695000,
  *   "blocks_in_flight": 512,
  *   "sync_percentage": 20.57,
- *   "blocks_per_second": 48.5,
+ *   "download_rate": 120.5,
+ *   "validation_rate": 48.5,
+ *   "pending_validation": 5000,
  *   "eta_seconds": 14320,
  *   "network_median_latency_ms": 450,
  *   "active_sync_peers": 6,
