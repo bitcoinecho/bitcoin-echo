@@ -3309,8 +3309,13 @@ echo_result_t node_apply_block(node_t *node, const block_t *block) {
 typedef struct {
   utxo_db_t *udb;
   size_t inserted;
+  size_t total;
+  size_t last_logged;
   echo_result_t result;
 } utxo_flush_ctx_t;
+
+/* Progress logging interval: every 5 million UTXOs */
+#define UTXO_FLUSH_LOG_INTERVAL 5000000
 
 /* Callback to insert each UTXO into the database */
 static bool utxo_flush_callback(const utxo_entry_t *entry, void *user_data) {
@@ -3322,6 +3327,15 @@ static bool utxo_flush_callback(const utxo_entry_t *entry, void *user_data) {
   echo_result_t result = utxo_db_insert(ctx->udb, entry);
   if (result == ECHO_OK || result == ECHO_ERR_EXISTS) {
     ctx->inserted++;
+
+    /* Log progress at regular intervals */
+    if (ctx->inserted - ctx->last_logged >= UTXO_FLUSH_LOG_INTERVAL) {
+      double pct = ctx->total > 0 ? (100.0 * (double)ctx->inserted / (double)ctx->total) : 0.0;
+      log_info(LOG_COMP_DB, "UTXO flush progress: %zu/%zu (%.1f%%)",
+               ctx->inserted, ctx->total, pct);
+      ctx->last_logged = ctx->inserted;
+    }
+
     return true;
   }
 
@@ -3378,6 +3392,8 @@ static echo_result_t node_flush_utxo_shutdown(node_t *node) {
   utxo_flush_ctx_t ctx = {
       .udb = &node->utxo_db,
       .inserted = 0,
+      .total = utxo_count,
+      .last_logged = 0,
       .result = ECHO_OK,
   };
 
