@@ -70,6 +70,29 @@ static char *str_dup(const char *s) {
 }
 
 /*
+ * Calculate difficulty from compact bits representation.
+ * Formula: difficulty = (0xFFFF * 2^208) / target
+ * Where target is decoded from the compact bits field.
+ */
+static double difficulty_from_bits(uint32_t bits) {
+  int shift = (int)((bits >> 24) & 0xff);
+  double mantissa = (double)(bits & 0x00ffffff);
+  if (mantissa == 0) {
+    return 0.0;
+  }
+  double diff = (double)0x0000ffff / mantissa;
+  while (shift < 29) {
+    diff *= 256.0;
+    shift++;
+  }
+  while (shift > 29) {
+    diff /= 256.0;
+    shift--;
+  }
+  return diff;
+}
+
+/*
  * ============================================================================
  * JSON PARSER IMPLEMENTATION
  * ============================================================================
@@ -1641,8 +1664,9 @@ echo_result_t rpc_getblockchaininfo(node_t *node, const json_value_t *params,
   json_builder_string(builder, hash_hex);
 
   json_builder_append(builder, ",\"difficulty\":");
-  /* Simplified difficulty calculation */
-  json_builder_number(builder, 1.0);
+  const block_index_t *tip_index = consensus_lookup_block_index(consensus, &tip.hash);
+  double difficulty = (tip_index != NULL) ? difficulty_from_bits(tip_index->bits) : 1.0;
+  json_builder_number(builder, difficulty);
 
   json_builder_append(builder, ",\"mediantime\":");
   json_builder_uint(builder, 0); /* TODO: implement MTP query */
@@ -1793,7 +1817,7 @@ echo_result_t rpc_getblock(node_t *node, const json_value_t *params,
   json_builder_string(builder, bits_hex);
 
   json_builder_append(builder, ",\"difficulty\":");
-  json_builder_number(builder, 1.0); /* Simplified */
+  json_builder_number(builder, difficulty_from_bits(index->bits));
 
   json_builder_append(builder, ",\"previousblockhash\":");
   if (index->height > 0) {
