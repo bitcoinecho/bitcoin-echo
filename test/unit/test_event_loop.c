@@ -16,18 +16,9 @@
 #include "mempool.h"
 #include "protocol.h"
 #include "sync.h"
-#include <assert.h>
 #include <stdio.h>
 #include <string.h>
 #include "test_utils.h"
-
-/* Test counter */
-
-#define PASS()                                                                 \
-  do {                                                                         \
-    printf(" PASS\n");                                                         \
-    tests_passed++;                                                            \
-  } while (0)
 
 /*
  * ============================================================================
@@ -36,19 +27,32 @@
  */
 
 static void test_node_shutdown_signal(void) {
+  test_case("Node shutdown signal");
+
   /* Create node */
   node_config_t config;
   node_config_init(&config, "/tmp/echo_test_event_loop");
 
   node_t *node = node_create(&config);
-  assert(node != NULL);
+  if (node == NULL) {
+    test_fail("Node creation failed");
+    return;
+  }
 
   /* Initially no shutdown requested */
-  assert(!node_shutdown_requested(node));
+  if (node_shutdown_requested(node)) {
+    test_fail("Shutdown should not be requested initially");
+    node_destroy(node);
+    return;
+  }
 
   /* Request shutdown */
   node_request_shutdown(node);
-  assert(node_shutdown_requested(node));
+  if (!node_shutdown_requested(node)) {
+    test_fail("Shutdown should be requested after calling node_request_shutdown");
+    node_destroy(node);
+    return;
+  }
 
   /* Cleanup */
   node_destroy(node);
@@ -63,36 +67,60 @@ static void test_node_shutdown_signal(void) {
  */
 
 static void test_process_peers_null_node(void) {
+  test_case("Process peers null node");
+
   echo_result_t result = node_process_peers(NULL);
-  assert(result == ECHO_ERR_INVALID_PARAM);
+  if (result != ECHO_ERR_INVALID_PARAM) {
+    test_fail("Expected ECHO_ERR_INVALID_PARAM");
+    return;
+  }
 
   test_pass();
 }
 
 static void test_process_blocks_null_node(void) {
+  test_case("Process blocks null node");
+
   echo_result_t result = node_process_blocks(NULL);
-  assert(result == ECHO_ERR_INVALID_PARAM);
+  if (result != ECHO_ERR_INVALID_PARAM) {
+    test_fail("Expected ECHO_ERR_INVALID_PARAM");
+    return;
+  }
 
   test_pass();
 }
 
 static void test_maintenance_null_node(void) {
+  test_case("Maintenance null node");
+
   echo_result_t result = node_maintenance(NULL);
-  assert(result == ECHO_ERR_INVALID_PARAM);
+  if (result != ECHO_ERR_INVALID_PARAM) {
+    test_fail("Expected ECHO_ERR_INVALID_PARAM");
+    return;
+  }
 
   test_pass();
 }
 
 static void test_process_peers_uninitialized_node(void) {
+  test_case("Process peers uninitialized node");
+
   node_config_t config;
   node_config_init(&config, "/tmp/echo_test_event_loop_uninit");
 
   node_t *node = node_create(&config);
-  assert(node != NULL);
+  if (node == NULL) {
+    test_fail("Node creation failed");
+    return;
+  }
 
   /* Node is not in RUNNING state, should return OK but do nothing */
   echo_result_t result = node_process_peers(node);
-  assert(result == ECHO_OK);
+  if (result != ECHO_OK) {
+    test_fail("Expected ECHO_OK");
+    node_destroy(node);
+    return;
+  }
 
   node_destroy(node);
 
@@ -100,15 +128,24 @@ static void test_process_peers_uninitialized_node(void) {
 }
 
 static void test_process_blocks_uninitialized_node(void) {
+  test_case("Process blocks uninitialized node");
+
   node_config_t config;
   node_config_init(&config, "/tmp/echo_test_event_loop_uninit2");
 
   node_t *node = node_create(&config);
-  assert(node != NULL);
+  if (node == NULL) {
+    test_fail("Node creation failed");
+    return;
+  }
 
   /* Node is not in RUNNING state, should return OK but do nothing */
   echo_result_t result = node_process_blocks(node);
-  assert(result == ECHO_OK);
+  if (result != ECHO_OK) {
+    test_fail("Expected ECHO_OK");
+    node_destroy(node);
+    return;
+  }
 
   node_destroy(node);
 
@@ -116,15 +153,24 @@ static void test_process_blocks_uninitialized_node(void) {
 }
 
 static void test_maintenance_uninitialized_node(void) {
+  test_case("Maintenance uninitialized node");
+
   node_config_t config;
   node_config_init(&config, "/tmp/echo_test_event_loop_uninit3");
 
   node_t *node = node_create(&config);
-  assert(node != NULL);
+  if (node == NULL) {
+    test_fail("Node creation failed");
+    return;
+  }
 
   /* Node is not in RUNNING state, should return OK but do nothing */
   echo_result_t result = node_maintenance(node);
-  assert(result == ECHO_OK);
+  if (result != ECHO_OK) {
+    test_fail("Expected ECHO_OK");
+    node_destroy(node);
+    return;
+  }
 
   node_destroy(node);
 
@@ -138,6 +184,8 @@ static void test_maintenance_uninitialized_node(void) {
  */
 
 static void test_generate_nonce(void) {
+  test_case("Generate nonce");
+
   uint64_t nonce1 = generate_nonce();
   uint64_t nonce2 = generate_nonce();
   uint64_t nonce3 = generate_nonce();
@@ -145,7 +193,10 @@ static void test_generate_nonce(void) {
   /* Very unlikely to get same nonce twice in a row */
   /* (probability is 1 / 2^64, effectively zero) */
   int all_different = (nonce1 != nonce2) && (nonce2 != nonce3) && (nonce1 != nonce3);
-  assert(all_different);
+  if (!all_different) {
+    test_fail("Generated nonces are not unique");
+    return;
+  }
 
   test_pass();
 }
@@ -157,11 +208,16 @@ static void test_generate_nonce(void) {
  */
 
 static void test_handle_ping_message(void) {
+  test_case("Handle ping message");
+
   node_config_t config;
   node_config_init(&config, "/tmp/echo_test_ping");
 
   node_t *node = node_create(&config);
-  assert(node != NULL);
+  if (node == NULL) {
+    test_fail("Node creation failed");
+    return;
+  }
 
   /* Create a mock peer */
   peer_t peer;
@@ -187,11 +243,16 @@ static void test_handle_ping_message(void) {
 }
 
 static void test_handle_null_message(void) {
+  test_case("Handle null message");
+
   node_config_t config;
   node_config_init(&config, "/tmp/echo_test_null_msg");
 
   node_t *node = node_create(&config);
-  assert(node != NULL);
+  if (node == NULL) {
+    test_fail("Node creation failed");
+    return;
+  }
 
   peer_t peer;
   peer_init(&peer);
@@ -207,11 +268,16 @@ static void test_handle_null_message(void) {
 }
 
 static void test_handle_unknown_message(void) {
+  test_case("Handle unknown message");
+
   node_config_t config;
   node_config_init(&config, "/tmp/echo_test_unknown_msg");
 
   node_t *node = node_create(&config);
-  assert(node != NULL);
+  if (node == NULL) {
+    test_fail("Node creation failed");
+    return;
+  }
 
   peer_t peer;
   peer_init(&peer);
@@ -237,11 +303,16 @@ static void test_handle_unknown_message(void) {
  */
 
 static void test_event_loop_functions_sequence(void) {
+  test_case("Event loop functions sequence");
+
   node_config_t config;
   node_config_init(&config, "/tmp/echo_test_sequence");
 
   node_t *node = node_create(&config);
-  assert(node != NULL);
+  if (node == NULL) {
+    test_fail("Node creation failed");
+    return;
+  }
 
   /* Simulate one iteration of event loop */
   /* (Node is not running, so functions should no-op gracefully) */
@@ -249,13 +320,25 @@ static void test_event_loop_functions_sequence(void) {
   echo_result_t result;
 
   result = node_process_peers(node);
-  assert(result == ECHO_OK);
+  if (result != ECHO_OK) {
+    test_fail("node_process_peers failed");
+    node_destroy(node);
+    return;
+  }
 
   result = node_process_blocks(node);
-  assert(result == ECHO_OK);
+  if (result != ECHO_OK) {
+    test_fail("node_process_blocks failed");
+    node_destroy(node);
+    return;
+  }
 
   result = node_maintenance(node);
-  assert(result == ECHO_OK);
+  if (result != ECHO_OK) {
+    test_fail("node_maintenance failed");
+    node_destroy(node);
+    return;
+  }
 
   node_destroy(node);
 
@@ -263,28 +346,43 @@ static void test_event_loop_functions_sequence(void) {
 }
 
 static void test_shutdown_requested_stops_loop(void) {
+  test_case("Shutdown requested stops loop");
+
   node_config_t config;
   node_config_init(&config, "/tmp/echo_test_shutdown_loop");
 
   node_t *node = node_create(&config);
-  assert(node != NULL);
+  if (node == NULL) {
+    test_fail("Node creation failed");
+    return;
+  }
 
   /* Simulate event loop condition */
   int loop_count = 0;
   const int max_iterations = 10;
+  const int expected_loop_count = 5;
 
   while (!node_shutdown_requested(node) && loop_count < max_iterations) {
     loop_count++;
 
     /* Simulate some iterations before shutdown */
-    if (loop_count == 5) {
+    if (loop_count == expected_loop_count) {
       node_request_shutdown(node);
     }
   }
 
   /* Should have stopped at iteration 5 due to shutdown request */
-  assert(loop_count == 5);
-  assert(node_shutdown_requested(node));
+  if (loop_count != expected_loop_count) {
+    test_fail_int("Unexpected loop count", expected_loop_count, loop_count);
+    node_destroy(node);
+    return;
+  }
+
+  if (!node_shutdown_requested(node)) {
+    test_fail("Shutdown was not requested");
+    node_destroy(node);
+    return;
+  }
 
   node_destroy(node);
 
@@ -300,19 +398,19 @@ static void test_shutdown_requested_stops_loop(void) {
 int main(void) {
     test_suite_begin("Event Loop Tests");
 
-    test_case("Node shutdown signal"); test_node_shutdown_signal(); test_pass();
-    test_case("Process peers null node"); test_process_peers_null_node(); test_pass();
-    test_case("Process blocks null node"); test_process_blocks_null_node(); test_pass();
-    test_case("Maintenance null node"); test_maintenance_null_node(); test_pass();
-    test_case("Process peers uninitialized node"); test_process_peers_uninitialized_node(); test_pass();
-    test_case("Process blocks uninitialized node"); test_process_blocks_uninitialized_node(); test_pass();
-    test_case("Maintenance uninitialized node"); test_maintenance_uninitialized_node(); test_pass();
-    test_case("Generate nonce"); test_generate_nonce(); test_pass();
-    test_case("Handle ping message"); test_handle_ping_message(); test_pass();
-    test_case("Handle null message"); test_handle_null_message(); test_pass();
-    test_case("Handle unknown message"); test_handle_unknown_message(); test_pass();
-    test_case("Event loop functions sequence"); test_event_loop_functions_sequence(); test_pass();
-    test_case("Shutdown requested stops loop"); test_shutdown_requested_stops_loop(); test_pass();
+    test_node_shutdown_signal();
+    test_process_peers_null_node();
+    test_process_blocks_null_node();
+    test_maintenance_null_node();
+    test_process_peers_uninitialized_node();
+    test_process_blocks_uninitialized_node();
+    test_maintenance_uninitialized_node();
+    test_generate_nonce();
+    test_handle_ping_message();
+    test_handle_null_message();
+    test_handle_unknown_message();
+    test_event_loop_functions_sequence();
+    test_shutdown_requested_stops_loop();
 
     test_suite_end();
     return test_global_summary();
