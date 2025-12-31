@@ -108,12 +108,9 @@ static batch_node_t *batch_node_clone(const batch_node_t *src) {
 /**
  * Get batch size for a given block height.
  *
- * Bitcoin Core uses MAX_BLOCKS_IN_TRANSIT_PER_PEER = 16 as a fixed limit.
- * This is the practical maximum a peer will deliver before needing more
- * getdata requests, so larger batches just assign more work than peers
- * can deliver at once.
- *
- * We use 16 blocks per batch, matching Bitcoin Core.
+ * Bitcoin Core uses MAX_BLOCKS_IN_TRANSIT_PER_PEER = 16 as a fixed limit,
+ * but our testing found 8 blocks optimal for minimizing head-of-line
+ * blocking while avoiding excessive getdata overhead.
  */
 static size_t get_batch_size_for_height(uint32_t height) {
   (void)height; /* Unused - fixed batch size */

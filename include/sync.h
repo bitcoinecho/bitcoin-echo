@@ -66,7 +66,7 @@ typedef struct chase_dispatcher chase_dispatcher_t;
  * libbitcoin-node uses 50000 as the maximum_concurrency default.
  *
  * Note: The actual work queue and batch distribution is handled by
- * download_mgr which assigns 16-block batches per peer.
+ * download_mgr which assigns 8-block batches per peer.
  */
 #define SYNC_BLOCK_DOWNLOAD_WINDOW_ARCHIVAL 100000
 #define SYNC_BLOCK_DOWNLOAD_WINDOW_PRUNED 100000

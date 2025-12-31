@@ -26,16 +26,11 @@
  * ============================================================================
  */
 
-/* Batch size: 16 blocks per peer (matches Bitcoin Core).
- *
- * Testing showed larger batches (128, 256) cause excessive peer churn due to
- * false "slow" detection when comparing byte-rates across different chain
- * heights (early blocks are ~300 bytes, later blocks are ~1-2 MB).
- */
-#define DOWNLOAD_BATCH_SIZE 16
+/* Batch size: 8 blocks per peer. */
+#define DOWNLOAD_BATCH_SIZE 8
 
 /* Maximum batch size (for array allocation) */
-#define DOWNLOAD_BATCH_SIZE_MAX 16
+#define DOWNLOAD_BATCH_SIZE_MAX 8
 
 /* Maximum batches in the queue. */
 #define DOWNLOAD_MAX_BATCHES 200
