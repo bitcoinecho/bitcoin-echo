@@ -956,9 +956,9 @@ size_t download_mgr_check_performance(download_mgr_t *mgr) {
     }
   }
 
-  /* libbitcoin-style: Need minimum peers in the pool for meaningful stats.
-   * If reporters <= 3, don't drop anyone - return success for all. */
-  if (reporters <= DOWNLOAD_MIN_PEERS_FOR_STATS) {
+  /* Need minimum peers in the pool to function.
+   * If reporters <= 3, don't drop anyone - preserve what we have. */
+  if (reporters <= DOWNLOAD_MIN_PEERS_TO_KEEP) {
     LOG_DEBUG("download_mgr: only %zu reporters, skipping performance check",
               reporters);
     return 0;
@@ -972,7 +972,7 @@ size_t download_mgr_check_performance(download_mgr_t *mgr) {
    * waiting for new blocks - they're not truly stalled. Only disconnect
    * if they haven't delivered for 2x the window (20 seconds). */
   for (size_t i = 0; i < stalled_count; i++) {
-    if (reporters - dropped <= DOWNLOAD_MIN_PEERS_FOR_STATS) {
+    if (reporters - dropped <= DOWNLOAD_MIN_PEERS_TO_KEEP) {
       LOG_DEBUG("download_mgr: keeping stalled peer to maintain minimum");
       break;
     }
@@ -1008,101 +1008,33 @@ size_t download_mgr_check_performance(download_mgr_t *mgr) {
     dropped++;
   }
 
-  /* Phase 4: Statistical deviation check (only if enough peers with rates) */
-  if (rate_count < DOWNLOAD_MIN_PEERS_FOR_STATS) {
-    return dropped;
-  }
-
-  /* Calculate mean */
-  float sum = 0.0f;
-  for (size_t i = 0; i < rate_count; i++) {
-    sum += rates[i];
-  }
-  float mean = sum / (float)rate_count;
-
-  /* Minimum rate floor: Skip deviation check when mean is too low.
+  /* Speed-based eviction removed (2025-12-31).
    *
-   * Early blocks are tiny (~200 bytes), so even fast peers show low bytes/sec.
-   * When everyone is below 10 KB/s, it's block size limiting throughput,
-   * not peer speed. Don't penalize peers for small blocks.
+   * Previously we calculated mean/stddev and kicked peers below a deviation
+   * threshold. This was counterproductive because:
    *
-   * This complements libbitcoin's model - they don't need this because their
-   * workloads have mixed block sizes, but during early IBD we hit this edge case.
+   * 1. Our download manager already handles slow peers gracefully - it gives
+   *    them smaller batches, steals work if they stall, and races critical
+   *    batches. Slow peers still contribute blocks.
+   *
+   * 2. When peers have similar speeds (low stddev), the threshold approaches
+   *    the mean, causing peers at 99% of average to be evicted. We observed
+   *    peers kicked for being 0.2% below threshold!
+   *
+   * 3. More slow peers beats fewer fast peers for parallelism:
+   *    80 peers × 50% speed = 4000 throughput units
+   *    5 peers × 100% speed = 500 throughput units
+   *
+   * 4. Active peers discovered during IBD are scarce and valuable. We should
+   *    only disconnect truly stalled (0 B/s) or malicious peers, which is
+   *    handled by Phase 3 above and protocol error detection.
+   *
+   * The stalled peer detection (Phase 3) remains - peers delivering 0 bytes
+   * over an extended period are genuinely stuck and should be replaced.
    */
-  if (mean < DOWNLOAD_MIN_RATE_FLOOR) {
-    LOG_DEBUG("download_mgr: mean rate %.0f B/s below floor, skipping deviation "
-              "check (blocks are tiny)",
-              (double)mean);
-    return dropped;
-  }
-
-  /* Calculate sample variance and standard deviation */
-  float variance = 0.0f;
-  for (size_t i = 0; i < rate_count; i++) {
-    float diff = rates[i] - mean;
-    variance += diff * diff;
-  }
-  variance /= (float)(rate_count - 1);
-  float stddev = sqrtf(variance);
-
-  /* Phase 5: Disconnect slow peers (below deviation threshold) */
-  float threshold = mean - (DOWNLOAD_ALLOWED_DEVIATION * stddev);
-
-  LOG_DEBUG("download_mgr: perf check - mean=%.0f B/s, stddev=%.0f, "
-            "threshold=%.0f, reporters=%zu, with_rates=%zu",
-            (double)mean, (double)stddev, (double)threshold,
-            reporters, rate_count);
-
-  /* Limit slow peer drops to 2 per check cycle.
-   * This gives the connection manager time to reconnect before we drop more.
-   * Without this limit, we can drop 6+ peers at once and peer count spirals down. */
-#define MAX_SLOW_DROPS_PER_CHECK 2
-  size_t slow_drops = 0;
-
-  for (size_t i = 0; i < rate_count; i++) {
-    if (rates[i] < threshold) {
-      if (reporters - dropped <= DOWNLOAD_MIN_PEERS_FOR_STATS) {
-        LOG_DEBUG("download_mgr: keeping slow peer to maintain minimum");
-        break;
-      }
-
-      if (slow_drops >= MAX_SLOW_DROPS_PER_CHECK) {
-        LOG_DEBUG("download_mgr: hit per-check drop limit, deferring %zu more slow peers",
-                  rate_count - i);
-        break;
-      }
-
-      peer_perf_t *perf = peers_with_rates[i];
-
-      if (perf->batch != NULL) {
-        batch_node_t *node = (batch_node_t *)(void *)perf->batch;
-        uint32_t batch_start = node->batch.heights[0];
-        uint32_t batch_end = batch_start + (uint32_t)node->batch.count - 1;
-
-        LOG_INFO("download_mgr: peer too slow (%.0f B/s < %.0f B/s threshold), "
-                 "returning batch [%u-%u] to queue",
-                 (double)rates[i], (double)threshold, batch_start, batch_end);
-
-        node->batch.assigned_time = 0;
-        queue_push_front(mgr, node);
-        perf->batch = NULL;
-      } else {
-        LOG_INFO("download_mgr: peer too slow (%.0f B/s < %.0f B/s threshold), "
-                 "no batch to return",
-                 (double)rates[i], (double)threshold);
-      }
-
-      if (mgr->callbacks.disconnect_peer != NULL) {
-        mgr->callbacks.disconnect_peer(perf->peer, "slow (below deviation)",
-                                       mgr->callbacks.ctx);
-      }
-      dropped++;
-      slow_drops++;
-    }
-  }
 
   if (dropped > 0) {
-    LOG_INFO("download_mgr: performance check dropped %zu peers", dropped);
+    LOG_INFO("download_mgr: performance check dropped %zu stalled peers", dropped);
   }
 
   return dropped;

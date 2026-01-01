@@ -44,24 +44,15 @@
  */
 #define DOWNLOAD_PERF_WINDOW_MS 10000
 
-/* Allowed deviation for slow peer detection (standard deviations).
- * Peers with throughput > this many stddevs below the mean are dropped.
- * This matches libbitcoin's allowed_deviation setting.
- */
-#define DOWNLOAD_ALLOWED_DEVIATION 1.5f
-
-/* Minimum peers required for statistical deviation calculation.
- * Need at least 3 data points for meaningful standard deviation.
- */
-#define DOWNLOAD_MIN_PEERS_FOR_STATS 3
-
-/* Minimum rate floor for deviation checks (bytes/second).
+/* Minimum peers to keep in the sync pool.
+ * We won't disconnect stalled peers if it would drop us below this count.
+ * This ensures we always have some peers to work with during recovery.
  *
- * Early blocks are tiny (~200 bytes), so even fast peers show low B/s.
- * When the mean rate is below this floor, we skip deviation checks because
- * block size is limiting throughput, not peer speed.
+ * Note: Speed-based peer eviction (DOWNLOAD_ALLOWED_DEVIATION, etc.) was
+ * removed on 2025-12-31. See download_mgr.c for rationale. We now only
+ * disconnect truly stalled peers (0 B/s), not "slow" peers.
  */
-#define DOWNLOAD_MIN_RATE_FLOOR 10000.0f /* 10 KB/s */
+#define DOWNLOAD_MIN_PEERS_TO_KEEP 3
 
 /* ============================================================================
  * Work Batch
