@@ -58,21 +58,6 @@ typedef struct chase_dispatcher chase_dispatcher_t;
 /* Periodic header refresh during block sync to catch new blocks (30 seconds) */
 #define SYNC_HEADER_REFRESH_INTERVAL_MS 30000
 
-/* Block download window - how far ahead of validated tip to download.
- * Larger window = more parallelism but more memory/storage usage.
- *
- * Both modes use the same large window during IBD for maximum parallelism.
- * Pruning limits what we STORE, not what we DOWNLOAD.
- *
- * Note: The actual work queue and batch distribution is handled by
- * download_mgr which assigns 8-block batches per peer.
- */
-#define SYNC_BLOCK_DOWNLOAD_WINDOW_ARCHIVAL 100000
-#define SYNC_BLOCK_DOWNLOAD_WINDOW_PRUNED 100000
-
-/* Default for backward compatibility */
-#define SYNC_BLOCK_DOWNLOAD_WINDOW SYNC_BLOCK_DOWNLOAD_WINDOW_ARCHIVAL
-
 /* Stale tip threshold - consider sync stalled if no progress in this time */
 #define SYNC_STALE_TIP_THRESHOLD_MS (30ULL * 60 * 1000) /* 30 minutes */
 
@@ -364,21 +349,16 @@ typedef struct {
  * Create a sync manager.
  *
  * Parameters:
- *   chainstate      - The chain state to sync
- *   callbacks       - Callback functions for storage/validation
- *   download_window - How far ahead of validated tip to download blocks.
- *                     Use SYNC_BLOCK_DOWNLOAD_WINDOW_PRUNED for pruned nodes,
- *                     SYNC_BLOCK_DOWNLOAD_WINDOW_ARCHIVAL for archival nodes,
- *                     or 0 for default (archival).
- *   dispatcher      - Chase event dispatcher for validation pipeline.
- *                     Pass NULL to use legacy callback-based validation.
+ *   chainstate - The chain state to sync
+ *   callbacks  - Callback functions for storage/validation
+ *   dispatcher - Chase event dispatcher for validation pipeline.
+ *                Pass NULL to use legacy callback-based validation.
  *
  * Returns:
  *   Newly allocated sync manager, or NULL on failure
  */
 sync_manager_t *sync_create(chainstate_t *chainstate,
                             const sync_callbacks_t *callbacks,
-                            uint32_t download_window,
                             chase_dispatcher_t *dispatcher);
 
 /**

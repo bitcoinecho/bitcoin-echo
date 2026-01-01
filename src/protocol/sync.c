@@ -100,9 +100,6 @@ struct sync_manager {
   /* Adaptive stalling timeout (in ms) - starts at 2s, grows on stalls */
   uint64_t stalling_timeout_ms;
 
-  /* Download window size (configured at creation based on pruning mode) */
-  uint32_t download_window;
-
   /* Parallel request rate limiting */
   hash256_t last_parallel_request_hash;
   uint64_t last_parallel_request_time;
@@ -509,15 +506,9 @@ static size_t count_sync_peers(const sync_manager_t *mgr) {
 
 sync_manager_t *sync_create(chainstate_t *chainstate,
                             const sync_callbacks_t *callbacks,
-                            uint32_t download_window,
                             chase_dispatcher_t *dispatcher) {
   if (!chainstate || !callbacks) {
     return NULL;
-  }
-
-  /* Use default if 0 passed */
-  if (download_window == 0) {
-    download_window = SYNC_BLOCK_DOWNLOAD_WINDOW;
   }
 
   sync_manager_t *mgr = calloc(1, sizeof(sync_manager_t));
@@ -551,7 +542,6 @@ sync_manager_t *sync_create(chainstate_t *chainstate,
     }
   }
   mgr->peer_count = 0;
-  mgr->download_window = download_window;
 
   /* Initialize adaptive stalling timeout to 2 seconds */
   mgr->stalling_timeout_ms = SYNC_BLOCK_STALLING_TIMEOUT_MS;
@@ -1275,20 +1265,13 @@ static void queue_blocks_from_headers(sync_manager_t *mgr) {
 
   uint32_t tip_height = chainstate_get_height(mgr->chainstate);
 
-  /* Fixed download window (simplified from adaptive) */
-  uint32_t effective_window = mgr->download_window;
-
-  /* Calculate target range */
+  /* Calculate target range: from validated tip to best header */
   uint32_t start_height = tip_height + 1;
-  uint32_t end_height = tip_height + effective_window;
-  if (end_height > mgr->best_header->height) {
-    end_height = mgr->best_header->height;
-  }
+  uint32_t end_height = mgr->best_header->height;
 
   log_info(LOG_COMP_SYNC,
-           "queue_blocks: tip=%u, start=%u, end=%u, window=%u, best=%u",
-           tip_height, start_height, end_height, effective_window,
-           mgr->best_header->height);
+           "queue_blocks: tip=%u, start=%u, end=%u, best=%u",
+           tip_height, start_height, end_height, mgr->best_header->height);
 
   if (start_height > end_height) {
     /* Already fully synced */
@@ -1300,15 +1283,14 @@ static void queue_blocks_from_headers(sync_manager_t *mgr) {
    * Use direct height lookup via callback if available (much faster for
    * large height gaps). Falls back to walking prev pointers if not.
    *
-   * Array sized to download_mgr capacity (16384), not full window (50000).
-   * We batch in chunks to avoid massive stack usage.
+   * Array sized to download_mgr's actual capacity (200 batches * 8 blocks).
+   * The download_mgr enforces DOWNLOAD_MAX_BATCHES, so queuing more is wasteful.
    */
-  #define QUEUE_BATCH_SIZE 16384
+  #define QUEUE_BATCH_SIZE ((size_t)DOWNLOAD_MAX_BATCHES * DOWNLOAD_BATCH_SIZE)
   hash256_t to_queue[QUEUE_BATCH_SIZE];
   uint32_t heights[QUEUE_BATCH_SIZE];
   size_t to_queue_count = 0;
-  size_t batch_limit = QUEUE_BATCH_SIZE < effective_window
-                       ? QUEUE_BATCH_SIZE : effective_window;
+  size_t batch_limit = QUEUE_BATCH_SIZE;
 
   if (mgr->callbacks.get_block_hash_at_height) {
     /* Fast path: query database by height directly */
