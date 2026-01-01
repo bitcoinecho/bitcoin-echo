@@ -180,14 +180,13 @@ static void dm_disconnect_peer(peer_t *peer, const char *reason, void *ctx) {
 /**
  * Handle chase events for download coordination.
  *
- * PULL model: Events trigger peers to request work, not coordinator to push.
- *
- * Responds to:
- * - CHASE_STARVED: A chaser needs more work (triggers peer_starved flow)
- * - CHASE_SPLIT: Split work from a slow peer (triggers peer_split)
+ * Cooperative model: Idle peers request work when available.
+ * Starved peers wait - we never steal work from active peers.
  */
 static bool sync_chase_handler(chase_event_t event, chase_value_t value,
                                void *context) {
+  (void)value;
+
   sync_manager_t *mgr = (sync_manager_t *)context;
   if (!mgr) {
     return false;
@@ -196,38 +195,18 @@ static bool sync_chase_handler(chase_event_t event, chase_value_t value,
   switch (event) {
   case CHASE_STARVED: {
     /* A downstream chaser needs more blocks.
-     * PULL model: Find any idle peer and have them request work.
-     * If no work available, peer_starved() triggers split from slowest. */
+     * Find any idle peer and have them request work. If no work is
+     * available, they wait - we never steal from active peers. */
     for (size_t i = 0; i < mgr->peer_count; i++) {
       peer_sync_state_t *ps = &mgr->peers[i];
       if (ps->sync_candidate && peer_is_ready(ps->peer)) {
         if (download_mgr_peer_is_idle(mgr->download_mgr, ps->peer)) {
           bool got_work = download_mgr_peer_request_work(mgr->download_mgr, ps->peer);
-          if (!got_work && download_mgr_inflight_count(mgr->download_mgr) > 0) {
-            /* Queue empty but work in flight - trigger starved/split flow.
-             * Only sacrifice a peer if there's actually work to steal. */
-            download_mgr_peer_starved(mgr->download_mgr, ps->peer);
-            /* After split, try requesting work again */
-            download_mgr_peer_request_work(mgr->download_mgr, ps->peer);
-          }
           log_debug(LOG_COMP_SYNC, "CHASE_STARVED: peer %s requested work (got=%s)",
                     ps->peer->address, got_work ? "yes" : "no");
           break; /* One peer at a time */
         }
       }
-    }
-    break;
-  }
-
-  case CHASE_SPLIT: {
-    /* Split work from a slow peer (peer pointer in value.object).
-     * PULL model: peer_split() returns ALL work and disconnects peer. */
-    peer_t *slow_peer = (peer_t *)value.object;
-    if (slow_peer) {
-      log_debug(LOG_COMP_SYNC, "CHASE_SPLIT: splitting work from peer %s",
-                slow_peer->address);
-      download_mgr_peer_split(mgr->download_mgr, slow_peer);
-      /* Work is now back in queue - idle peers will pull it */
     }
     break;
   }
@@ -1159,18 +1138,10 @@ echo_result_t sync_handle_block(sync_manager_t *mgr, peer_t *peer,
       chase_notify_height(mgr->dispatcher, CHASE_CHECKED, block_index->height);
     }
 
-    /* PULL model: Check if peer is now idle (batch complete) and have them
-     * request more work immediately. This keeps peers busy without waiting
-     * for sync_tick. */
+    /* Check if peer is now idle (batch complete) and have them request more
+     * work immediately. If no work available, they wait. */
     if (download_mgr_peer_is_idle(mgr->download_mgr, peer)) {
-      bool got_work = download_mgr_peer_request_work(mgr->download_mgr, peer);
-      if (!got_work && download_mgr_inflight_count(mgr->download_mgr) > 0) {
-        /* Queue empty but work in flight - peer is starved, trigger split.
-         * Only sacrifice a peer if there's actually work to steal. */
-        download_mgr_peer_starved(mgr->download_mgr, peer);
-        /* After split, try again */
-        download_mgr_peer_request_work(mgr->download_mgr, peer);
-      }
+      download_mgr_peer_request_work(mgr->download_mgr, peer);
     }
   }
 
@@ -1721,14 +1692,7 @@ void sync_tick(sync_manager_t *mgr) {
       }
 
       if (download_mgr_peer_is_idle(mgr->download_mgr, ps->peer)) {
-        bool got_work = download_mgr_peer_request_work(mgr->download_mgr, ps->peer);
-        if (!got_work && download_mgr_inflight_count(mgr->download_mgr) > 0) {
-          /* Queue empty but work in flight - peer is starved.
-           * Trigger split from slowest peer to rebalance work. */
-          download_mgr_peer_starved(mgr->download_mgr, ps->peer);
-          /* After split, try again */
-          download_mgr_peer_request_work(mgr->download_mgr, ps->peer);
-        }
+        download_mgr_peer_request_work(mgr->download_mgr, ps->peer);
       }
     }
 

@@ -53,7 +53,6 @@ typedef enum {
 
     /* Channel management */
     CHASE_STARVED,        /* Channel needs work */
-    CHASE_SPLIT,          /* Split work from slow peer */
     CHASE_STALL,          /* All peers stalled */
     CHASE_PURGE,          /* Drop work and stop */
 
@@ -71,7 +70,7 @@ typedef enum {
  * - height_t: block height (CHASE_VALID, CHASE_ORGANIZED, etc.)
  * - link_t: block link/hash reference (CHASE_UNCHECKED, CHASE_UNVALID)
  * - count_t: count value (CHASE_DOWNLOAD)
- * - object_t: object pointer (CHASE_STARVED, CHASE_SPLIT)
+ * - object_t: object pointer (CHASE_STARVED)
  */
 typedef union {
     uint32_t height;      /* Block height */

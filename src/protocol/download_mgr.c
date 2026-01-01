@@ -1,14 +1,13 @@
 /**
  * Bitcoin Echo — PULL-Based Block Download Manager
  *
- * Implements libbitcoin-style work distribution:
+ * Implements cooperative work distribution:
  *
  * - Work is organized as BATCHES, not individual items
  * - Peers PULL work when idle, coordinator doesn't push
- * - Starved peers trigger SPLIT from slowest peer
- * - Slow peers are DISCONNECTED, not cooled down
- *
- * See IBD-PULL-MODEL-REWRITE.md for architectural details.
+ * - Starved peers WAIT for work (no sacrifice of slow peers)
+ * - Sticky batches RACE blocking blocks to multiple peers
+ * - Only truly stalled peers (0 B/s) are disconnected
  *
  * Build once. Build right. Stop.
  */
@@ -18,7 +17,6 @@
 #include "download_mgr.h"
 #include "log.h"
 #include "platform.h"
-#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -204,31 +202,6 @@ static const peer_perf_t *find_peer_perf_const(const download_mgr_t *mgr,
     }
   }
   return NULL;
-}
-
-/**
- * Find the slowest peer that has an assigned batch.
- * Returns NULL if no peers have work.
- */
-static peer_perf_t *find_slowest_peer_with_work(download_mgr_t *mgr) {
-  peer_perf_t *slowest = NULL;
-  float slowest_rate = 1e30f; /* INFINITY equivalent */
-
-  for (size_t i = 0; i < mgr->peer_count; i++) {
-    peer_perf_t *perf = &mgr->peers[i];
-    if (perf->peer == NULL || perf->batch == NULL) {
-      continue; /* No peer or no work */
-    }
-
-    /* Peers with 0 rate (unmeasured) are considered slowest */
-    float rate = perf->bytes_per_second;
-    if (rate < slowest_rate) {
-      slowest_rate = rate;
-      slowest = perf;
-    }
-  }
-
-  return slowest;
 }
 
 /**
@@ -523,58 +496,6 @@ bool download_mgr_peer_request_work(download_mgr_t *mgr, peer_t *peer) {
   return true;
 }
 
-void download_mgr_peer_starved(download_mgr_t *mgr, peer_t *peer) {
-  if (mgr == NULL) {
-    return;
-  }
-
-  (void)peer; /* Starved peer identity used for logging only */
-
-  /* libbitcoin-style: Find slowest peer and trigger split */
-  peer_perf_t *slowest = find_slowest_peer_with_work(mgr);
-
-  if (slowest == NULL) {
-    /* No peer has work - nothing to split */
-    LOG_DEBUG("download_mgr: starved but no peers have work to split");
-    return;
-  }
-
-  LOG_INFO("download_mgr: starved condition - splitting from slowest peer "
-           "(rate=%.0f B/s)",
-           (double)slowest->bytes_per_second);
-
-  /* Split (which disconnects the slow peer) */
-  download_mgr_peer_split(mgr, slowest->peer);
-}
-
-void download_mgr_peer_split(download_mgr_t *mgr, peer_t *peer) {
-  if (mgr == NULL || peer == NULL) {
-    return;
-  }
-
-  peer_perf_t *perf = find_peer_perf(mgr, peer);
-  if (perf == NULL || perf->batch == NULL) {
-    return; /* Peer not found or has no work */
-  }
-
-  /* Return work to queue */
-  batch_node_t *node = (batch_node_t *)(void *)perf->batch;
-  uint32_t batch_start = node->batch.heights[0];
-  uint32_t batch_end = batch_start + (uint32_t)node->batch.count - 1;
-
-  node->batch.assigned_time = 0; /* Mark as unassigned */
-  queue_push_front(mgr, node);   /* Return to FRONT (high priority) */
-  perf->batch = NULL;
-
-  /* libbitcoin-style: Disconnect immediately (no cooldowns) */
-  LOG_INFO("download_mgr: sacrificing slow peer (rate=%.0f B/s), "
-           "returning batch [%u-%u] to queue",
-           (double)perf->bytes_per_second, batch_start, batch_end);
-  if (mgr->callbacks.disconnect_peer != NULL) {
-    mgr->callbacks.disconnect_peer(peer, "sacrificed (slow)", mgr->callbacks.ctx);
-  }
-}
-
 bool download_mgr_block_received(download_mgr_t *mgr, peer_t *peer,
                                  const hash256_t *hash, size_t block_size) {
   if (mgr == NULL || peer == NULL || hash == NULL) {
@@ -865,22 +786,47 @@ bool download_mgr_check_stall(download_mgr_t *mgr, uint32_t validated_height) {
                "every idle peer will race for block %u",
                next_height, blocker_end, remaining_count, next_height);
     }
-    /* Don't disconnect - let them race */
+    /* Don't steal - let them race */
   } else {
-    /* Blocker has truly stalled (no recent delivery) - steal their batch.
-     * This is the original aggressive behavior for genuinely dead peers.
-     * Only increment backoff when stealing, not when racing. */
-    mgr->stall_backoff_count++;
-    blocker_node->batch.assigned_time = 0;
-    queue_push_front(mgr, blocker_node);
-    blocker->batch = NULL;
+    /* Blocker hasn't delivered recently, but we still don't steal.
+     * Create a sticky batch for racing - the blocker keeps their work
+     * and might still deliver. If they're truly stalled (0 B/s for 20+
+     * seconds), check_performance() will disconnect them and their
+     * batch returns to the queue automatically.
+     *
+     * Cooperative model: Add redundancy, never punish.
+     */
 
-    LOG_INFO("download_mgr: stole batch [%u-%u] from stalled peer",
-             blocker_height, blocker_end);
+    /* Check if we already have a sticky batch for this height */
+    if (mgr->queue_head != NULL && mgr->queue_head->batch.sticky &&
+        mgr->queue_head->batch.sticky_height == next_height) {
+      LOG_DEBUG("download_mgr: sticky batch for height %u already exists",
+                next_height);
+      mgr->last_progress_time = now;
+      return false;
+    }
 
-    if (mgr->callbacks.disconnect_peer != NULL) {
-      mgr->callbacks.disconnect_peer(blocker->peer, "blocking validation (stalled)",
-                                     mgr->callbacks.ctx);
+    size_t remaining_count = blocker_node->batch.count - block_idx;
+    batch_node_t *race_batch = batch_node_create();
+    if (race_batch != NULL) {
+      for (size_t i = 0; i < remaining_count; i++) {
+        size_t src_idx = block_idx + i;
+        memcpy(&race_batch->batch.hashes[i], &blocker_node->batch.hashes[src_idx],
+               sizeof(hash256_t));
+        race_batch->batch.heights[i] = blocker_node->batch.heights[src_idx];
+        race_batch->batch.received[i] = false;
+      }
+      race_batch->batch.count = remaining_count;
+      race_batch->batch.remaining = remaining_count;
+      race_batch->batch.assigned_time = 0;
+      race_batch->batch.sticky = true;
+      race_batch->batch.sticky_height = next_height;
+
+      queue_push_front(mgr, race_batch);
+      mgr->stall_backoff_count++; /* Track for adaptive timeout */
+      LOG_INFO("download_mgr: queued STICKY race batch [%u-%u] (%zu blocks) - "
+               "blocker inactive but keeps their work",
+               next_height, blocker_end, remaining_count);
     }
   }
 

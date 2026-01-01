@@ -1,12 +1,13 @@
 /**
  * Bitcoin Echo — PULL-Based Block Download Manager
  *
- * This module implements libbitcoin-style work distribution:
+ * Cooperative work distribution (inspired by libbitcoin):
  *
  * - Work is organized as BATCHES, not individual items
  * - Peers PULL work when idle, coordinator doesn't push
- * - Starved peers trigger SPLIT from slowest peer
- * - Slow peers are DISCONNECTED, not cooled down
+ * - Starved peers WAIT for work (cooperative, not punitive)
+ * - Only truly stalled peers (0 B/s) are disconnected
+ * - Sticky batches add redundancy for blocking blocks
  *
  * See IBD-PULL-MODEL-REWRITE.md for architectural details.
  *
@@ -62,13 +63,12 @@
 /**
  * Work batch representing a group of blocks to download.
  *
- * libbitcoin-style: Each peer gets a batch. When batch is complete (all blocks
- * received), peer requests another batch. If no batches available, peer is
- * "starved" and triggers work splitting from the slowest peer.
+ * Cooperative model: Each peer gets a batch. When batch is complete (all blocks
+ * received), peer requests another batch. If no batches available, peer waits.
  *
  * The received[] bitmap tracks which specific blocks have been received.
  * This prevents duplicate blocks from decrementing remaining - critical for
- * correct batch completion when batches are stolen and reassigned.
+ * correct batch completion when sticky batches race the same blocks.
  */
 typedef struct work_batch {
   hash256_t hashes[DOWNLOAD_BATCH_SIZE_MAX]; /* Block hashes in this batch */
@@ -115,7 +115,8 @@ typedef struct {
  * Coordinates block downloads using PULL model:
  * - Maintains queue of work batches
  * - Peers request work when idle
- * - Starved peers trigger split from slowest
+ * - Starved peers wait (cooperative model)
+ * - Sticky batches add redundancy for blocking blocks
  */
 typedef struct download_mgr download_mgr_t;
 
@@ -136,7 +137,7 @@ typedef struct {
                        void *ctx);
 
   /**
-   * Disconnect a peer (sacrificed due to slow performance).
+   * Disconnect a peer (stalled - 0 B/s for extended period).
    *
    * Parameters:
    *   peer   - Peer to disconnect
@@ -219,33 +220,9 @@ size_t download_mgr_add_work(download_mgr_t *mgr, const hash256_t *hashes,
  *   peer - Peer requesting work
  *
  * Returns:
- *   true if work was assigned, false if queue is empty (peer should call starved)
+ *   true if work was assigned, false if queue is empty (peer waits)
  */
 bool download_mgr_peer_request_work(download_mgr_t *mgr, peer_t *peer);
-
-/**
- * Peer reports being starved (no work available).
- *
- * libbitcoin-style: Find the slowest peer and tell them to split.
- * If no speeds recorded, broadcasts stall event (any peer with work splits).
- *
- * Parameters:
- *   mgr  - Download manager
- *   peer - Starved peer (for logging, not used for selection)
- */
-void download_mgr_peer_starved(download_mgr_t *mgr, peer_t *peer);
-
-/**
- * Split work from a peer and disconnect them.
- *
- * libbitcoin-style: Returns ALL of the peer's work to queue, then disconnects.
- * Called on the slowest peer when another peer is starved.
- *
- * Parameters:
- *   mgr  - Download manager
- *   peer - Peer to sacrifice
- */
-void download_mgr_peer_split(download_mgr_t *mgr, peer_t *peer);
 
 /**
  * Record block receipt from a peer.

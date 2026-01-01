@@ -7,7 +7,7 @@
  * - Work queue operations (batch-based)
  * - Peer work requests (PULL model)
  * - Block receipt handling
- * - Starved/split handling
+ * - Cooperative empty queue handling
  * - Metrics and queries
  */
 
@@ -616,12 +616,12 @@ static void test_unexpected_block(void) {
 }
 
 /* ============================================================================
- * Starved/Split Tests
+ * Empty Queue Tests (Cooperative Model)
  * ============================================================================
  */
 
-static void test_peer_starved(void) {
-  test_case("peer starved triggers split from slowest");
+static void test_starved_peer_waits(void) {
+  test_case("starved peer waits (cooperative model)");
 
   test_ctx_t ctx = {0};
   download_callbacks_t callbacks = {.send_getdata = mock_send_getdata,
@@ -644,7 +644,7 @@ static void test_peer_starved(void) {
   download_mgr_add_work(mgr, hashes, heights, DOWNLOAD_BATCH_SIZE);
   download_mgr_peer_request_work(mgr, (peer_t *)&peer1);
 
-  /* peer2 tries to request work but queue is empty */
+  /* peer2 tries to request work but queue is empty - just returns false */
   bool got_work = download_mgr_peer_request_work(mgr, (peer_t *)&peer2);
   if (got_work) {
     test_fail("peer2 should not get work (queue empty)");
@@ -652,62 +652,23 @@ static void test_peer_starved(void) {
     return;
   }
 
-  /* peer2 is starved - this should split from peer1 (slowest) */
-  download_mgr_peer_starved(mgr, (peer_t *)&peer2);
-
-  /* peer1 should have been disconnected (libbitcoin-style sacrifice) */
-  if (ctx.disconnect_calls != 1) {
-    test_fail_uint("disconnect calls", 1, ctx.disconnect_calls);
+  /* No one should be disconnected - peer2 just waits */
+  if (ctx.disconnect_calls != 0) {
+    test_fail_uint("disconnect calls", 0, ctx.disconnect_calls);
     download_mgr_destroy(mgr);
     return;
   }
 
-  /* Work should be back in queue */
-  if (download_mgr_pending_count(mgr) != DOWNLOAD_BATCH_SIZE) {
-    test_fail_uint("pending after split", DOWNLOAD_BATCH_SIZE,
-                   download_mgr_pending_count(mgr));
+  /* peer1 should still have their work */
+  if (download_mgr_peer_is_idle(mgr, (peer_t *)&peer1)) {
+    test_fail("peer1 should still have work");
     download_mgr_destroy(mgr);
     return;
   }
 
-  download_mgr_destroy(mgr);
-  test_pass();
-}
-
-static void test_peer_split(void) {
-  test_case("split returns all work and disconnects");
-
-  test_ctx_t ctx = {0};
-  download_callbacks_t callbacks = {.send_getdata = mock_send_getdata,
-                                    .disconnect_peer = mock_disconnect_peer,
-                                    .ctx = &ctx};
-
-  download_mgr_t *mgr = download_mgr_create(&callbacks);
-  mock_peer_t peer1 = {.id = 1};
-  download_mgr_add_peer(mgr, (peer_t *)&peer1);
-
-  hash256_t hashes[10];
-  uint32_t heights[10];
-  for (uint32_t i = 0; i < 10; i++) {
-    make_test_hash(&hashes[i], i + 100);
-    heights[i] = i + 100;
-  }
-  download_mgr_add_work(mgr, hashes, heights, 10);
-  download_mgr_peer_request_work(mgr, (peer_t *)&peer1);
-
-  /* Split from peer1 - returns ALL work and disconnects */
-  download_mgr_peer_split(mgr, (peer_t *)&peer1);
-
-  /* Peer should be disconnected */
-  if (ctx.disconnect_calls != 1) {
-    test_fail_uint("disconnect calls", 1, ctx.disconnect_calls);
-    download_mgr_destroy(mgr);
-    return;
-  }
-
-  /* ALL work should be back in queue (not half like old split_work) */
-  if (download_mgr_pending_count(mgr) != 10) {
-    test_fail_uint("pending after split", 10, download_mgr_pending_count(mgr));
+  /* Queue should still be empty */
+  if (download_mgr_pending_count(mgr) != 0) {
+    test_fail_uint("pending count", 0, download_mgr_pending_count(mgr));
     download_mgr_destroy(mgr);
     return;
   }
@@ -917,9 +878,8 @@ int main(void) {
   test_block_received();
   test_unexpected_block();
 
-  /* Starved/split tests */
-  test_peer_starved();
-  test_peer_split();
+  /* Empty queue tests (cooperative model) */
+  test_starved_peer_waits();
 
   /* Peer stats tests */
   test_get_peer_stats();

@@ -196,7 +196,6 @@ const char *chase_event_name(chase_event_t event) {
         [CHASE_ORGANIZED] = "organized",
         [CHASE_REORGANIZED] = "reorganized",
         [CHASE_STARVED] = "starved",
-        [CHASE_SPLIT] = "split",
         [CHASE_STALL] = "stall",
         [CHASE_PURGE] = "purge",
         [CHASE_REGRESSED] = "regressed",
