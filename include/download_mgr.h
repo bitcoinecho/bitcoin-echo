@@ -17,6 +17,7 @@
 #ifndef ECHO_DOWNLOAD_MGR_H
 #define ECHO_DOWNLOAD_MGR_H
 
+#include "echo_config.h"
 #include "echo_types.h"
 #include "peer.h"
 #include <stdbool.h>
@@ -36,8 +37,8 @@
 /* Maximum batches in the queue. */
 #define DOWNLOAD_MAX_BATCHES 200
 
-/* Maximum peers to track. */
-#define DOWNLOAD_MAX_PEERS 256
+/* Maximum peers to track (matches sync manager's outbound peer limit). */
+#define DOWNLOAD_MAX_PEERS ECHO_MAX_OUTBOUND_PEERS
 
 /* Performance measurement window in milliseconds (10 seconds).
  * Bytes received in this window are used to calculate bytes/sec.
