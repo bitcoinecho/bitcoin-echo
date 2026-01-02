@@ -21,48 +21,6 @@
 #define SEGWIT_FLAG 0x01
 
 /*
- * Helper: read a 32-bit little-endian value.
- */
-static uint32_t read_u32_le(const uint8_t *p) {
-  return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) |
-         ((uint32_t)p[3] << 24);
-}
-
-/*
- * Helper: read a 64-bit little-endian value.
- */
-static uint64_t read_u64_le(const uint8_t *p) {
-  return (uint64_t)p[0] | ((uint64_t)p[1] << 8) | ((uint64_t)p[2] << 16) |
-         ((uint64_t)p[3] << 24) | ((uint64_t)p[4] << 32) |
-         ((uint64_t)p[5] << 40) | ((uint64_t)p[6] << 48) |
-         ((uint64_t)p[7] << 56);
-}
-
-/*
- * Helper: write a 32-bit little-endian value.
- */
-static void write_u32_le(uint8_t *p, uint32_t v) {
-  p[0] = (uint8_t)(v & 0xFF);
-  p[1] = (uint8_t)((v >> 8) & 0xFF);
-  p[2] = (uint8_t)((v >> 16) & 0xFF);
-  p[3] = (uint8_t)((v >> 24) & 0xFF);
-}
-
-/*
- * Helper: write a 64-bit little-endian value.
- */
-static void write_u64_le(uint8_t *p, uint64_t v) {
-  p[0] = (uint8_t)(v & 0xFF);
-  p[1] = (uint8_t)((v >> 8) & 0xFF);
-  p[2] = (uint8_t)((v >> 16) & 0xFF);
-  p[3] = (uint8_t)((v >> 24) & 0xFF);
-  p[4] = (uint8_t)((v >> 32) & 0xFF);
-  p[5] = (uint8_t)((v >> 40) & 0xFF);
-  p[6] = (uint8_t)((v >> 48) & 0xFF);
-  p[7] = (uint8_t)((v >> 56) & 0xFF);
-}
-
-/*
  * Helper: free witness stack.
  */
 static void witness_stack_free(witness_stack_t *ws) {
@@ -176,7 +134,7 @@ static echo_result_t parse_inputs(const uint8_t *data, size_t data_len,
     if (*offset + 4 > data_len) {
       return ECHO_ERR_TRUNCATED;
     }
-    input->prevout.vout = read_u32_le(data + *offset);
+    input->prevout.vout = deserialize_u32_le(data + *offset);
     *offset += 4;
 
     /* ScriptSig length and data */
@@ -209,7 +167,7 @@ static echo_result_t parse_inputs(const uint8_t *data, size_t data_len,
     if (*offset + 4 > data_len) {
       return ECHO_ERR_TRUNCATED;
     }
-    input->sequence = read_u32_le(data + *offset);
+    input->sequence = deserialize_u32_le(data + *offset);
     *offset += 4;
   }
 
@@ -255,7 +213,7 @@ static echo_result_t parse_outputs(const uint8_t *data, size_t data_len,
     if (*offset + 8 > data_len) {
       return ECHO_ERR_TRUNCATED;
     }
-    output->value = (satoshi_t)read_u64_le(data + *offset);
+    output->value = (satoshi_t)deserialize_u64_le(data + *offset);
     *offset += 8;
 
     /* ScriptPubKey length and data */
@@ -369,7 +327,7 @@ echo_result_t tx_parse(const uint8_t *data, size_t data_len, tx_t *tx,
   if (data_len < 4) {
     return ECHO_ERR_TRUNCATED;
   }
-  tx->version = (int32_t)read_u32_le(data);
+  tx->version = (int32_t)deserialize_u32_le(data);
   offset = 4;
 
   /* Check for SegWit marker/flag */
@@ -420,7 +378,7 @@ echo_result_t tx_parse(const uint8_t *data, size_t data_len, tx_t *tx,
     tx_free(tx);
     return ECHO_ERR_TRUNCATED;
   }
-  tx->locktime = read_u32_le(data + offset);
+  tx->locktime = deserialize_u32_le(data + offset);
   offset += 4;
 
   if (consumed != NULL) {
@@ -523,7 +481,7 @@ echo_result_t tx_serialize(const tx_t *tx, echo_bool_t with_witness,
   has_witness = with_witness && tx->has_witness;
 
   /* Version */
-  write_u32_le(buf + offset, (uint32_t)tx->version);
+  serialize_u32_le(buf + offset, (uint32_t)tx->version);
   offset += 4;
 
   /* Marker and flag for SegWit */
@@ -548,7 +506,7 @@ echo_result_t tx_serialize(const tx_t *tx, echo_bool_t with_witness,
     offset += 32;
 
     /* Prevout vout */
-    write_u32_le(buf + offset, input->prevout.vout);
+    serialize_u32_le(buf + offset, input->prevout.vout);
     offset += 4;
 
     /* ScriptSig */
@@ -564,7 +522,7 @@ echo_result_t tx_serialize(const tx_t *tx, echo_bool_t with_witness,
     }
 
     /* Sequence */
-    write_u32_le(buf + offset, input->sequence);
+    serialize_u32_le(buf + offset, input->sequence);
     offset += 4;
   }
 
@@ -580,7 +538,7 @@ echo_result_t tx_serialize(const tx_t *tx, echo_bool_t with_witness,
     const tx_output_t *output = &tx->outputs[i];
 
     /* Value */
-    write_u64_le(buf + offset, (uint64_t)output->value);
+    serialize_u64_le(buf + offset, (uint64_t)output->value);
     offset += 8;
 
     /* ScriptPubKey */
@@ -623,7 +581,7 @@ echo_result_t tx_serialize(const tx_t *tx, echo_bool_t with_witness,
   }
 
   /* Locktime */
-  write_u32_le(buf + offset, tx->locktime);
+  serialize_u32_le(buf + offset, tx->locktime);
   offset += 4;
 
   if (written != NULL) {
