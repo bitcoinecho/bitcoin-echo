@@ -447,6 +447,79 @@ static void test_batch_lookup_not_found(void) {
 }
 
 /* ========================================================================
+ * Result String Tests
+ * ======================================================================== */
+
+static void test_result_string_ok(void) {
+  test_case("Result string for IBD_VALID_OK");
+
+  const char *str = ibd_valid_result_string(IBD_VALID_OK);
+  if (str == NULL) {
+    test_fail("result string is NULL");
+    return;
+  }
+
+  if (strcmp(str, "OK") != 0) {
+    test_fail("wrong string for OK");
+    return;
+  }
+
+  test_pass();
+}
+
+static void test_result_string_all_codes(void) {
+  test_case("Result strings for all error codes");
+
+  /* Each result code should have a non-NULL, non-empty string */
+  const ibd_valid_result_t codes[] = {
+      IBD_VALID_OK,           IBD_VALID_ERR_LOAD,        IBD_VALID_ERR_POW,
+      IBD_VALID_ERR_MERKLE,   IBD_VALID_ERR_STRUCTURE,   IBD_VALID_ERR_UTXO_MISSING,
+      IBD_VALID_ERR_UTXO_DOUBLE, IBD_VALID_ERR_VALUE,    IBD_VALID_ERR_SCRIPT,
+      IBD_VALID_ERR_COINBASE, IBD_VALID_ERR_MEMORY,      IBD_VALID_ERR_INTERNAL};
+  size_t num_codes = sizeof(codes) / sizeof(codes[0]);
+
+  for (size_t i = 0; i < num_codes; i++) {
+    const char *str = ibd_valid_result_string(codes[i]);
+    if (str == NULL) {
+      test_fail("result string is NULL for code");
+      return;
+    }
+    if (strlen(str) == 0) {
+      test_fail("result string is empty for code");
+      return;
+    }
+  }
+
+  test_pass();
+}
+
+static void test_result_string_unknown(void) {
+  test_case("Result string for unknown code");
+
+  /* Unknown code should return some fallback string, not NULL */
+  const char *str = ibd_valid_result_string((ibd_valid_result_t)9999);
+  if (str == NULL) {
+    test_fail("result string is NULL for unknown code");
+    return;
+  }
+
+  test_pass();
+}
+
+/* ========================================================================
+ * Validator Lifecycle Tests
+ * ======================================================================== */
+
+static void test_validator_destroy_null(void) {
+  test_case("Destroy NULL validator (no crash)");
+
+  /* Should not crash */
+  ibd_validator_destroy(NULL);
+
+  test_pass();
+}
+
+/* ========================================================================
  * Main Entry Point
  * ======================================================================== */
 
@@ -473,6 +546,14 @@ int main(void) {
   test_section("Lookup");
   test_batch_lookup_created();
   test_batch_lookup_not_found();
+
+  test_section("Result Strings");
+  test_result_string_ok();
+  test_result_string_all_codes();
+  test_result_string_unknown();
+
+  test_section("Validator Lifecycle");
+  test_validator_destroy_null();
 
   test_suite_end();
 

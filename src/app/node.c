@@ -1671,6 +1671,12 @@ static echo_result_t node_init_sync(node_t *node) {
     return ECHO_ERR_OUT_OF_MEMORY;
   }
 
+  /* Configure prune target for decoupled IBD storage pressure detection */
+  if (node->config.prune_target_mb > 0) {
+    uint64_t prune_target_bytes = node->config.prune_target_mb * 1024ULL * 1024ULL;
+    sync_set_prune_target(node->sync_mgr, prune_target_bytes);
+  }
+
   /* Initialize invalid block tracking */
   node->invalid_block_count = 0;
   node->invalid_block_write_idx = 0;

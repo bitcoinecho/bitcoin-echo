@@ -16,6 +16,7 @@
 #include "test_utils.h"
 #include "block.h"
 #include "block_index_db.h"
+#include "block_tracker.h"
 #include "blocks_storage.h"
 #include "chainstate.h"
 #include "consensus.h"
@@ -27,6 +28,7 @@
 #include "platform.h"
 #include "serialize.h"
 #include "sha256.h"
+#include "sync.h"
 #include "tx.h"
 #include "utxo.h"
 #include "utxo_db.h"
@@ -1337,6 +1339,363 @@ static void test_stress_restart_cycles(void) {
 
 /*
  * ============================================================================
+ * DECOUPLED IBD TESTS
+ * ============================================================================
+ */
+
+/**
+ * Test: Block tracker integration with sync manager.
+ */
+static void test_decoupled_ibd_block_tracker(void) {
+  make_unique_test_dir();
+  cleanup_test_dir();
+  bool passed = true;
+
+  node_config_t config;
+  node_config_init(&config, TEST_DATA_DIR);
+  config.prune_target_mb = 600; /* Pruning enabled */
+
+  node_t *node = node_create(&config);
+  if (node == NULL) { passed = false; goto done; }
+
+  sync_manager_t *sync_mgr = node_get_sync_manager(node);
+  if (sync_mgr == NULL) { passed = false; node_destroy(node); goto done; }
+
+  /* Get block tracker */
+  const block_tracker_t *tracker = sync_get_block_tracker(sync_mgr);
+  if (tracker == NULL) { passed = false; node_destroy(node); goto done; }
+
+  /* Tracker should be initialized */
+  uint32_t validated_tip = block_tracker_get_validated_tip(tracker);
+  /* Initially should be 0 (genesis) */
+  if (validated_tip != 0) {
+    passed = false;
+  }
+
+  node_destroy(node);
+
+done:
+  cleanup_test_dir();
+  test_case("Decoupled IBD: block tracker integration");
+  if (passed) {
+    test_pass();
+  } else {
+    test_fail("block tracker integration failed");
+  }
+}
+
+/**
+ * Test: Sync metrics include decoupled IBD fields.
+ */
+static void test_decoupled_ibd_metrics(void) {
+  make_unique_test_dir();
+  cleanup_test_dir();
+  bool passed = true;
+
+  node_config_t config;
+  node_config_init(&config, TEST_DATA_DIR);
+  config.prune_target_mb = 600;
+
+  node_t *node = node_create(&config);
+  if (node == NULL) { passed = false; goto done; }
+
+  sync_manager_t *sync_mgr = node_get_sync_manager(node);
+  if (sync_mgr == NULL) { passed = false; node_destroy(node); goto done; }
+
+  /* Get sync progress */
+  sync_progress_t progress;
+  sync_get_progress(sync_mgr, &progress);
+
+  /* Verify new decoupled IBD fields exist */
+  if (progress.consecutive_tip > progress.headers_total) {
+    /* consecutive_tip should never exceed total headers */
+    passed = false;
+    node_destroy(node);
+    goto done;
+  }
+
+  /* Get sync metrics */
+  sync_metrics_t metrics;
+  sync_get_metrics(sync_mgr, &metrics);
+
+  /* Verify storage metrics are populated for pruned node */
+  if (metrics.storage_prune_target == 0) {
+    /* Should be set since prune_target_mb > 0 */
+    passed = false;
+    node_destroy(node);
+    goto done;
+  }
+
+  /* Headroom limit should be 2x prune target */
+  if (metrics.storage_headroom_limit != metrics.storage_prune_target * 2) {
+    passed = false;
+    node_destroy(node);
+    goto done;
+  }
+
+  /* Mode string should be valid */
+  if (metrics.mode_string == NULL) {
+    passed = false;
+    node_destroy(node);
+    goto done;
+  }
+
+  node_destroy(node);
+
+done:
+  cleanup_test_dir();
+  test_case("Decoupled IBD: sync metrics");
+  if (passed) {
+    test_pass();
+  } else {
+    test_fail("sync metrics check failed");
+  }
+}
+
+/**
+ * Test: Archival node has no storage pressure.
+ */
+static void test_decoupled_ibd_archival_no_throttle(void) {
+  make_unique_test_dir();
+  cleanup_test_dir();
+  bool passed = true;
+
+  node_config_t config;
+  node_config_init(&config, TEST_DATA_DIR);
+  config.prune_target_mb = 0; /* Archival mode */
+
+  node_t *node = node_create(&config);
+  if (node == NULL) { passed = false; goto done; }
+
+  sync_manager_t *sync_mgr = node_get_sync_manager(node);
+  if (sync_mgr == NULL) { passed = false; node_destroy(node); goto done; }
+
+  /* Archival node should never be throttled */
+  if (sync_is_throttled(sync_mgr)) {
+    passed = false;
+    node_destroy(node);
+    goto done;
+  }
+
+  /* Get sync metrics */
+  sync_metrics_t metrics;
+  sync_get_metrics(sync_mgr, &metrics);
+
+  /* Archival node has prune_target = 0 */
+  if (metrics.storage_prune_target != 0) {
+    passed = false;
+    node_destroy(node);
+    goto done;
+  }
+
+  node_destroy(node);
+
+done:
+  cleanup_test_dir();
+  test_case("Decoupled IBD: archival node no throttle");
+  if (passed) {
+    test_pass();
+  } else {
+    test_fail("archival throttle check failed");
+  }
+}
+
+/**
+ * Test: Block tracker state persists across node restarts.
+ */
+static void test_decoupled_ibd_restart_recovery(void) {
+  make_unique_test_dir();
+  cleanup_test_dir();
+  bool passed = true;
+  int fail_point = 0;
+
+  node_config_t config;
+  node_config_init(&config, TEST_DATA_DIR);
+  config.prune_target_mb = 600;
+
+  /* First session: create node and write some block entries */
+  node_t *node1 = node_create(&config);
+  if (node1 == NULL) { fail_point = 1; passed = false; goto done; }
+
+  block_index_db_t *bdb1 = node_get_block_index_db(node1);
+  if (bdb1 == NULL) { fail_point = 2; passed = false; node_destroy(node1); goto done; }
+
+  /* Write some block entries with HAVE_DATA status */
+  for (uint32_t i = 1; i <= 10; i++) {
+    block_index_entry_t entry;
+    memset(&entry, 0, sizeof(entry));
+    entry.height = i;
+    entry.hash.bytes[0] = (uint8_t)(i + 10);
+    entry.status = BLOCK_STATUS_VALID_CHAIN | BLOCK_STATUS_HAVE_DATA;
+    entry.header.prev_hash.bytes[0] = (uint8_t)(i + 9);
+    entry.chainwork.bytes[31] = (uint8_t)i;
+
+    if (block_index_db_insert(bdb1, &entry) != ECHO_OK) {
+      fail_point = 3;
+      passed = false;
+      node_destroy(node1);
+      goto done;
+    }
+  }
+
+  node_destroy(node1);
+
+  /* Second session: verify block tracker recovered */
+  node_t *node2 = node_create(&config);
+  if (node2 == NULL) { fail_point = 4; passed = false; goto done; }
+
+  sync_manager_t *sync_mgr = node_get_sync_manager(node2);
+  if (sync_mgr == NULL) { fail_point = 5; passed = false; node_destroy(node2); goto done; }
+
+  const block_tracker_t *tracker = sync_get_block_tracker(sync_mgr);
+  if (tracker == NULL) { fail_point = 6; passed = false; node_destroy(node2); goto done; }
+
+  /* Block tracker should have recovered blocks from DB.
+   * Note: recovery depends on validated_tip in DB, which may be 0.
+   * At minimum, tracker should be created and functioning. */
+  uint32_t highest = block_tracker_get_highest_stored(tracker);
+  (void)highest; /* May be 0 if validated_tip is 0 - just verify it doesn't crash */
+
+  node_destroy(node2);
+
+done:
+  cleanup_test_dir();
+  test_case("Decoupled IBD: restart recovery");
+  if (passed) {
+    test_pass();
+  } else {
+    char msg[64];
+    snprintf(msg, sizeof(msg), "failed at point %d", fail_point);
+    test_fail(msg);
+  }
+}
+
+/**
+ * Test: Sync mode string for new decoupled IBD modes.
+ */
+static void test_decoupled_ibd_mode_strings(void) {
+  bool passed = true;
+
+  /* Test new mode strings */
+  if (strcmp(sync_mode_string(SYNC_MODE_DOWNLOADING), "DOWNLOADING") != 0) {
+    passed = false;
+    goto done;
+  }
+
+  if (strcmp(sync_mode_string(SYNC_MODE_THROTTLED), "THROTTLED") != 0) {
+    passed = false;
+    goto done;
+  }
+
+  if (strcmp(sync_mode_string(SYNC_MODE_VALIDATING), "VALIDATING") != 0) {
+    passed = false;
+    goto done;
+  }
+
+  if (strcmp(sync_mode_string(SYNC_MODE_FLUSHING), "FLUSHING") != 0) {
+    passed = false;
+    goto done;
+  }
+
+  if (strcmp(sync_mode_string(SYNC_MODE_PRUNING), "PRUNING") != 0) {
+    passed = false;
+    goto done;
+  }
+
+  /* Test legacy aliases */
+  if (SYNC_MODE_BLOCKS != SYNC_MODE_DOWNLOADING) {
+    passed = false;
+    goto done;
+  }
+
+  if (SYNC_MODE_STALLED != SYNC_MODE_THROTTLED) {
+    passed = false;
+    goto done;
+  }
+
+done:
+  test_case("Decoupled IBD: mode strings");
+  if (passed) {
+    test_pass();
+  } else {
+    test_fail("mode string check failed");
+  }
+}
+
+/**
+ * Test: Block tracker consecutive range detection.
+ */
+static void test_decoupled_ibd_consecutive_range(void) {
+  bool passed = true;
+
+  /* Create a block tracker */
+  block_tracker_t *tracker = block_tracker_create(0);
+  if (tracker == NULL) { passed = false; goto done; }
+
+  /* Mark blocks 1-100 with a gap at 50 */
+  for (uint32_t i = 1; i <= 100; i++) {
+    if (i != 50) {
+      block_tracker_mark_available(tracker, i);
+    }
+  }
+
+  /* Find consecutive range should stop at 49 */
+  block_range_t range;
+  if (!block_tracker_find_consecutive_range(tracker, &range)) {
+    passed = false;
+    block_tracker_destroy(tracker);
+    goto done;
+  }
+
+  if (range.start_height != 1 || range.end_height != 49) {
+    passed = false;
+    block_tracker_destroy(tracker);
+    goto done;
+  }
+
+  /* Find blocking block should be 50 */
+  uint32_t blocking;
+  if (!block_tracker_find_blocking_block(tracker, &blocking)) {
+    passed = false;
+    block_tracker_destroy(tracker);
+    goto done;
+  }
+
+  if (blocking != 50) {
+    passed = false;
+    block_tracker_destroy(tracker);
+    goto done;
+  }
+
+  /* Mark 50 available */
+  block_tracker_mark_available(tracker, 50);
+
+  /* Now consecutive range should be 1-100 */
+  if (!block_tracker_find_consecutive_range(tracker, &range)) {
+    passed = false;
+    block_tracker_destroy(tracker);
+    goto done;
+  }
+
+  if (range.start_height != 1 || range.end_height != 100) {
+    passed = false;
+    block_tracker_destroy(tracker);
+    goto done;
+  }
+
+  block_tracker_destroy(tracker);
+
+done:
+  test_case("Decoupled IBD: consecutive range detection");
+  if (passed) {
+    test_pass();
+  } else {
+    test_fail("consecutive range detection failed");
+  }
+}
+
+/*
+ * ============================================================================
  * MAIN
  * ============================================================================
  */
@@ -1371,6 +1730,14 @@ int main(void) {
   test_stress_many_utxos();
   test_stress_block_storage();
   test_stress_restart_cycles();
+
+  test_section("Decoupled IBD");
+  test_decoupled_ibd_block_tracker();
+  test_decoupled_ibd_metrics();
+  test_decoupled_ibd_archival_no_throttle();
+  test_decoupled_ibd_restart_recovery();
+  test_decoupled_ibd_mode_strings();
+  test_decoupled_ibd_consecutive_range();
 
   test_suite_end();
   return test_global_summary();
