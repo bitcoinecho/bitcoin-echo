@@ -29,6 +29,9 @@
 /* Forward declaration for chase event system */
 typedef struct chase_dispatcher chase_dispatcher_t;
 
+/* Forward declaration for block tracker (decoupled IBD) */
+typedef struct block_tracker block_tracker_t;
+
 /* ============================================================================
  * Constants
  * ============================================================================
@@ -63,6 +66,31 @@ typedef struct chase_dispatcher chase_dispatcher_t;
 
 /* Rolling window size for header peer response time tracking */
 #define SYNC_HEADER_RESPONSE_WINDOW 3
+
+/* ============================================================================
+ * Decoupled IBD Constants
+ * ============================================================================
+ */
+
+/**
+ * Prune headroom multiplier.
+ *
+ * Downloads can run ahead up to (prune_target * PRUNE_HEADROOM_MULTIPLIER)
+ * before throttling. This prevents head-of-line blocking from reappearing
+ * at the validate-then-prune step.
+ *
+ * Example: --prune=1024 (1GB target) -> headroom limit = 2GB
+ * At 2GB, downloads pause until validation+pruning frees space.
+ */
+#define PRUNE_HEADROOM_MULTIPLIER 2.0
+
+/**
+ * Storage check interval during IBD (milliseconds).
+ *
+ * How often to check storage pressure during DOWNLOADING mode.
+ * Too frequent = overhead, too infrequent = overshoot headroom.
+ */
+#define SYNC_STORAGE_CHECK_INTERVAL_MS 1000
 
 /* ============================================================================
  * Sync State
@@ -326,6 +354,22 @@ typedef struct {
    */
   void (*disconnect_peer)(peer_t *peer, const char *reason, void *ctx);
 
+  /**
+   * Get total block storage size in bytes (Phase 2+).
+   *
+   * Used for storage pressure detection in decoupled IBD.
+   * When storage exceeds prune_target, validation is triggered.
+   * When storage exceeds prune_target * PRUNE_HEADROOM_MULTIPLIER,
+   * downloads are throttled.
+   *
+   * Parameters:
+   *   ctx - User context
+   *
+   * Returns:
+   *   Total size of block files in bytes, or 0 if not available
+   */
+  uint64_t (*get_storage_size)(void *ctx);
+
   /* Context pointer passed to all callbacks */
   void *ctx;
 } sync_callbacks_t;
@@ -512,6 +556,45 @@ bool sync_is_complete(const sync_manager_t *mgr);
  *   true if actively downloading headers or blocks
  */
 bool sync_is_ibd(const sync_manager_t *mgr);
+
+/* ============================================================================
+ * Decoupled IBD Configuration (Phase 2+)
+ * ============================================================================
+ */
+
+/**
+ * Set the prune target for decoupled IBD.
+ *
+ * Called by node.c after creating the sync manager to configure
+ * storage pressure thresholds for the decoupled download/validation model.
+ *
+ * Parameters:
+ *   mgr               - The sync manager
+ *   prune_target_bytes - Prune target in bytes (0 = archival, no throttling)
+ */
+void sync_set_prune_target(sync_manager_t *mgr, uint64_t prune_target_bytes);
+
+/**
+ * Check if downloads are throttled due to storage pressure.
+ *
+ * Parameters:
+ *   mgr - The sync manager
+ *
+ * Returns:
+ *   true if downloads are paused, waiting for validation/pruning
+ */
+bool sync_is_throttled(const sync_manager_t *mgr);
+
+/**
+ * Get the block availability tracker (for diagnostics/RPC).
+ *
+ * Parameters:
+ *   mgr - The sync manager
+ *
+ * Returns:
+ *   Pointer to block tracker, or NULL if not initialized
+ */
+const block_tracker_t *sync_get_block_tracker(const sync_manager_t *mgr);
 
 /* ============================================================================
  * Block Locator

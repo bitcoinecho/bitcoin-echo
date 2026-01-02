@@ -12,6 +12,7 @@
 
 #include "sync.h"
 #include "block.h"
+#include "block_tracker.h"
 #include "chainstate.h"
 #include "chase.h"
 #include "download_mgr.h"
@@ -135,7 +136,31 @@ struct sync_manager {
 
   /* Subscription for receiving chase events */
   chase_subscription_t *subscription;
+
+  /* ============================================================================
+   * Decoupled IBD State (Phase 2+)
+   * ============================================================================
+   */
+
+  /* Block availability tracker - tracks which heights have blocks on disk */
+  block_tracker_t *tracker;
+
+  /* Throttle state - true when downloads are paused due to storage pressure */
+  bool is_throttled;
+
+  /* Storage pressure tracking */
+  uint64_t prune_target_bytes;      /* Prune target in bytes (0 = archival) */
+  uint64_t last_storage_check_time; /* When we last checked storage pressure */
 };
+
+/* ============================================================================
+ * Forward Declarations
+ * ============================================================================
+ */
+
+/* Storage pressure helpers (Phase 2+) - defined after sync_is_ibd */
+static bool should_trigger_validation(const sync_manager_t *mgr);
+static bool should_throttle_downloads(const sync_manager_t *mgr);
 
 /* ============================================================================
  * Download Manager Callback Wrappers
@@ -569,6 +594,17 @@ sync_manager_t *sync_create(chainstate_t *chainstate,
            mgr->best_header ? mgr->best_header->height : 0,
            chainstate_get_height(chainstate));
 
+  /* Initialize decoupled IBD state (Phase 2+) */
+  uint32_t validated_tip = chainstate_get_height(chainstate);
+  mgr->tracker = block_tracker_create(validated_tip);
+  if (!mgr->tracker) {
+    log_warn(LOG_COMP_SYNC, "Failed to create block tracker");
+    /* Non-fatal: continue with legacy validation path */
+  }
+  mgr->is_throttled = false;
+  mgr->prune_target_bytes = 0; /* Will be set by caller if pruning enabled */
+  mgr->last_storage_check_time = 0;
+
   return mgr;
 }
 
@@ -585,6 +621,12 @@ void sync_destroy(sync_manager_t *mgr) {
 
   download_mgr_destroy(mgr->download_mgr);
   free(mgr->pending_headers);
+
+  /* Destroy block tracker (Phase 2+) */
+  if (mgr->tracker) {
+    block_tracker_destroy(mgr->tracker);
+  }
+
   free(mgr);
 }
 
@@ -1123,7 +1165,23 @@ echo_result_t sync_handle_block(sync_manager_t *mgr, peer_t *peer,
     download_mgr_block_complete(mgr->download_mgr, &block_hash,
                                 block_index->height);
 
-    /* Notify chaser pipeline that block is ready for validation */
+    /* Mark block as available in tracker (Phase 2+).
+     * This is the foundation of decoupled IBD: we track which blocks are
+     * downloaded, and validation runs independently on consecutive ranges.
+     */
+    if (mgr->tracker) {
+      echo_result_t mark_result =
+          block_tracker_mark_available(mgr->tracker, block_index->height);
+      if (mark_result != ECHO_OK) {
+        log_warn(LOG_COMP_SYNC, "Failed to mark block %u as available: %d",
+                 block_index->height, mark_result);
+      }
+    }
+
+    /* Notify chaser pipeline that block is ready for validation.
+     * TODO (Phase 3): Remove this once decoupled validation is implemented.
+     * Validation will run on its own schedule based on storage pressure.
+     */
     if (mgr->dispatcher != NULL) {
       chase_notify_height(mgr->dispatcher, CHASE_CHECKED, block_index->height);
     }
@@ -1538,6 +1596,41 @@ void sync_tick(sync_manager_t *mgr) {
       }
     }
 
+    /* Storage pressure check (Phase 2+): For pruned nodes, check if we need
+     * to throttle downloads. This prevents disk from filling up while we
+     * wait for validation to catch up. */
+    if (now - mgr->last_storage_check_time >= SYNC_STORAGE_CHECK_INTERVAL_MS) {
+      mgr->last_storage_check_time = now;
+
+      if (should_throttle_downloads(mgr)) {
+        /* Storage at or above headroom limit - must pause downloads */
+        if (!mgr->is_throttled) {
+          log_warn(LOG_COMP_SYNC,
+                   "Storage pressure: throttling downloads (at %.0fx prune "
+                   "target)",
+                   PRUNE_HEADROOM_MULTIPLIER);
+          mgr->is_throttled = true;
+          mgr->mode = SYNC_MODE_THROTTLED;
+          /* Don't process further in this tick - let throttle mode handle it */
+          return;
+        }
+      } else if (should_trigger_validation(mgr)) {
+        /* Storage at or above prune target but below headroom - continue
+         * downloading but note that validation should be triggered soon.
+         * For now, just log. Phase 3 will handle transitioning to
+         * VALIDATING mode here. */
+        if (mgr->tracker) {
+          block_range_t range;
+          if (block_tracker_find_consecutive_range(mgr->tracker, &range)) {
+            log_debug(LOG_COMP_SYNC,
+                      "Storage pressure: %u consecutive blocks ready "
+                      "(heights %u-%u)",
+                      range.count, range.start_height, range.end_height);
+          }
+        }
+      }
+    }
+
     uint32_t our_best_height =
         mgr->best_header ? mgr->best_header->height : 0;
 
@@ -1809,6 +1902,79 @@ bool sync_is_complete(const sync_manager_t *mgr) {
 bool sync_is_ibd(const sync_manager_t *mgr) {
   return mgr && (mgr->mode == SYNC_MODE_HEADERS ||
                  mgr->mode == SYNC_MODE_BLOCKS);
+}
+
+/* ============================================================================
+ * Decoupled IBD Configuration (Phase 2+)
+ * ============================================================================
+ */
+
+void sync_set_prune_target(sync_manager_t *mgr, uint64_t prune_target_bytes) {
+  if (!mgr) {
+    return;
+  }
+  mgr->prune_target_bytes = prune_target_bytes;
+  log_info(LOG_COMP_SYNC, "Prune target set to %llu bytes (%.1f MB)",
+           (unsigned long long)prune_target_bytes,
+           (double)prune_target_bytes / (1024 * 1024));
+}
+
+bool sync_is_throttled(const sync_manager_t *mgr) {
+  return mgr && mgr->is_throttled;
+}
+
+const block_tracker_t *sync_get_block_tracker(const sync_manager_t *mgr) {
+  return mgr ? mgr->tracker : NULL;
+}
+
+/**
+ * Check if storage pressure should trigger validation.
+ *
+ * For pruned nodes: returns true when storage >= prune target.
+ * For archival nodes: returns false (validation triggered differently).
+ *
+ * Internal helper - not exported.
+ */
+static bool should_trigger_validation(const sync_manager_t *mgr) {
+  /* Archival nodes don't have storage pressure - validation triggered when all
+   * blocks downloaded */
+  if (mgr->prune_target_bytes == 0) {
+    return false;
+  }
+
+  /* No callback to check storage size - can't determine pressure */
+  if (!mgr->callbacks.get_storage_size) {
+    return false;
+  }
+
+  uint64_t current_usage = mgr->callbacks.get_storage_size(mgr->callbacks.ctx);
+  return current_usage >= mgr->prune_target_bytes;
+}
+
+/**
+ * Check if storage pressure should throttle downloads.
+ *
+ * Returns true when storage >= prune_target * PRUNE_HEADROOM_MULTIPLIER.
+ * At this point, we must stop downloading to avoid filling disk.
+ *
+ * Internal helper - not exported.
+ */
+static bool should_throttle_downloads(const sync_manager_t *mgr) {
+  /* Archival nodes don't throttle - no storage limit */
+  if (mgr->prune_target_bytes == 0) {
+    return false;
+  }
+
+  /* No callback to check storage size - can't determine pressure */
+  if (!mgr->callbacks.get_storage_size) {
+    return false;
+  }
+
+  uint64_t current_usage = mgr->callbacks.get_storage_size(mgr->callbacks.ctx);
+  uint64_t headroom_limit =
+      (uint64_t)(mgr->prune_target_bytes * PRUNE_HEADROOM_MULTIPLIER);
+
+  return current_usage >= headroom_limit;
 }
 
 /* ============================================================================

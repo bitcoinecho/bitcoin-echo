@@ -56,7 +56,7 @@
  * Thread safety: Not thread-safe. Caller must synchronize if used
  * from multiple threads.
  */
-typedef struct {
+typedef struct block_tracker {
   uint32_t validated_tip;    /* Last validated block height */
   uint32_t highest_stored;   /* Highest block height stored to disk */
   uint8_t *availability_map; /* Bitmap: 1 = have block, 0 = missing */
