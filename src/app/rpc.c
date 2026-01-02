@@ -2549,23 +2549,26 @@ static echo_result_t rpc_pruneblockchain(node_t *node, const json_value_t *param
 /**
  * RPC: getsyncstatus
  *
- * Returns detailed sync metrics including rate and ETA.
+ * Returns detailed sync metrics for the decoupled IBD architecture.
  * This is the "source of truth" for sync progress that the GUI should display.
  *
  * Response:
  * {
- *   "mode": "BLOCKS",
+ *   "mode": "DOWNLOADING",
  *   "blocks_validated": 180000,
+ *   "blocks_downloaded": 195000,
  *   "best_header_height": 875000,
- *   "tip_height": 180000,
- *   "blocks_pending": 695000,
- *   "blocks_in_flight": 512,
- *   "sync_percentage": 20.57,
- *   "download_rate": 120.5,
- *   "validation_rate": 48.5,
- *   "pending_validation": 5000,
+ *   "consecutive_tip": 185000,
+ *   "download_rate_bps": 45.5,
+ *   "validation_rate_bps": 120.0,
+ *   "storage_used_bytes": 1073741824,
+ *   "storage_prune_target": 1073741824,
+ *   "storage_headroom_limit": 2147483648,
+ *   "current_chunk_start": 180001,
+ *   "current_chunk_end": 185000,
  *   "eta_seconds": 14320,
- *   "network_median_latency_ms": 450,
+ *   "sync_percentage": 20.57,
+ *   "is_throttled": false,
  *   "active_sync_peers": 6,
  *   "total_peers": 8,
  *   "initialblockdownload": true
@@ -2605,47 +2608,53 @@ static echo_result_t rpc_getsyncstatus(node_t *node, const json_value_t *params,
   json_builder_append(builder, "\"mode\":");
   json_builder_string(builder, metrics.mode_string);
 
-  /* Block heights */
+  /* Block progress - decoupled IBD shows both downloaded and validated */
   json_builder_append(builder, ",\"blocks_validated\":");
   json_builder_uint(builder, progress.blocks_validated);
+
+  json_builder_append(builder, ",\"blocks_downloaded\":");
+  json_builder_uint(builder, progress.blocks_downloaded);
 
   json_builder_append(builder, ",\"best_header_height\":");
   json_builder_uint(builder, progress.best_header_height);
 
-  json_builder_append(builder, ",\"tip_height\":");
-  json_builder_uint(builder, progress.tip_height);
-
-  json_builder_append(builder, ",\"blocks_pending\":");
-  json_builder_uint(builder, progress.blocks_pending);
-
-  json_builder_append(builder, ",\"blocks_in_flight\":");
-  json_builder_uint(builder, (uint64_t)progress.blocks_in_flight);
+  json_builder_append(builder, ",\"consecutive_tip\":");
+  json_builder_uint(builder, progress.consecutive_tip);
 
   /* Sync percentage */
   json_builder_append(builder, ",\"sync_percentage\":");
   json_builder_number(builder, progress.sync_percentage);
 
-  /* Performance metrics from node (source of truth)
-   * KEY INSIGHT: download_rate and validation_rate are DIFFERENT:
-   * - download_rate: blocks arriving from network (any order)
-   * - validation_rate: blocks added to chain (strict order)
-   * When validation_rate << download_rate, we have head-of-line blocking.
-   */
-  json_builder_append(builder, ",\"download_rate\":");
-  json_builder_number(builder, metrics.download_rate);
+  /* Performance rates (blocks per second) */
+  json_builder_append(builder, ",\"download_rate_bps\":");
+  json_builder_number(builder, metrics.download_rate_bps);
 
-  json_builder_append(builder, ",\"validation_rate\":");
-  json_builder_number(builder, metrics.validation_rate);
-
-  json_builder_append(builder, ",\"pending_validation\":");
-  json_builder_uint(builder, metrics.pending_validation);
+  json_builder_append(builder, ",\"validation_rate_bps\":");
+  json_builder_number(builder, metrics.validation_rate_bps);
 
   json_builder_append(builder, ",\"eta_seconds\":");
   json_builder_uint(builder, metrics.eta_seconds);
 
-  /* Network baseline for diagnostics */
-  json_builder_append(builder, ",\"network_median_latency_ms\":");
-  json_builder_uint(builder, metrics.network_median_latency);
+  /* Storage metrics (for pruned nodes) */
+  json_builder_append(builder, ",\"storage_used_bytes\":");
+  json_builder_uint(builder, metrics.storage_used_bytes);
+
+  json_builder_append(builder, ",\"storage_prune_target\":");
+  json_builder_uint(builder, metrics.storage_prune_target);
+
+  json_builder_append(builder, ",\"storage_headroom_limit\":");
+  json_builder_uint(builder, metrics.storage_headroom_limit);
+
+  /* Validation chunk info (when actively validating) */
+  json_builder_append(builder, ",\"current_chunk_start\":");
+  json_builder_uint(builder, metrics.current_chunk_start);
+
+  json_builder_append(builder, ",\"current_chunk_end\":");
+  json_builder_uint(builder, metrics.current_chunk_end);
+
+  /* Throttle state */
+  json_builder_append(builder, ",\"is_throttled\":");
+  json_builder_bool(builder, metrics.is_throttled);
 
   /* Peer info */
   json_builder_append(builder, ",\"active_sync_peers\":");

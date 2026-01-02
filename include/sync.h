@@ -385,6 +385,11 @@ typedef struct {
 
 /**
  * Sync progress information
+ *
+ * With decoupled IBD, downloads and validation are separate:
+ * - blocks_downloaded: blocks received from network (any order)
+ * - blocks_validated: blocks with UTXO changes applied (strict order)
+ * - consecutive_tip: highest consecutive block we have on disk
  */
 typedef struct {
   sync_mode_t mode; /* Current sync mode */
@@ -393,14 +398,13 @@ typedef struct {
   uint32_t headers_total;     /* Total headers known */
   uint32_t headers_validated; /* Headers with PoW validated */
 
-  /* Block sync progress */
-  uint32_t blocks_downloaded; /* Full blocks downloaded */
+  /* Block sync progress (decoupled IBD) */
+  uint32_t blocks_downloaded; /* Full blocks downloaded (any order) */
   uint32_t blocks_validated;  /* Blocks fully validated and applied */
-  uint32_t blocks_pending;    /* Blocks awaiting download */
+  uint32_t consecutive_tip;   /* Highest consecutive block on disk */
 
   /* Network state */
   size_t sync_peers;       /* Number of peers syncing with */
-  size_t blocks_in_flight; /* Currently downloading */
 
   /* Chain info */
   uint32_t tip_height;         /* Current validated tip height */
@@ -687,20 +691,33 @@ uint64_t sync_estimate_remaining_time(const sync_progress_t *progress);
  * These are the "source of truth" metrics the GUI should display.
  *
  * KEY INSIGHT: Download and validation rates are DIFFERENT:
- * - download_rate: Blocks received from network (any order)
- * - validation_rate: Blocks added to chain (strict order)
+ * - download_rate_bps: Blocks received from network (any order)
+ * - validation_rate_bps: Blocks added to chain (strict order)
  *
- * When validation_rate << download_rate, we have head-of-line blocking.
- * pending_validation shows the gap (blocks downloaded but waiting).
+ * With decoupled IBD, downloads can race far ahead of validation.
+ * The gap is (blocks_downloaded - blocks_validated) from sync_progress_t.
  */
 typedef struct {
-  float download_rate;              /* Blocks downloaded per second */
-  float validation_rate;            /* Blocks validated per second */
-  uint32_t pending_validation;      /* Downloaded but not yet validated */
-  uint64_t eta_seconds;             /* Estimated time remaining */
-  uint64_t network_median_latency;  /* Network baseline latency (ms) */
-  uint32_t active_sync_peers;       /* Peers actively contributing blocks */
-  const char *mode_string;          /* Human-readable sync mode */
+  /* Performance rates */
+  float download_rate_bps;    /* Blocks downloaded per second */
+  float validation_rate_bps;  /* Blocks validated per second */
+  uint64_t eta_seconds;       /* Estimated time remaining */
+
+  /* Storage metrics (for pruned nodes) */
+  uint64_t storage_used_bytes;      /* Current block storage usage */
+  uint64_t storage_prune_target;    /* Prune target in bytes (0 = archival) */
+  uint64_t storage_headroom_limit;  /* Downloads throttle at this level */
+
+  /* Validation chunk info (when validating) */
+  uint32_t current_chunk_start;  /* Start height of validation chunk (0 if not validating) */
+  uint32_t current_chunk_end;    /* End height of validation chunk (0 if not validating) */
+
+  /* Network state */
+  uint32_t active_sync_peers;    /* Peers actively contributing blocks */
+  bool is_throttled;             /* Are downloads paused due to storage pressure? */
+
+  /* Mode string */
+  const char *mode_string;       /* Human-readable sync mode */
 } sync_metrics_t;
 
 /**

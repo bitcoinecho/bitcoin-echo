@@ -1531,11 +1531,11 @@ void sync_tick(sync_manager_t *mgr) {
 
       log_info(LOG_COMP_SYNC,
                "[IBD] height=%u/%u (%.1f%%) | %.1f blk/s | "
-               "pending=%zu inflight=%zu | ETA=%uh%02um | peers=%zu",
+               "downloaded=%u consecutive=%u | ETA=%uh%02um | peers=%zu",
                progress.tip_height, progress.best_header_height,
                progress.sync_percentage, blocks_per_sec,
-               (size_t)progress.blocks_pending,
-               (size_t)progress.blocks_in_flight, eta_hours, eta_mins,
+               progress.blocks_downloaded,
+               progress.consecutive_tip, eta_hours, eta_mins,
                mgr->peer_count);
     }
 
@@ -1857,12 +1857,8 @@ void sync_get_progress(const sync_manager_t *mgr, sync_progress_t *progress) {
   progress->headers_total = (uint32_t)block_index_map_size(index_map);
   progress->headers_validated = progress->headers_total;
 
-  /* Block progress */
+  /* Block download count - total blocks received from network (any order) */
   progress->blocks_downloaded = mgr->blocks_received_total;
-  progress->blocks_pending =
-      (uint32_t)download_mgr_pending_count(mgr->download_mgr);
-  progress->blocks_in_flight =
-      (uint32_t)download_mgr_inflight_count(mgr->download_mgr);
 
   /* Network state */
   progress->sync_peers = count_sync_peers(mgr);
@@ -1874,16 +1870,26 @@ void sync_get_progress(const sync_manager_t *mgr, sync_progress_t *progress) {
     progress->tip_work = tip.chainwork;
   }
 
-  /* Calculate blocks validated this session (tip - start height) */
-  if (progress->tip_height > mgr->block_sync_start_height) {
-    progress->blocks_validated = progress->tip_height - mgr->block_sync_start_height;
-  } else {
-    progress->blocks_validated = 0;
-  }
+  /* blocks_validated = validated tip height (absolute, not relative to session) */
+  progress->blocks_validated = progress->tip_height;
 
   if (mgr->best_header) {
     progress->best_header_height = mgr->best_header->height;
     progress->best_header_work = mgr->best_header->chainwork;
+  }
+
+  /* consecutive_tip: highest consecutive block on disk from block_tracker.
+   * This is the "blocking block - 1" height. */
+  if (mgr->tracker != NULL) {
+    block_range_t range;
+    if (block_tracker_find_consecutive_range(mgr->tracker, &range)) {
+      progress->consecutive_tip = range.end_height;
+    } else {
+      /* No consecutive range above validated tip = validated tip IS consecutive tip */
+      progress->consecutive_tip = progress->tip_height;
+    }
+  } else {
+    progress->consecutive_tip = progress->tip_height;
   }
 
   /* Calculate percentage */
@@ -2128,13 +2134,11 @@ const char *sync_mode_string(sync_mode_t mode) {
   case SYNC_MODE_HEADERS:
     return "HEADERS";
   case SYNC_MODE_DOWNLOADING:
-    /* Note: SYNC_MODE_BLOCKS is an alias for DOWNLOADING.
-     * Keep returning "BLOCKS" for GUI backwards compatibility. */
-    return "BLOCKS";
+    /* Decoupled IBD: actively downloading blocks to disk */
+    return "DOWNLOADING";
   case SYNC_MODE_THROTTLED:
-    /* Note: SYNC_MODE_STALLED is an alias for THROTTLED.
-     * Keep returning "STALLED" for GUI backwards compatibility. */
-    return "STALLED";
+    /* Decoupled IBD: downloads paused, waiting for validation */
+    return "THROTTLED";
   case SYNC_MODE_VALIDATING:
     return "VALIDATING";
   case SYNC_MODE_FLUSHING:
@@ -2179,12 +2183,7 @@ void sync_get_metrics(sync_manager_t *mgr, sync_metrics_t *metrics) {
   }
 
   /* Initialize with defaults */
-  metrics->download_rate = 0.0f;
-  metrics->validation_rate = 0.0f;
-  metrics->pending_validation = 0;
-  metrics->eta_seconds = 0;
-  metrics->network_median_latency = 0;
-  metrics->active_sync_peers = 0;
+  memset(metrics, 0, sizeof(sync_metrics_t));
   metrics->mode_string = "idle";
 
   if (!mgr) {
@@ -2200,7 +2199,7 @@ void sync_get_metrics(sync_manager_t *mgr, sync_metrics_t *metrics) {
 
   /* VALIDATION RATE: Blocks added to chain per second (strict order)
    * This is the rate we can advance the chainstate tip. */
-  metrics->validation_rate = calc_blocks_per_second(mgr);
+  metrics->validation_rate_bps = calc_blocks_per_second(mgr);
 
   /* DOWNLOAD RATE: Blocks received from network per second (any order)
    * This shows how fast we're getting data, regardless of ordering. */
@@ -2208,35 +2207,39 @@ void sync_get_metrics(sync_manager_t *mgr, sync_metrics_t *metrics) {
     uint64_t now = plat_time_ms();
     uint64_t elapsed_ms = now - mgr->block_sync_start_time;
     if (elapsed_ms > 0) {
-      metrics->download_rate =
+      metrics->download_rate_bps =
           (float)mgr->blocks_received_total * 1000.0f / (float)elapsed_ms;
     }
   }
 
-  /* PENDING VALIDATION: Downloaded blocks waiting for their turn.
-   * This is the gap between download and validation.
-   * High value = head-of-line blocking (we have blocks but can't use them).
-   * This is blocks_received_total minus blocks_validated. */
-  uint32_t validated_height = chainstate_get_height(mgr->chainstate);
-  uint32_t validated_this_session = 0;
-  if (validated_height > mgr->block_sync_start_height) {
-    validated_this_session = validated_height - mgr->block_sync_start_height;
-  }
-  if (mgr->blocks_received_total > validated_this_session) {
-    metrics->pending_validation =
-        mgr->blocks_received_total - validated_this_session;
-  }
-
   /* ETA in seconds (based on validation rate - the true sync bottleneck).
    * Downloads may race ahead, but validation determines actual sync progress. */
-  if (metrics->validation_rate > 0 &&
+  if (metrics->validation_rate_bps > 0 &&
       progress.best_header_height > progress.tip_height) {
     uint32_t remaining = progress.best_header_height - progress.tip_height;
-    metrics->eta_seconds = (uint64_t)(remaining / metrics->validation_rate);
+    metrics->eta_seconds = (uint64_t)(remaining / metrics->validation_rate_bps);
   }
 
-  /* Network median latency from peer quality system */
-  metrics->network_median_latency = mgr->network_median_latency_ms;
+  /* Storage metrics for pruned nodes */
+  metrics->storage_prune_target = mgr->prune_target_bytes;
+  if (mgr->prune_target_bytes > 0) {
+    metrics->storage_headroom_limit =
+        (uint64_t)(mgr->prune_target_bytes * PRUNE_HEADROOM_MULTIPLIER);
+  }
+
+  /* Get current storage usage if callback available */
+  if (mgr->callbacks.get_storage_size) {
+    metrics->storage_used_bytes = mgr->callbacks.get_storage_size(mgr->callbacks.ctx);
+  }
+
+  /* Validation chunk info (when actively validating) */
+  if (mgr->ibd_validator != NULL) {
+    metrics->current_chunk_start = mgr->validation_start_height;
+    metrics->current_chunk_end = mgr->validation_end_height;
+  }
+
+  /* Throttle state */
+  metrics->is_throttled = mgr->is_throttled;
 
   /* Count active sync peers (those with blocks received) */
   uint32_t active = 0;
