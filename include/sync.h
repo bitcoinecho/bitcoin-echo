@@ -70,14 +70,35 @@ typedef struct chase_dispatcher chase_dispatcher_t;
  */
 
 /**
- * Sync mode (simplified for IBD rewrite - no ping contest)
+ * Sync mode - Decoupled IBD architecture
+ *
+ * The key insight: downloads and validation are DECOUPLED.
+ * Blocks are downloaded out of order and stored to disk.
+ * Validation runs independently on consecutive ranges.
+ *
+ * State machine flow:
+ *   IDLE -> HEADERS -> DOWNLOADING <-> THROTTLED
+ *                          |              |
+ *                          v              v
+ *                      VALIDATING -> FLUSHING -> PRUNING -> DOWNLOADING
+ *                                                              |
+ *                                                              v
+ *                                                            DONE
  */
 typedef enum {
-  SYNC_MODE_IDLE,    /* Not syncing */
-  SYNC_MODE_HEADERS, /* Downloading headers */
-  SYNC_MODE_BLOCKS,  /* Downloading and validating blocks */
-  SYNC_MODE_DONE,    /* Sync complete, in steady state */
-  SYNC_MODE_STALLED  /* Sync stalled (no progress) */
+  SYNC_MODE_IDLE,        /* Not syncing */
+  SYNC_MODE_HEADERS,     /* Downloading headers */
+  SYNC_MODE_DOWNLOADING, /* Downloading blocks to disk (no validation) */
+  SYNC_MODE_THROTTLED,   /* Downloads paused, waiting for validation */
+  SYNC_MODE_VALIDATING,  /* Validating consecutive block chunk */
+  SYNC_MODE_FLUSHING,    /* Flushing UTXO batch to database */
+  SYNC_MODE_PRUNING,     /* Pruning validated blocks from disk */
+  SYNC_MODE_DONE,        /* Sync complete, in steady state */
+
+  /* Legacy aliases for backwards compatibility during transition.
+   * TODO: Remove these once Phase 2-4 refactoring is complete. */
+  SYNC_MODE_BLOCKS = SYNC_MODE_DOWNLOADING, /* Deprecated: use DOWNLOADING */
+  SYNC_MODE_STALLED = SYNC_MODE_THROTTLED   /* Deprecated: use THROTTLED */
 } sync_mode_t;
 
 /**
