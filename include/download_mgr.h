@@ -27,14 +27,28 @@
  * ============================================================================
  */
 
-/* Batch size: 8 blocks per peer. */
-#define DOWNLOAD_BATCH_SIZE 8
+/* Batch size: 64 blocks per peer.
+ *
+ * With decoupled IBD (download-then-validate), we can use larger batches
+ * without risking head-of-line blocking. Larger batches reduce per-request
+ * overhead and improve throughput.
+ *
+ * Previously 8 blocks, increased 8x for decoupled architecture.
+ */
+#define DOWNLOAD_BATCH_SIZE 64
 
 /* Maximum batch size (for array allocation) */
-#define DOWNLOAD_BATCH_SIZE_MAX 8
+#define DOWNLOAD_BATCH_SIZE_MAX 64
 
-/* Maximum batches in the queue. */
-#define DOWNLOAD_MAX_BATCHES 200
+/* Maximum batches in the queue.
+ *
+ * With 64-block batches and 8 outbound peers:
+ *   100 batches × 64 blocks = 6,400 blocks in flight
+ *
+ * This is sufficient to keep the download pipeline full while preventing
+ * excessive memory usage. Previously 200 batches with 8-block batches.
+ */
+#define DOWNLOAD_MAX_BATCHES 100
 
 /* Maximum peers to track (matches sync manager's outbound peer limit). */
 #define DOWNLOAD_MAX_PEERS ECHO_MAX_OUTBOUND_PEERS

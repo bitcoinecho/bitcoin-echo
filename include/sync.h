@@ -43,15 +43,6 @@ typedef struct block_tracker block_tracker_t;
 /* Timeout for getheaders response (30 seconds) */
 #define SYNC_HEADERS_TIMEOUT_MS 30000
 
-/* Initial block stalling timeout (2 seconds) - matches Bitcoin Core */
-#define SYNC_BLOCK_STALLING_TIMEOUT_MS 2000
-
-/* Maximum block stalling timeout (64 seconds) - matches Bitcoin Core */
-#define SYNC_BLOCK_STALLING_TIMEOUT_MAX_MS 64000
-
-/* Timeout decay factor when blocks connect successfully (0.85) */
-#define SYNC_STALLING_TIMEOUT_DECAY 0.85
-
 /* Minimum time between header sync attempts with same peer (5 seconds) */
 #define SYNC_HEADER_RETRY_INTERVAL_MS 5000
 
@@ -88,6 +79,18 @@ typedef struct block_tracker block_tracker_t;
  * Too frequent = overhead, too infrequent = overshoot headroom.
  */
 #define SYNC_STORAGE_CHECK_INTERVAL_MS 1000
+
+/**
+ * Validation flush interval for archival nodes (block count).
+ *
+ * For archival (non-pruning) nodes, flush UTXO changes to database every
+ * N validated blocks. This bounds memory usage and provides restart recovery
+ * points during long IBD sessions.
+ *
+ * Pruned nodes flush when storage pressure triggers, so this constant only
+ * applies to archival mode.
+ */
+#define VALIDATION_FLUSH_INTERVAL 10000
 
 /* ============================================================================
  * Sync State
