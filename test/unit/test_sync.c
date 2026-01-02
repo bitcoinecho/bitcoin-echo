@@ -173,7 +173,7 @@ static void test_sync_create(void) {
       .ctx = &tctx,
   };
 
-  sync_manager_t *mgr = sync_create(chainstate, &callbacks, NULL);
+  sync_manager_t *mgr = sync_create(chainstate, &callbacks);
   if (!mgr) {
     chainstate_destroy(chainstate);
     test_fail("Assertion failed");
@@ -192,12 +192,12 @@ static void test_sync_create_null_params(void) {
       .ctx = &tctx,
   };
 
-  if (sync_create(NULL, &callbacks, NULL) != NULL) {
+  if (sync_create(NULL, &callbacks) != NULL) {
 
   }
 
   chainstate_t *chainstate = chainstate_create();
-  if (sync_create(chainstate, NULL, NULL) != NULL) {
+  if (sync_create(chainstate, NULL) != NULL) {
     chainstate_destroy(chainstate);
     test_fail("Assertion failed");
     return;
@@ -212,7 +212,7 @@ static void test_sync_add_remove_peer(void) {
   test_ctx_t tctx = {0};
   sync_callbacks_t callbacks = {.ctx = &tctx};
 
-  sync_manager_t *mgr = sync_create(chainstate, &callbacks, NULL);
+  sync_manager_t *mgr = sync_create(chainstate, &callbacks);
   peer_t *peer1 = create_test_peer("192.168.1.1", 8333, 100000);
   peer_t *peer2 = create_test_peer("192.168.1.2", 8333, 200000);
 
@@ -253,7 +253,7 @@ static void test_sync_start(void) {
   test_ctx_t tctx = {0};
   sync_callbacks_t callbacks = {.ctx = &tctx};
 
-  sync_manager_t *mgr = sync_create(chainstate, &callbacks, NULL);
+  sync_manager_t *mgr = sync_create(chainstate, &callbacks);
   peer_t *peer = create_test_peer("192.168.1.1", 8333, 100000);
   sync_add_peer(mgr, peer, 100000);
 
@@ -285,7 +285,7 @@ static void test_sync_start_no_peers(void) {
   test_ctx_t tctx = {0};
   sync_callbacks_t callbacks = {.ctx = &tctx};
 
-  sync_manager_t *mgr = sync_create(chainstate, &callbacks, NULL);
+  sync_manager_t *mgr = sync_create(chainstate, &callbacks);
 
   /* Should fail with no peers */
   echo_result_t result = sync_start(mgr);
@@ -306,7 +306,7 @@ static void test_sync_stop(void) {
   test_ctx_t tctx = {0};
   sync_callbacks_t callbacks = {.ctx = &tctx};
 
-  sync_manager_t *mgr = sync_create(chainstate, &callbacks, NULL);
+  sync_manager_t *mgr = sync_create(chainstate, &callbacks);
   peer_t *peer = create_test_peer("192.168.1.1", 8333, 100000);
   sync_add_peer(mgr, peer, 100000);
 
@@ -332,7 +332,7 @@ static void test_sync_is_complete(void) {
   test_ctx_t tctx = {0};
   sync_callbacks_t callbacks = {.ctx = &tctx};
 
-  sync_manager_t *mgr = sync_create(chainstate, &callbacks, NULL);
+  sync_manager_t *mgr = sync_create(chainstate, &callbacks);
 
   /* Initially not complete */
   if (sync_is_complete(mgr)) {
@@ -352,7 +352,7 @@ static void test_sync_get_progress(void) {
   test_ctx_t tctx = {0};
   sync_callbacks_t callbacks = {.ctx = &tctx};
 
-  sync_manager_t *mgr = sync_create(chainstate, &callbacks, NULL);
+  sync_manager_t *mgr = sync_create(chainstate, &callbacks);
   peer_t *peer = create_test_peer("192.168.1.1", 8333, 100000);
   sync_add_peer(mgr, peer, 100000);
 
@@ -624,7 +624,7 @@ static void test_sync_handle_headers_empty(void) {
       .ctx = &tctx,
   };
 
-  sync_manager_t *mgr = sync_create(chainstate, &callbacks, NULL);
+  sync_manager_t *mgr = sync_create(chainstate, &callbacks);
   peer_t *peer = create_test_peer("192.168.1.1", 8333, 100000);
   sync_add_peer(mgr, peer, 100000);
 
@@ -649,7 +649,7 @@ static void test_sync_handle_headers_unknown_peer(void) {
   test_ctx_t tctx = {0};
   sync_callbacks_t callbacks = {.ctx = &tctx};
 
-  sync_manager_t *mgr = sync_create(chainstate, &callbacks, NULL);
+  sync_manager_t *mgr = sync_create(chainstate, &callbacks);
   peer_t *peer = create_test_peer("192.168.1.1", 8333, 100000);
   /* Don't add peer */
 
@@ -681,7 +681,7 @@ static void test_sync_handle_block_unknown_peer(void) {
   test_ctx_t tctx = {0};
   sync_callbacks_t callbacks = {.ctx = &tctx};
 
-  sync_manager_t *mgr = sync_create(chainstate, &callbacks, NULL);
+  sync_manager_t *mgr = sync_create(chainstate, &callbacks);
   peer_t *peer = create_test_peer("192.168.1.1", 8333, 100000);
   /* Don't add peer */
 
@@ -714,7 +714,7 @@ static void test_sync_tick_idle(void) {
   test_ctx_t tctx = {0};
   sync_callbacks_t callbacks = {.ctx = &tctx};
 
-  sync_manager_t *mgr = sync_create(chainstate, &callbacks, NULL);
+  sync_manager_t *mgr = sync_create(chainstate, &callbacks);
 
   /* Tick should not crash when idle */
   sync_tick(mgr);
@@ -729,7 +729,7 @@ static void test_sync_tick_headers_mode(void) {
   test_ctx_t tctx = {0};
   sync_callbacks_t callbacks = {.ctx = &tctx};
 
-  sync_manager_t *mgr = sync_create(chainstate, &callbacks, NULL);
+  sync_manager_t *mgr = sync_create(chainstate, &callbacks);
   peer_t *peer = create_test_peer("192.168.1.1", 8333, 100000);
   sync_add_peer(mgr, peer, 100000);
   sync_start(mgr);
@@ -758,7 +758,7 @@ static void test_sync_process_timeouts(void) {
   test_ctx_t tctx = {0};
   sync_callbacks_t callbacks = {.ctx = &tctx};
 
-  sync_manager_t *mgr = sync_create(chainstate, &callbacks, NULL);
+  sync_manager_t *mgr = sync_create(chainstate, &callbacks);
 
   /* Should not crash */
   sync_process_timeouts(mgr);
@@ -787,7 +787,7 @@ static void test_sync_send_getheaders_callback(void) {
       .ctx = &tctx,
   };
 
-  sync_manager_t *mgr = sync_create(chainstate, &callbacks, NULL);
+  sync_manager_t *mgr = sync_create(chainstate, &callbacks);
   peer_t *peer = create_test_peer("192.168.1.1", 8333, 100000);
   sync_add_peer(mgr, peer, 100000);
 
@@ -836,7 +836,7 @@ static void test_sync_send_getheaders_not_called_when_no_callback(void) {
       .ctx = &tctx,
   };
 
-  sync_manager_t *mgr = sync_create(chainstate, &callbacks, NULL);
+  sync_manager_t *mgr = sync_create(chainstate, &callbacks);
   peer_t *peer = create_test_peer("192.168.1.1", 8333, 100000);
   sync_add_peer(mgr, peer, 100000);
 
@@ -867,7 +867,7 @@ static void test_sync_callbacks_with_all_fields(void) {
       .ctx = &tctx,
   };
 
-  sync_manager_t *mgr = sync_create(chainstate, &callbacks, NULL);
+  sync_manager_t *mgr = sync_create(chainstate, &callbacks);
   if (!mgr) {
     chainstate_destroy(chainstate);
     test_fail("Failed to create sync manager with all callbacks");

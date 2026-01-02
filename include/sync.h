@@ -26,9 +26,6 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/* Forward declaration for chase event system */
-typedef struct chase_dispatcher chase_dispatcher_t;
-
 /* Forward declaration for block tracker (decoupled IBD) */
 typedef struct block_tracker block_tracker_t;
 
@@ -249,10 +246,8 @@ typedef struct {
   echo_result_t (*store_header)(const block_header_t *header,
                                 const block_index_t *index, void *ctx);
 
-  /* NOTE: validate_and_apply_block callback removed in Phase 3 IBD rewrite.
-   * Validation is now event-driven via chase system:
-   *   sync.c fires CHASE_CHECKED → chaser_validate → chaser_confirm
-   * Direct block processing uses node_validate_and_apply_block() instead.
+  /* NOTE: validate_and_apply_block callback removed.
+   * Validation is decoupled from download via block_tracker.
    */
 
   /**
@@ -427,15 +422,12 @@ typedef struct {
  * Parameters:
  *   chainstate - The chain state to sync
  *   callbacks  - Callback functions for storage/validation
- *   dispatcher - Chase event dispatcher for validation pipeline.
- *                Pass NULL to use legacy callback-based validation.
  *
  * Returns:
  *   Newly allocated sync manager, or NULL on failure
  */
 sync_manager_t *sync_create(chainstate_t *chainstate,
-                            const sync_callbacks_t *callbacks,
-                            chase_dispatcher_t *dispatcher);
+                            const sync_callbacks_t *callbacks);
 
 /**
  * Destroy sync manager and free resources.

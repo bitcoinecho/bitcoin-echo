@@ -15,7 +15,6 @@
 #include "block_index_db.h"
 #include "block_tracker.h"
 #include "chainstate.h"
-#include "chase.h"
 #include "download_mgr.h"
 #include "echo_config.h"
 #include "echo_types.h"
@@ -134,14 +133,8 @@ struct sync_manager {
   /* Performance-based download manager for peer throughput tracking */
   download_mgr_t *download_mgr;
 
-  /* Chase event dispatcher for chaser-based validation */
-  chase_dispatcher_t *dispatcher;
-
-  /* Subscription for receiving chase events */
-  chase_subscription_t *subscription;
-
   /* ============================================================================
-   * Decoupled IBD State (Phase 2+)
+   * Decoupled IBD State
    * ============================================================================
    */
 
@@ -207,57 +200,6 @@ static void dm_disconnect_peer(peer_t *peer, const char *reason, void *ctx) {
   if (mgr->callbacks.disconnect_peer != NULL) {
     mgr->callbacks.disconnect_peer(peer, reason, mgr->callbacks.ctx);
   }
-}
-
-/* ============================================================================
- * Chase Event Handler
- * ============================================================================
- */
-
-/**
- * Handle chase events for download coordination.
- *
- * Cooperative model: Idle peers request work when available.
- * Starved peers wait - we never steal work from active peers.
- */
-static bool sync_chase_handler(chase_event_t event, chase_value_t value,
-                               void *context) {
-  (void)value;
-
-  sync_manager_t *mgr = (sync_manager_t *)context;
-  if (!mgr) {
-    return false;
-  }
-
-  switch (event) {
-  case CHASE_STARVED: {
-    /* A downstream chaser needs more blocks.
-     * Find any idle peer and have them request work. If no work is
-     * available, they wait - we never steal from active peers. */
-    for (size_t i = 0; i < mgr->peer_count; i++) {
-      peer_sync_state_t *ps = &mgr->peers[i];
-      if (ps->sync_candidate && peer_is_ready(ps->peer)) {
-        if (download_mgr_peer_is_idle(mgr->download_mgr, ps->peer)) {
-          bool got_work = download_mgr_peer_request_work(mgr->download_mgr, ps->peer);
-          log_debug(LOG_COMP_SYNC, "CHASE_STARVED: peer %s requested work (got=%s)",
-                    ps->peer->address, got_work ? "yes" : "no");
-          break; /* One peer at a time */
-        }
-      }
-    }
-    break;
-  }
-
-  case CHASE_STOP:
-    /* Stop receiving events */
-    return false;
-
-  default:
-    /* Ignore other events */
-    break;
-  }
-
-  return true; /* Continue receiving events */
 }
 
 /* ============================================================================
@@ -545,8 +487,7 @@ static size_t count_sync_peers(const sync_manager_t *mgr) {
 }
 
 sync_manager_t *sync_create(chainstate_t *chainstate,
-                            const sync_callbacks_t *callbacks,
-                            chase_dispatcher_t *dispatcher) {
+                            const sync_callbacks_t *callbacks) {
   if (!chainstate || !callbacks) {
     return NULL;
   }
@@ -569,18 +510,7 @@ sync_manager_t *sync_create(chainstate_t *chainstate,
 
   mgr->chainstate = chainstate;
   mgr->callbacks = *callbacks;
-  mgr->dispatcher = dispatcher;
-  mgr->subscription = NULL;
   mgr->mode = SYNC_MODE_IDLE;
-
-  /* Subscribe to chase events for download coordination */
-  if (dispatcher != NULL) {
-    mgr->subscription =
-        chase_subscribe(dispatcher, sync_chase_handler, mgr);
-    if (mgr->subscription != NULL) {
-      log_debug(LOG_COMP_SYNC, "Subscribed to chase events");
-    }
-  }
   mgr->peer_count = 0;
 
   /* Initialize adaptive stalling timeout to 2 seconds */
@@ -664,16 +594,9 @@ void sync_destroy(sync_manager_t *mgr) {
     return;
   }
 
-  /* Unsubscribe from chase events */
-  if (mgr->subscription != NULL && mgr->dispatcher != NULL) {
-    chase_unsubscribe(mgr->dispatcher, mgr->subscription);
-    mgr->subscription = NULL;
-  }
-
   download_mgr_destroy(mgr->download_mgr);
   free(mgr->pending_headers);
 
-  /* Destroy block tracker (Phase 2+) */
   if (mgr->tracker) {
     block_tracker_destroy(mgr->tracker);
   }
@@ -1229,14 +1152,6 @@ echo_result_t sync_handle_block(sync_manager_t *mgr, peer_t *peer,
       }
     }
 
-    /* Notify chaser pipeline that block is ready for validation.
-     * TODO (Phase 3): Remove this once decoupled validation is implemented.
-     * Validation will run on its own schedule based on storage pressure.
-     */
-    if (mgr->dispatcher != NULL) {
-      chase_notify_height(mgr->dispatcher, CHASE_CHECKED, block_index->height);
-    }
-
     /* Check if peer is now idle (batch complete) and have them request more
      * work immediately. If no work available, they wait. */
     if (download_mgr_peer_is_idle(mgr->download_mgr, peer)) {
@@ -1440,11 +1355,6 @@ static void queue_blocks_from_headers(sync_manager_t *mgr) {
           to_queue_count++;
           if (h == start_height) {
             log_info(LOG_COMP_SYNC, "queue_blocks: queuing height %u", h);
-          }
-        } else {
-          /* Block already in storage - notify chaser to validate it */
-          if (mgr->dispatcher != NULL) {
-            chase_notify_height(mgr->dispatcher, CHASE_CHECKED, h);
           }
         }
         block_free(&stored);
@@ -1777,31 +1687,6 @@ void sync_tick(sync_manager_t *mgr) {
     if (total_queued < 8192) {
       /* Below 50% capacity - queue more work */
       queue_blocks_from_headers(mgr);
-    }
-
-    /*
-     * Periodically notify chasers about stored blocks that need validation.
-     * This handles blocks stored from previous sessions.
-     */
-    if (now - mgr->last_stored_block_check_time >= 100) {
-      mgr->last_stored_block_check_time = now;
-
-      if (mgr->dispatcher != NULL) {
-        /* Fire BUMP to trigger chasers to check for work */
-        chase_notify_height(mgr->dispatcher, CHASE_BUMP, 0);
-      }
-    }
-
-    /* Stall detection: Check if validation is stuck waiting for a slow peer.
-     * If so, steal their batch and give another peer a chance. */
-    {
-      uint32_t validated_height = chainstate_get_height(mgr->chainstate);
-      if (download_mgr_check_stall(mgr->download_mgr, validated_height)) {
-        /* Batch was stolen - bump chasers to retry validation */
-        if (mgr->dispatcher != NULL) {
-          chase_notify_height(mgr->dispatcher, CHASE_BUMP, 0);
-        }
-      }
     }
 
     /* PULL model: Have idle peers request work.

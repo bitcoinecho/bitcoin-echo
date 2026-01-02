@@ -6,7 +6,6 @@
  * - Work is organized as BATCHES, not individual items
  * - Peers PULL work when idle, coordinator doesn't push
  * - Starved peers WAIT for work (no sacrifice of slow peers)
- * - Sticky batches RACE blocking blocks to multiple peers
  * - Only truly stalled peers (0 B/s) are disconnected
  *
  * Build once. Build right. Stop.
@@ -55,14 +54,6 @@ struct download_mgr {
   /* Peer performance tracking */
   peer_perf_t peers[DOWNLOAD_MAX_PEERS];
   size_t peer_count;
-
-  /* Stall detection */
-  uint32_t last_validated_height;  /* Last reported validated height */
-  uint64_t last_progress_time;     /* When validation last progressed */
-
-  /* Adaptive stall timeout (Bitcoin Core style backoff) */
-  uint32_t stall_backoff_height;   /* Height we're stuck at */
-  uint32_t stall_backoff_count;    /* Times we've stolen at this height */
 };
 
 /* ============================================================================
@@ -82,26 +73,6 @@ static batch_node_t *batch_node_create(void) {
  * Free a batch node.
  */
 static void batch_node_destroy(batch_node_t *node) { free(node); }
-
-/**
- * Clone a batch node (for sticky batches).
- * Creates a new node with copied batch data but NOT sticky (the clone is normal).
- */
-static batch_node_t *batch_node_clone(const batch_node_t *src) {
-  batch_node_t *node = batch_node_create();
-  if (node == NULL) {
-    return NULL;
-  }
-  /* Copy batch data */
-  memcpy(&node->batch, &src->batch, sizeof(work_batch_t));
-  /* Clone is NOT sticky - only the original queue entry is sticky */
-  node->batch.sticky = false;
-  node->batch.sticky_height = 0;
-  /* Reset link pointers */
-  node->next = NULL;
-  node->prev = NULL;
-  return node;
-}
 
 /**
  * Get batch size for a given block height.
@@ -446,21 +417,8 @@ bool download_mgr_peer_request_work(download_mgr_t *mgr, peer_t *peer) {
     return false;
   }
 
-  batch_node_t *node;
-  bool is_sticky_clone = false;
-
-  if (mgr->queue_head->batch.sticky) {
-    /* Sticky batch: clone it, leave original in queue for other peers */
-    node = batch_node_clone(mgr->queue_head);
-    if (node == NULL) {
-      LOG_WARN("download_mgr: failed to clone sticky batch");
-      return false;
-    }
-    is_sticky_clone = true;
-  } else {
-    /* Normal batch: pop from queue */
-    node = queue_pop_front(mgr);
-  }
+  /* Pop batch from queue */
+  batch_node_t *node = queue_pop_front(mgr);
 
   /* Assign batch to peer */
   uint64_t now = plat_time_ms();
@@ -490,8 +448,7 @@ bool download_mgr_peer_request_work(download_mgr_t *mgr, peer_t *peer) {
 
   uint32_t batch_start = node->batch.heights[0];
   uint32_t batch_end = batch_start + (uint32_t)node->batch.count - 1;
-  LOG_INFO("download_mgr: assigned %sbatch [%u-%u] (%zu blocks) to peer",
-           is_sticky_clone ? "PRIORITY " : "",
+  LOG_INFO("download_mgr: assigned batch [%u-%u] (%zu blocks) to peer",
            batch_start, batch_end, node->batch.count);
   return true;
 }
@@ -564,276 +521,6 @@ bool download_mgr_peer_is_idle(const download_mgr_t *mgr, const peer_t *peer) {
 
   /* Idle if no batch OR batch is complete (all blocks received) */
   return perf->batch == NULL || perf->batch->remaining == 0;
-}
-
-/**
- * Find peer with the lowest-height batch (blocking validation).
- */
-static peer_perf_t *find_peer_with_lowest_batch(download_mgr_t *mgr) {
-  peer_perf_t *lowest = NULL;
-  uint32_t lowest_height = UINT32_MAX;
-
-  for (size_t i = 0; i < mgr->peer_count; i++) {
-    peer_perf_t *perf = &mgr->peers[i];
-    if (perf->peer == NULL || perf->batch == NULL ||
-        perf->batch->remaining == 0) {
-      continue;
-    }
-
-    /* Check the first (lowest) height in this batch */
-    uint32_t batch_height = perf->batch->heights[0];
-    if (batch_height < lowest_height) {
-      lowest_height = batch_height;
-      lowest = perf;
-    }
-  }
-
-  return lowest;
-}
-
-bool download_mgr_check_stall(download_mgr_t *mgr, uint32_t validated_height) {
-  if (mgr == NULL) {
-    return false;
-  }
-
-  uint64_t now = plat_time_ms();
-
-  /* Check if validation has made progress */
-  if (validated_height > mgr->last_validated_height) {
-    /* Progress! Reset stall timer and backoff */
-    mgr->last_validated_height = validated_height;
-    mgr->last_progress_time = now;
-    mgr->stall_backoff_count = 0;  /* Reset backoff on progress */
-
-    /* Remove any sticky batch whose blocking height has been validated.
-     * The sticky batch served its purpose - the blocking block arrived. */
-    if (mgr->queue_head != NULL && mgr->queue_head->batch.sticky &&
-        mgr->queue_head->batch.sticky_height <= validated_height) {
-      batch_node_t *resolved = queue_pop_front(mgr);
-      LOG_INFO("download_mgr: removed resolved sticky batch (blocking height %u "
-               "validated, current height %u)",
-               resolved->batch.sticky_height, validated_height);
-      batch_node_destroy(resolved);
-    }
-
-    return false;
-  }
-
-  /* No progress - check how long we've been stalled */
-  if (mgr->last_progress_time == 0) {
-    /* First call - initialize */
-    mgr->last_progress_time = now;
-    mgr->last_validated_height = validated_height;
-    return false;
-  }
-
-  uint64_t stall_duration = now - mgr->last_progress_time;
-
-  /* Adaptive stall timeout based on halving epoch.
-   *
-   * Early blocks are tiny and should arrive quickly, so use shorter timeouts.
-   * Later blocks are larger and need more time. Scale with halving epoch:
-   *   Epoch 0 (blocks 0-209,999):     1 second base
-   *   Epoch 1 (blocks 210,000-419,999): 2 seconds base
-   *   Epoch 2 (blocks 420,000-629,999): 3 seconds base
-   *   etc.
-   *
-   * This keeps momentum early in the chain while being patient later.
-   * The timeout doubles on each steal attempt (up to 64 seconds max).
-   * Timeout resets when validation makes progress.
-   */
-#define STALL_EPOCH_BLOCKS 210000    /* Blocks per halving epoch */
-#define STALL_MS_PER_EPOCH 1000      /* 1 second per epoch */
-#define STALL_MAX_TIMEOUT_MS 64000   /* 64 second max (matches Bitcoin Core) */
-
-  uint32_t epoch = validated_height / STALL_EPOCH_BLOCKS;
-  uint64_t base_timeout = (uint64_t)(epoch + 1) * STALL_MS_PER_EPOCH;
-  uint64_t stall_timeout = base_timeout;
-  for (uint32_t i = 0; i < mgr->stall_backoff_count && stall_timeout < STALL_MAX_TIMEOUT_MS; i++) {
-    stall_timeout *= 2;
-  }
-  if (stall_timeout > STALL_MAX_TIMEOUT_MS) {
-    stall_timeout = STALL_MAX_TIMEOUT_MS;
-  }
-
-  if (stall_duration < stall_timeout) {
-    /* Not stalled long enough yet */
-    return false;
-  }
-
-  /* We're stalled! Find the peer blocking validation (lowest batch) */
-  peer_perf_t *blocker = find_peer_with_lowest_batch(mgr);
-
-  if (blocker == NULL) {
-    /* No peer with work - nothing to steal */
-    LOG_INFO("download_mgr: stalled but no peers have work to steal");
-    return false;
-  }
-
-  uint32_t blocker_height = blocker->batch->heights[0];
-  uint32_t blocker_end = blocker_height + (uint32_t)blocker->batch->count - 1;
-  uint32_t next_height = validated_height + 1;
-
-  /* Check if this batch contains the block we need for validation.
-   * A batch is relevant if: start <= next_height <= end */
-  if (next_height < blocker_height) {
-    /* Lowest ASSIGNED batch is ahead of what we need. But the needed block
-     * might be in the QUEUE waiting to be assigned. Check the queue first
-     * before declaring a GAP. */
-    uint32_t queue_lowest = UINT32_MAX;
-    for (batch_node_t *qnode = mgr->queue_head; qnode != NULL; qnode = qnode->next) {
-      if (qnode->batch.heights[0] < queue_lowest) {
-        queue_lowest = qnode->batch.heights[0];
-      }
-    }
-
-    if (queue_lowest <= next_height) {
-      /* Found the needed block in the queue - just waiting for idle peer */
-      LOG_DEBUG("download_mgr: stalled at %u, need %u, in queue (lowest=%u) "
-                "- waiting for idle peer",
-                validated_height, next_height, queue_lowest);
-      return false;
-    }
-
-    /* Neither assigned nor queued - this is a real GAP */
-    LOG_WARN("download_mgr: stalled at %u, need block %u, but lowest assigned "
-             "batch starts at %u, lowest queued at %u - GAP! Block may be lost.",
-             validated_height, next_height, blocker_height, queue_lowest);
-    /* Don't free this batch - it's valid future work. Just reset stall timer. */
-    mgr->last_progress_time = now;
-    return false;
-  }
-
-  if (next_height > blocker_end) {
-    /* Batch is BEHIND what we need - it's stale (we've already validated these).
-     * Free this stale batch so we don't keep finding it. */
-    LOG_INFO("download_mgr: stalled at %u but lowest batch [%u-%u] is stale "
-             "(we already validated past it) - freeing",
-             validated_height, blocker_height, blocker_end);
-
-    batch_node_t *stale = (batch_node_t *)(void *)blocker->batch;
-    batch_node_destroy(stale);
-    blocker->batch = NULL;
-
-    /* Reset stall timer and try again next tick */
-    mgr->last_progress_time = now;
-    return false;
-  }
-
-  /* Block race strategy: Instead of stealing the whole batch and disconnecting
-   * the peer, we create a redundant request for just the blocking block.
-   * This way:
-   *   - The original peer keeps working and might still deliver
-   *   - The next peer to request work gets the blocking block as priority
-   *   - Whoever delivers first wins - we get redundancy without burning peers
-   */
-
-  /* Find the blocking block in the blocker's batch */
-  size_t block_idx = next_height - blocker_height;
-  batch_node_t *blocker_node = (batch_node_t *)(void *)blocker->batch;
-
-  /* Check if blocker is actively delivering blocks.
-   * Use DOWNLOAD_PERF_WINDOW_MS (10 sec) as threshold, not stall_timeout.
-   * stall_timeout starts at 2 sec which is too aggressive - a peer could
-   * just be waiting for network latency. 10 sec gives them time to deliver. */
-  uint64_t since_last_delivery = now - blocker->last_delivery_time;
-  bool blocker_is_active = (blocker->last_delivery_time > 0 &&
-                            since_last_delivery < DOWNLOAD_PERF_WINDOW_MS);
-
-  LOG_INFO("download_mgr: validation stalled at height %u for %llu ms "
-           "(timeout=%llu ms, backoff=%u) - blocker has batch [%u-%u], "
-           "last delivery %llu ms ago, %s",
-           validated_height, (unsigned long long)stall_duration,
-           (unsigned long long)stall_timeout, mgr->stall_backoff_count,
-           blocker_height, blocker_end,
-           (unsigned long long)since_last_delivery,
-           blocker_is_active ? "ACTIVE (racing)" : "STALLED (stealing)");
-
-  if (blocker_is_active) {
-    /* Blocker is actively delivering - use block race strategy.
-     * Create a STICKY batch with ALL remaining blocks. Sticky means every idle
-     * peer will get a clone of this batch until the blocking block is delivered.
-     * This maximizes parallelism on the critical path. */
-
-    /* Check if we already have a sticky batch for this height */
-    if (mgr->queue_head != NULL && mgr->queue_head->batch.sticky &&
-        mgr->queue_head->batch.sticky_height == next_height) {
-      LOG_DEBUG("download_mgr: sticky batch for height %u already exists",
-                next_height);
-      /* Reset stall timer but don't create duplicate */
-      mgr->last_progress_time = now;
-      return false;
-    }
-
-    size_t remaining_count = blocker_node->batch.count - block_idx;
-    batch_node_t *race_batch = batch_node_create();
-    if (race_batch != NULL) {
-      for (size_t i = 0; i < remaining_count; i++) {
-        size_t src_idx = block_idx + i;
-        memcpy(&race_batch->batch.hashes[i], &blocker_node->batch.hashes[src_idx],
-               sizeof(hash256_t));
-        race_batch->batch.heights[i] = blocker_node->batch.heights[src_idx];
-        race_batch->batch.received[i] = false;
-      }
-      race_batch->batch.count = remaining_count;
-      race_batch->batch.remaining = remaining_count;
-      race_batch->batch.assigned_time = 0;
-      race_batch->batch.sticky = true;
-      race_batch->batch.sticky_height = next_height;
-
-      queue_push_front(mgr, race_batch);
-      LOG_INFO("download_mgr: queued STICKY race batch [%u-%u] (%zu blocks) - "
-               "every idle peer will race for block %u",
-               next_height, blocker_end, remaining_count, next_height);
-    }
-    /* Don't steal - let them race */
-  } else {
-    /* Blocker hasn't delivered recently, but we still don't steal.
-     * Create a sticky batch for racing - the blocker keeps their work
-     * and might still deliver. If they're truly stalled (0 B/s for 20+
-     * seconds), check_performance() will disconnect them and their
-     * batch returns to the queue automatically.
-     *
-     * Cooperative model: Add redundancy, never punish.
-     */
-
-    /* Check if we already have a sticky batch for this height */
-    if (mgr->queue_head != NULL && mgr->queue_head->batch.sticky &&
-        mgr->queue_head->batch.sticky_height == next_height) {
-      LOG_DEBUG("download_mgr: sticky batch for height %u already exists",
-                next_height);
-      mgr->last_progress_time = now;
-      return false;
-    }
-
-    size_t remaining_count = blocker_node->batch.count - block_idx;
-    batch_node_t *race_batch = batch_node_create();
-    if (race_batch != NULL) {
-      for (size_t i = 0; i < remaining_count; i++) {
-        size_t src_idx = block_idx + i;
-        memcpy(&race_batch->batch.hashes[i], &blocker_node->batch.hashes[src_idx],
-               sizeof(hash256_t));
-        race_batch->batch.heights[i] = blocker_node->batch.heights[src_idx];
-        race_batch->batch.received[i] = false;
-      }
-      race_batch->batch.count = remaining_count;
-      race_batch->batch.remaining = remaining_count;
-      race_batch->batch.assigned_time = 0;
-      race_batch->batch.sticky = true;
-      race_batch->batch.sticky_height = next_height;
-
-      queue_push_front(mgr, race_batch);
-      mgr->stall_backoff_count++; /* Track for adaptive timeout */
-      LOG_INFO("download_mgr: queued STICKY race batch [%u-%u] (%zu blocks) - "
-               "blocker inactive but keeps their work",
-               next_height, blocker_end, remaining_count);
-    }
-  }
-
-  /* Reset stall timer so we don't immediately trigger again */
-  mgr->last_progress_time = now;
-
-  return true;
 }
 
 size_t download_mgr_check_performance(download_mgr_t *mgr) {

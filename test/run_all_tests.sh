@@ -102,7 +102,6 @@ run_test "test/unit/test_log" "Logging System tests"
 run_test "test/unit/test_pruning" "Pruning tests"
 run_test "test/unit/test_mining" "Mining Module tests"
 run_test "test/unit/test_integration" "Integration tests"
-run_test "test/unit/test_chase" "Chase Event System tests"
 run_test "test/unit/test_ibd_validator" "IBD Validator tests"
 
 # Read final counts

@@ -7,7 +7,6 @@
  * - Peers PULL work when idle, coordinator doesn't push
  * - Starved peers WAIT for work (cooperative, not punitive)
  * - Only truly stalled peers (0 B/s) are disconnected
- * - Sticky batches add redundancy for blocking blocks
  *
  * See IBD-PULL-MODEL-REWRITE.md for architectural details.
  *
@@ -67,8 +66,7 @@
  * received), peer requests another batch. If no batches available, peer waits.
  *
  * The received[] bitmap tracks which specific blocks have been received.
- * This prevents duplicate blocks from decrementing remaining - critical for
- * correct batch completion when sticky batches race the same blocks.
+ * This prevents duplicate blocks from decrementing remaining.
  */
 typedef struct work_batch {
   hash256_t hashes[DOWNLOAD_BATCH_SIZE_MAX]; /* Block hashes in this batch */
@@ -77,8 +75,6 @@ typedef struct work_batch {
   size_t remaining;                          /* Blocks not yet received */
   uint64_t assigned_time;                    /* When assigned to peer (0 if queued) */
   bool received[DOWNLOAD_BATCH_SIZE_MAX];    /* Bitmap: true if block already received */
-  bool sticky;           /* If true, clone on assign instead of consuming from queue */
-  uint32_t sticky_height; /* Block height that resolves this sticky batch */
 } work_batch_t;
 
 /* ============================================================================
@@ -116,7 +112,6 @@ typedef struct {
  * - Maintains queue of work batches
  * - Peers request work when idle
  * - Starved peers wait (cooperative model)
- * - Sticky batches add redundancy for blocking blocks
  */
 typedef struct download_mgr download_mgr_t;
 
@@ -270,22 +265,6 @@ bool download_mgr_peer_is_idle(const download_mgr_t *mgr, const peer_t *peer);
  *   Number of peers dropped due to poor performance
  */
 size_t download_mgr_check_performance(download_mgr_t *mgr);
-
-/**
- * Check for validation stall and steal work if needed.
- *
- * Called periodically with current validated height. If a peer's batch
- * contains the block we need and they haven't delivered it, steal the batch.
- * This handles the case where a slow peer is blocking validation progress.
- *
- * Parameters:
- *   mgr              - Download manager
- *   validated_height - Current validated block height
- *
- * Returns:
- *   true if work was stolen (caller should retry validation), false otherwise
- */
-bool download_mgr_check_stall(download_mgr_t *mgr, uint32_t validated_height);
 
 /* ============================================================================
  * Query Functions
