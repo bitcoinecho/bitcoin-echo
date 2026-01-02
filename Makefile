@@ -39,6 +39,7 @@ SRCS    = src/main.c \
           src/storage/db.c \
           src/storage/utxo_db.c \
           src/storage/block_index_db.c \
+          src/storage/block_tracker.c \
           src/protocol/messages.c \
           src/protocol/serialize.c \
           src/protocol/peer.c \
@@ -82,6 +83,7 @@ TEST_BLOCK_STORAGE   = test/unit/test_block_storage
 TEST_DB              = test/unit/test_db
 TEST_UTXO_DB         = test/unit/test_utxo_db
 TEST_BLOCK_INDEX_DB  = test/unit/test_block_index_db
+TEST_BLOCK_TRACKER   = test/unit/test_block_tracker
 TEST_PROTOCOL        = test/unit/test_protocol
 TEST_PROTOCOL_SERIALIZE = test/unit/test_protocol_serialize
 TEST_PEER            = test/unit/test_peer
@@ -207,6 +209,9 @@ $(TEST_UTXO_DB): test/unit/test_utxo_db.c src/storage/utxo_db.c src/storage/db.c
 $(TEST_BLOCK_INDEX_DB): test/unit/test_block_index_db.c src/storage/block_index_db.c src/storage/db.c src/consensus/block.c src/consensus/tx.c src/consensus/serialize.c src/crypto/sha256.c lib/sqlite/sqlite3.c  $(TEST_UTILS_OBJ)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
+$(TEST_BLOCK_TRACKER): test/unit/test_block_tracker.c src/storage/block_tracker.c src/app/log.c src/platform/posix.c $(TEST_UTILS_OBJ)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+
 $(TEST_PROTOCOL): test/unit/test_protocol.c src/protocol/messages.c src/crypto/sha256.c  $(TEST_UTILS_OBJ)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
@@ -255,11 +260,11 @@ $(TEST_INTEGRATION): test/unit/test_integration.c src/app/node.c src/app/log.c s
 $(TEST_CHASE): test/unit/test_chase.c src/node/chase.c src/node/chaser.c src/node/chaser_validate.c src/node/chaser_confirm.c src/platform/posix.c $(TEST_UTILS_OBJ)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
-test: $(TEST_SHA256) $(TEST_RIPEMD160) $(TEST_SIG_VERIFY) $(TEST_SERIALIZE) $(TEST_TX) $(TEST_BLOCK) $(TEST_MERKLE) $(TEST_SCRIPT) $(TEST_STACK) $(TEST_OPCODES) $(TEST_P2SH) $(TEST_TIMELOCK) $(TEST_TX_VALIDATE) $(TEST_BLOCK_VALIDATE) $(TEST_COINBASE) $(TEST_UTXO) $(TEST_CHAINSTATE) $(TEST_CONSENSUS) $(TEST_BLOCK_STORAGE) $(TEST_DB) $(TEST_UTXO_DB) $(TEST_BLOCK_INDEX_DB) $(TEST_PROTOCOL) $(TEST_PROTOCOL_SERIALIZE) $(TEST_PEER) $(TEST_DISCOVERY) $(TEST_RELAY) $(TEST_SYNC) $(TEST_DOWNLOAD_MGR) $(TEST_MEMPOOL) $(TEST_NODE) $(TEST_EVENT_LOOP) $(TEST_RPC) $(TEST_LOG) $(TEST_PRUNING) $(TEST_MINING) $(TEST_INTEGRATION) $(TEST_CHASE)
+test: $(TEST_SHA256) $(TEST_RIPEMD160) $(TEST_SIG_VERIFY) $(TEST_SERIALIZE) $(TEST_TX) $(TEST_BLOCK) $(TEST_MERKLE) $(TEST_SCRIPT) $(TEST_STACK) $(TEST_OPCODES) $(TEST_P2SH) $(TEST_TIMELOCK) $(TEST_TX_VALIDATE) $(TEST_BLOCK_VALIDATE) $(TEST_COINBASE) $(TEST_UTXO) $(TEST_CHAINSTATE) $(TEST_CONSENSUS) $(TEST_BLOCK_STORAGE) $(TEST_DB) $(TEST_UTXO_DB) $(TEST_BLOCK_INDEX_DB) $(TEST_BLOCK_TRACKER) $(TEST_PROTOCOL) $(TEST_PROTOCOL_SERIALIZE) $(TEST_PEER) $(TEST_DISCOVERY) $(TEST_RELAY) $(TEST_SYNC) $(TEST_DOWNLOAD_MGR) $(TEST_MEMPOOL) $(TEST_NODE) $(TEST_EVENT_LOOP) $(TEST_RPC) $(TEST_LOG) $(TEST_PRUNING) $(TEST_MINING) $(TEST_INTEGRATION) $(TEST_CHASE)
 	@./test/run_all_tests.sh
 
 clean:
-	rm -f $(TARGET) $(OBJS) $(LIBSECP_OBJS) $(TEST_SHA256) $(TEST_RIPEMD160) $(TEST_SIG_VERIFY) $(TEST_SERIALIZE) $(TEST_TX) $(TEST_BLOCK) $(TEST_MERKLE) $(TEST_SCRIPT) $(TEST_STACK) $(TEST_OPCODES) $(TEST_P2SH) $(TEST_TIMELOCK) $(TEST_SCRIPT_VECTORS) $(TEST_TX_VALIDATE) $(TEST_BLOCK_VALIDATE) $(TEST_COINBASE) $(TEST_UTXO) $(TEST_CHAINSTATE) $(TEST_CONSENSUS) $(TEST_BLOCK_STORAGE) $(TEST_DB) $(TEST_UTXO_DB) $(TEST_BLOCK_INDEX_DB) $(TEST_PROTOCOL) $(TEST_PROTOCOL_SERIALIZE) $(TEST_PEER) $(TEST_DISCOVERY) $(TEST_RELAY) $(TEST_SYNC) $(TEST_DOWNLOAD_MGR) $(TEST_MEMPOOL) $(TEST_NODE) $(TEST_EVENT_LOOP) $(TEST_RPC) $(TEST_LOG) $(TEST_PRUNING) $(TEST_MINING) $(TEST_INTEGRATION) $(TEST_CHASE)
+	rm -f $(TARGET) $(OBJS) $(LIBSECP_OBJS) $(TEST_SHA256) $(TEST_RIPEMD160) $(TEST_SIG_VERIFY) $(TEST_SERIALIZE) $(TEST_TX) $(TEST_BLOCK) $(TEST_MERKLE) $(TEST_SCRIPT) $(TEST_STACK) $(TEST_OPCODES) $(TEST_P2SH) $(TEST_TIMELOCK) $(TEST_SCRIPT_VECTORS) $(TEST_TX_VALIDATE) $(TEST_BLOCK_VALIDATE) $(TEST_COINBASE) $(TEST_UTXO) $(TEST_CHAINSTATE) $(TEST_CONSENSUS) $(TEST_BLOCK_STORAGE) $(TEST_DB) $(TEST_UTXO_DB) $(TEST_BLOCK_INDEX_DB) $(TEST_BLOCK_TRACKER) $(TEST_PROTOCOL) $(TEST_PROTOCOL_SERIALIZE) $(TEST_PEER) $(TEST_DISCOVERY) $(TEST_RELAY) $(TEST_SYNC) $(TEST_DOWNLOAD_MGR) $(TEST_MEMPOOL) $(TEST_NODE) $(TEST_EVENT_LOOP) $(TEST_RPC) $(TEST_LOG) $(TEST_PRUNING) $(TEST_MINING) $(TEST_INTEGRATION) $(TEST_CHASE)
 	find src -name '*.o' -delete
 	find lib -name '*.o' -delete
 	find test -name '*.o' -delete

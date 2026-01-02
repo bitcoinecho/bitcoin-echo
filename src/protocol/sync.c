@@ -1681,9 +1681,70 @@ void sync_tick(sync_manager_t *mgr) {
     break;
   }
 
+  case SYNC_MODE_THROTTLED:
+    /*
+     * THROTTLED: Downloads paused, waiting for validation to complete.
+     *
+     * In the decoupled architecture, we enter this state when storage
+     * reaches the prune headroom limit (2x prune target). We stop
+     * queuing new downloads and wait for validation to free space.
+     *
+     * TODO (Phase 2): Implement throttle logic:
+     *   - Monitor validation progress
+     *   - Transition to VALIDATING when consecutive range available
+     */
+    break;
+
+  case SYNC_MODE_VALIDATING:
+    /*
+     * VALIDATING: Processing a consecutive chunk of downloaded blocks.
+     *
+     * In the decoupled architecture, validation runs on consecutive
+     * ranges of blocks, not individual blocks as they arrive. This
+     * eliminates head-of-line blocking from slow peers.
+     *
+     * TODO (Phase 3): Implement validation chunk logic:
+     *   - Find consecutive range using block_tracker
+     *   - Validate blocks in range
+     *   - Track UTXO changes in memory (utxo_batch_t)
+     *   - Transition to FLUSHING when chunk complete
+     */
+    break;
+
+  case SYNC_MODE_FLUSHING:
+    /*
+     * FLUSHING: Persisting UTXO batch to database.
+     *
+     * After validating a chunk, we flush all UTXO changes in a single
+     * atomic transaction. This is more efficient than per-block flushes.
+     *
+     * TODO (Phase 3): Implement flush logic:
+     *   - Apply all pending UTXO deletes
+     *   - Apply all pending UTXO adds
+     *   - Update validated tip height
+     *   - Commit transaction
+     *   - For pruned: transition to PRUNING
+     *   - For archival: transition to DOWNLOADING or DONE
+     */
+    break;
+
+  case SYNC_MODE_PRUNING:
+    /*
+     * PRUNING: Deleting old block files to free disk space.
+     *
+     * After flushing UTXO changes, pruned nodes delete the validated
+     * blocks from disk to stay within the prune target.
+     *
+     * TODO (Phase 3): Implement prune logic:
+     *   - Calculate blocks to prune
+     *   - Delete old blk*.dat files
+     *   - Update block index (mark as pruned)
+     *   - Transition to DOWNLOADING to continue
+     */
+    break;
+
   case SYNC_MODE_IDLE:
   case SYNC_MODE_DONE:
-  case SYNC_MODE_STALLED:
     break;
   }
 }
@@ -1761,12 +1822,22 @@ const char *sync_mode_string(sync_mode_t mode) {
     return "IDLE";
   case SYNC_MODE_HEADERS:
     return "HEADERS";
-  case SYNC_MODE_BLOCKS:
+  case SYNC_MODE_DOWNLOADING:
+    /* Note: SYNC_MODE_BLOCKS is an alias for DOWNLOADING.
+     * Keep returning "BLOCKS" for GUI backwards compatibility. */
     return "BLOCKS";
+  case SYNC_MODE_THROTTLED:
+    /* Note: SYNC_MODE_STALLED is an alias for THROTTLED.
+     * Keep returning "STALLED" for GUI backwards compatibility. */
+    return "STALLED";
+  case SYNC_MODE_VALIDATING:
+    return "VALIDATING";
+  case SYNC_MODE_FLUSHING:
+    return "FLUSHING";
+  case SYNC_MODE_PRUNING:
+    return "PRUNING";
   case SYNC_MODE_DONE:
     return "DONE";
-  case SYNC_MODE_STALLED:
-    return "STALLED";
   default:
     return "UNKNOWN";
   }
