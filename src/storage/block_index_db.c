@@ -10,6 +10,7 @@
 #include "block_index_db.h"
 #include "block.h"
 #include "chainstate.h"
+#include "serialize.h"
 #include "db.h"
 #include "echo_types.h"
 #include <stdbool.h>
@@ -208,6 +209,7 @@ static void serialize_header(const block_header_t *header, uint8_t *buf) {
   buf[pos++] = (uint8_t)(header->nonce >> 24);
 }
 
+
 /*
  * Deserialize a block header from 80 bytes.
  */
@@ -215,8 +217,7 @@ static void deserialize_header(const uint8_t *buf, block_header_t *header) {
   size_t pos = 0;
 
   /* version (4 bytes, little-endian) */
-  header->version = (int32_t)(buf[pos] | (buf[pos + 1] << 8) |
-                              (buf[pos + 2] << 16) | (buf[pos + 3] << 24));
+  header->version = (int32_t)deserialize_u32_le(&buf[pos]);
   pos += 4;
 
   /* prev_hash (32 bytes) */
@@ -228,18 +229,15 @@ static void deserialize_header(const uint8_t *buf, block_header_t *header) {
   pos += 32;
 
   /* timestamp (4 bytes, little-endian) */
-  header->timestamp = (uint32_t)(buf[pos] | (buf[pos + 1] << 8) |
-                                 (buf[pos + 2] << 16) | (buf[pos + 3] << 24));
+  header->timestamp = deserialize_u32_le(&buf[pos]);
   pos += 4;
 
   /* bits (4 bytes, little-endian) */
-  header->bits = (uint32_t)(buf[pos] | (buf[pos + 1] << 8) |
-                            (buf[pos + 2] << 16) | (buf[pos + 3] << 24));
+  header->bits = deserialize_u32_le(&buf[pos]);
   pos += 4;
 
   /* nonce (4 bytes, little-endian) */
-  header->nonce = (uint32_t)(buf[pos] | (buf[pos + 1] << 8) |
-                             (buf[pos + 2] << 16) | (buf[pos + 3] << 24));
+  header->nonce = deserialize_u32_le(&buf[pos]);
 }
 
 /*

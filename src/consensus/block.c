@@ -15,23 +15,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-/*
- * Helper: read a 32-bit little-endian value.
- */
-static uint32_t read_u32_le(const uint8_t *p) {
-  return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) |
-         ((uint32_t)p[3] << 24);
-}
-
-/*
- * Helper: write a 32-bit little-endian value.
- */
-static void write_u32_le(uint8_t *p, uint32_t v) {
-  p[0] = (uint8_t)(v & 0xFF);
-  p[1] = (uint8_t)((v >> 8) & 0xFF);
-  p[2] = (uint8_t)((v >> 16) & 0xFF);
-  p[3] = (uint8_t)((v >> 24) & 0xFF);
-}
 
 /*
  * Initialize a block structure.
@@ -78,7 +61,7 @@ echo_result_t block_header_parse(const uint8_t *data, size_t data_len,
   }
 
   /* Version (4 bytes) */
-  header->version = (int32_t)read_u32_le(data);
+  header->version = (int32_t)deserialize_u32_le(data);
 
   /* Previous block hash (32 bytes) */
   memcpy(header->prev_hash.bytes, data + 4, 32);
@@ -87,13 +70,13 @@ echo_result_t block_header_parse(const uint8_t *data, size_t data_len,
   memcpy(header->merkle_root.bytes, data + 36, 32);
 
   /* Timestamp (4 bytes) */
-  header->timestamp = read_u32_le(data + 68);
+  header->timestamp = deserialize_u32_le(data + 68);
 
   /* Bits (4 bytes) */
-  header->bits = read_u32_le(data + 72);
+  header->bits = deserialize_u32_le(data + 72);
 
   /* Nonce (4 bytes) */
-  header->nonce = read_u32_le(data + 76);
+  header->nonce = deserialize_u32_le(data + 76);
 
   return ECHO_OK;
 }
@@ -112,7 +95,7 @@ echo_result_t block_header_serialize(const block_header_t *header, uint8_t *buf,
   }
 
   /* Version (4 bytes) */
-  write_u32_le(buf, (uint32_t)header->version);
+  serialize_u32_le(buf, (uint32_t)header->version);
 
   /* Previous block hash (32 bytes) */
   memcpy(buf + 4, header->prev_hash.bytes, 32);
@@ -121,13 +104,13 @@ echo_result_t block_header_serialize(const block_header_t *header, uint8_t *buf,
   memcpy(buf + 36, header->merkle_root.bytes, 32);
 
   /* Timestamp (4 bytes) */
-  write_u32_le(buf + 68, header->timestamp);
+  serialize_u32_le(buf + 68, header->timestamp);
 
   /* Bits (4 bytes) */
-  write_u32_le(buf + 72, header->bits);
+  serialize_u32_le(buf + 72, header->bits);
 
   /* Nonce (4 bytes) */
-  write_u32_le(buf + 76, header->nonce);
+  serialize_u32_le(buf + 76, header->nonce);
 
   return ECHO_OK;
 }

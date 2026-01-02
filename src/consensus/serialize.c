@@ -147,3 +147,55 @@ echo_result_t varint_read(const uint8_t *buf, size_t buf_len, uint64_t *value,
 
   return ECHO_OK;
 }
+
+/*
+ * Deserialize a 32-bit little-endian value.
+ * For trusted data only - no bounds checking performed.
+ */
+uint32_t deserialize_u32_le(const uint8_t *p) {
+  return (uint32_t)p[0] |
+         ((uint32_t)p[1] << 8) |
+         ((uint32_t)p[2] << 16) |
+         ((uint32_t)p[3] << 24);
+}
+
+/*
+ * Deserialize a 64-bit little-endian value.
+ * For trusted data only - no bounds checking performed.
+ */
+uint64_t deserialize_u64_le(const uint8_t *p) {
+  return (uint64_t)p[0] |
+         ((uint64_t)p[1] << 8) |
+         ((uint64_t)p[2] << 16) |
+         ((uint64_t)p[3] << 24) |
+         ((uint64_t)p[4] << 32) |
+         ((uint64_t)p[5] << 40) |
+         ((uint64_t)p[6] << 48) |
+         ((uint64_t)p[7] << 56);
+}
+
+/*
+ * Serialize a 32-bit little-endian value.
+ * Buffer must have at least 4 bytes available.
+ */
+void serialize_u32_le(uint8_t *p, uint32_t v) {
+  p[0] = (uint8_t)(v & 0xFF);
+  p[1] = (uint8_t)((v >> 8) & 0xFF);
+  p[2] = (uint8_t)((v >> 16) & 0xFF);
+  p[3] = (uint8_t)((v >> 24) & 0xFF);
+}
+
+/*
+ * Serialize a 64-bit little-endian value.
+ * Buffer must have at least 8 bytes available.
+ */
+void serialize_u64_le(uint8_t *p, uint64_t v) {
+  p[0] = (uint8_t)(v & 0xFF);
+  p[1] = (uint8_t)((v >> 8) & 0xFF);
+  p[2] = (uint8_t)((v >> 16) & 0xFF);
+  p[3] = (uint8_t)((v >> 24) & 0xFF);
+  p[4] = (uint8_t)((v >> 32) & 0xFF);
+  p[5] = (uint8_t)((v >> 40) & 0xFF);
+  p[6] = (uint8_t)((v >> 48) & 0xFF);
+  p[7] = (uint8_t)((v >> 56) & 0xFF);
+}
