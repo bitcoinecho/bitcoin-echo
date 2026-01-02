@@ -565,4 +565,34 @@ echo_result_t block_index_db_get_referenced_files(block_index_db_t *bdb,
                                                    uint32_t **files_out,
                                                    size_t *count_out);
 
+/* ========================================================================
+ * Restart Recovery
+ * ======================================================================== */
+
+/**
+ * Get heights of stored blocks above a given height.
+ *
+ * Returns an array of block heights that have BLOCK_STATUS_HAVE_DATA set
+ * and are above the specified start height. Used during restart to find
+ * downloaded but unvalidated blocks that can be resumed.
+ *
+ * Parameters:
+ *   bdb          - Block index database handle
+ *   start_height - Start height (exclusive, returns heights > start_height)
+ *   heights_out  - Output: array of heights (caller must free)
+ *   count_out    - Output: number of heights
+ *
+ * Returns:
+ *   ECHO_OK on success, error code on failure
+ *
+ * Notes:
+ *   - Allocates heights_out with malloc(); caller must free()
+ *   - Returns heights in ascending order
+ *   - Returns empty array (count=0) if no stored blocks above start_height
+ */
+echo_result_t block_index_db_get_stored_heights(block_index_db_t *bdb,
+                                                 uint32_t start_height,
+                                                 uint32_t **heights_out,
+                                                 size_t *count_out);
+
 #endif /* ECHO_BLOCK_INDEX_DB_H */

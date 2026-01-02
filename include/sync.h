@@ -372,6 +372,17 @@ typedef struct {
 
   /* Context pointer passed to all callbacks */
   void *ctx;
+
+  /**
+   * Node pointer for Phase 3+ IBD features (optional).
+   *
+   * When set, enables:
+   *   - Restart recovery (scanning block_index_db for stored blocks)
+   *   - Chunk validation (accessing utxo_db for UTXO flush)
+   *
+   * Can be NULL for unit tests or when IBD features aren't needed.
+   */
+  struct node *node;
 } sync_callbacks_t;
 
 /**

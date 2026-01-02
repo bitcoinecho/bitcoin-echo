@@ -1348,3 +1348,95 @@ echo_result_t block_index_db_get_referenced_files(block_index_db_t *bdb,
   *count_out = i;
   return ECHO_OK;
 }
+
+/* ========================================================================
+ * Restart Recovery
+ * ======================================================================== */
+
+echo_result_t block_index_db_get_stored_heights(block_index_db_t *bdb,
+                                                 uint32_t start_height,
+                                                 uint32_t **heights_out,
+                                                 size_t *count_out) {
+  if (bdb == NULL || heights_out == NULL || count_out == NULL) {
+    return ECHO_ERR_NULL_PARAM;
+  }
+
+  *heights_out = NULL;
+  *count_out = 0;
+
+  pthread_mutex_lock(&bdb->mutex);
+
+  echo_result_t result;
+  db_stmt_t stmt;
+
+  /* Query for heights with BLOCK_STATUS_HAVE_DATA set (0x10 = 16) */
+  result = db_prepare(
+      &bdb->db,
+      "SELECT height FROM blocks "
+      "WHERE height > ? AND (status & 16) != 0 "
+      "ORDER BY height ASC",
+      &stmt);
+  if (result != ECHO_OK) {
+    pthread_mutex_unlock(&bdb->mutex);
+    return result;
+  }
+
+  /* Bind start_height parameter */
+  result = db_bind_int(&stmt, 1, (int)start_height);
+  if (result != ECHO_OK) {
+    db_stmt_finalize(&stmt);
+    pthread_mutex_unlock(&bdb->mutex);
+    return result;
+  }
+
+  /* First pass: count results */
+  size_t count = 0;
+  while ((result = db_step(&stmt)) == ECHO_OK) {
+    count++;
+  }
+
+  if (count == 0) {
+    db_stmt_finalize(&stmt);
+    pthread_mutex_unlock(&bdb->mutex);
+    return ECHO_OK; /* No stored blocks above start_height - return empty array */
+  }
+
+  /* Allocate array */
+  uint32_t *heights = malloc(count * sizeof(uint32_t));
+  if (heights == NULL) {
+    db_stmt_finalize(&stmt);
+    pthread_mutex_unlock(&bdb->mutex);
+    return ECHO_ERR_MEMORY;
+  }
+
+  /* Reset and second pass: collect values */
+  result = db_stmt_reset(&stmt);
+  if (result != ECHO_OK) {
+    free(heights);
+    db_stmt_finalize(&stmt);
+    pthread_mutex_unlock(&bdb->mutex);
+    return result;
+  }
+
+  /* Re-bind parameter after reset */
+  result = db_bind_int(&stmt, 1, (int)start_height);
+  if (result != ECHO_OK) {
+    free(heights);
+    db_stmt_finalize(&stmt);
+    pthread_mutex_unlock(&bdb->mutex);
+    return result;
+  }
+
+  size_t i = 0;
+  while ((result = db_step(&stmt)) == ECHO_OK && i < count) {
+    heights[i] = (uint32_t)db_column_int(&stmt, 0);
+    i++;
+  }
+
+  db_stmt_finalize(&stmt);
+  pthread_mutex_unlock(&bdb->mutex);
+
+  *heights_out = heights;
+  *count_out = i;
+  return ECHO_OK;
+}

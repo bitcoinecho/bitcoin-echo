@@ -12,13 +12,16 @@
 
 #include "sync.h"
 #include "block.h"
+#include "block_index_db.h"
 #include "block_tracker.h"
 #include "chainstate.h"
 #include "chase.h"
 #include "download_mgr.h"
 #include "echo_config.h"
 #include "echo_types.h"
+#include "ibd_validator.h"
 #include "log.h"
+#include "node.h"
 #include "peer.h"
 #include "platform.h"
 #include "protocol.h"
@@ -151,6 +154,13 @@ struct sync_manager {
   /* Storage pressure tracking */
   uint64_t prune_target_bytes;      /* Prune target in bytes (0 = archival) */
   uint64_t last_storage_check_time; /* When we last checked storage pressure */
+
+  /* IBD chunk validator - validates consecutive ranges of downloaded blocks */
+  ibd_validator_t *ibd_validator;
+
+  /* Current validation chunk range */
+  uint32_t validation_start_height;
+  uint32_t validation_end_height;
 };
 
 /* ============================================================================
@@ -161,6 +171,11 @@ struct sync_manager {
 /* Storage pressure helpers (Phase 2+) - defined after sync_is_ibd */
 static bool should_trigger_validation(const sync_manager_t *mgr);
 static bool should_throttle_downloads(const sync_manager_t *mgr);
+
+/* IBD validation helpers (Phase 3) - defined after storage pressure helpers */
+static bool sync_start_chunk_validation(sync_manager_t *mgr);
+static bool sync_process_validation_tick(sync_manager_t *mgr);
+static void sync_complete_validation_chunk(sync_manager_t *mgr);
 
 /* ============================================================================
  * Download Manager Callback Wrappers
@@ -604,6 +619,42 @@ sync_manager_t *sync_create(chainstate_t *chainstate,
   mgr->is_throttled = false;
   mgr->prune_target_bytes = 0; /* Will be set by caller if pruning enabled */
   mgr->last_storage_check_time = 0;
+
+  /*
+   * Restart recovery: Scan for blocks on disk above validated tip.
+   *
+   * If the node crashed or was stopped during IBD, there may be downloaded
+   * blocks that haven't been validated yet. Find them and populate the
+   * block_tracker so validation can resume.
+   */
+  if (mgr->tracker != NULL && callbacks->node != NULL) {
+    block_index_db_t *block_index_db = node_get_block_index_db(callbacks->node);
+
+    if (block_index_db != NULL) {
+      uint32_t *stored_heights = NULL;
+      size_t stored_count = 0;
+
+      echo_result_t result = block_index_db_get_stored_heights(
+          block_index_db, validated_tip, &stored_heights, &stored_count);
+
+      if (result == ECHO_OK && stored_count > 0) {
+        log_info(LOG_COMP_SYNC,
+                 "Restart recovery: found %zu stored blocks above validated tip %u",
+                 stored_count, validated_tip);
+
+        /* Mark each stored height as available in the tracker */
+        for (size_t i = 0; i < stored_count; i++) {
+          block_tracker_mark_available(mgr->tracker, stored_heights[i]);
+        }
+
+        log_info(LOG_COMP_SYNC,
+                 "Restart recovery: marked heights %u-%u as available",
+                 stored_heights[0], stored_heights[stored_count - 1]);
+      }
+
+      free(stored_heights);
+    }
+  }
 
   return mgr;
 }
@@ -1615,20 +1666,17 @@ void sync_tick(sync_manager_t *mgr) {
           return;
         }
       } else if (should_trigger_validation(mgr)) {
-        /* Storage at or above prune target but below headroom - continue
-         * downloading but note that validation should be triggered soon.
-         * For now, just log. Phase 3 will handle transitioning to
-         * VALIDATING mode here. */
-        if (mgr->tracker) {
-          block_range_t range;
-          if (block_tracker_find_consecutive_range(mgr->tracker, &range)) {
-            log_debug(LOG_COMP_SYNC,
-                      "Storage pressure: %u consecutive blocks ready "
-                      "(heights %u-%u)",
-                      range.count, range.start_height, range.end_height);
-          }
+        /* Storage at or above prune target but below headroom - start
+         * validation in parallel with downloads. */
+        if (mgr->ibd_validator == NULL) {
+          sync_start_chunk_validation(mgr);
         }
       }
+    }
+
+    /* Process validation work if active (parallel with downloads) */
+    if (mgr->ibd_validator != NULL) {
+      sync_process_validation_tick(mgr);
     }
 
     uint32_t our_best_height =
@@ -1781,60 +1829,131 @@ void sync_tick(sync_manager_t *mgr) {
      * In the decoupled architecture, we enter this state when storage
      * reaches the prune headroom limit (2x prune target). We stop
      * queuing new downloads and wait for validation to free space.
-     *
-     * TODO (Phase 2): Implement throttle logic:
-     *   - Monitor validation progress
-     *   - Transition to VALIDATING when consecutive range available
      */
+
+    /* Start validation if not already running */
+    if (mgr->ibd_validator == NULL) {
+      if (!sync_start_chunk_validation(mgr)) {
+        /* No consecutive range available - unusual in throttled state */
+        log_warn(LOG_COMP_SYNC,
+                 "Throttled but no consecutive blocks for validation");
+      }
+    }
+
+    /* Process validation work */
+    if (mgr->ibd_validator != NULL) {
+      sync_process_validation_tick(mgr);
+    }
     break;
 
   case SYNC_MODE_VALIDATING:
     /*
      * VALIDATING: Processing a consecutive chunk of downloaded blocks.
      *
-     * In the decoupled architecture, validation runs on consecutive
-     * ranges of blocks, not individual blocks as they arrive. This
-     * eliminates head-of-line blocking from slow peers.
-     *
-     * TODO (Phase 3): Implement validation chunk logic:
-     *   - Find consecutive range using block_tracker
-     *   - Validate blocks in range
-     *   - Track UTXO changes in memory (utxo_batch_t)
-     *   - Transition to FLUSHING when chunk complete
+     * Note: In the parallel model, validation usually runs during
+     * DOWNLOADING or THROTTLED states. This state is entered only
+     * when validation needs to be the exclusive activity (rarely used).
      */
+    if (mgr->ibd_validator != NULL) {
+      sync_process_validation_tick(mgr);
+    }
     break;
 
-  case SYNC_MODE_FLUSHING:
+  case SYNC_MODE_FLUSHING: {
     /*
      * FLUSHING: Persisting UTXO batch to database.
      *
      * After validating a chunk, we flush all UTXO changes in a single
-     * atomic transaction. This is more efficient than per-block flushes.
+     * atomic transaction. This is brief (milliseconds to seconds).
      *
-     * TODO (Phase 3): Implement flush logic:
-     *   - Apply all pending UTXO deletes
-     *   - Apply all pending UTXO adds
-     *   - Update validated tip height
-     *   - Commit transaction
-     *   - For pruned: transition to PRUNING
-     *   - For archival: transition to DOWNLOADING or DONE
+     * Downloads continue during flushing - we're actively making progress
+     * toward freeing space, so no need to throttle.
      */
-    break;
 
-  case SYNC_MODE_PRUNING:
+    /* Continue downloads - we're about to free space */
+    for (size_t i = 0; i < mgr->peer_count; i++) {
+      peer_sync_state_t *ps = &mgr->peers[i];
+      if (!ps->sync_candidate || !peer_is_ready(ps->peer)) {
+        continue;
+      }
+      if (download_mgr_peer_is_idle(mgr->download_mgr, ps->peer)) {
+        download_mgr_peer_request_work(mgr->download_mgr, ps->peer);
+      }
+    }
+
+    if (mgr->ibd_validator == NULL) {
+      log_error(LOG_COMP_SYNC, "FLUSHING state but no validator");
+      mgr->mode = SYNC_MODE_DOWNLOADING;
+      break;
+    }
+
+    /* Perform the atomic flush */
+    echo_result_t result = ibd_validator_flush(mgr->ibd_validator);
+    if (result != ECHO_OK) {
+      log_error(LOG_COMP_SYNC, "Failed to flush UTXO batch: %d", result);
+      /* TODO: Handle flush failure - this is serious */
+    } else {
+      /* Update the block tracker's validated tip */
+      if (mgr->tracker != NULL) {
+        block_tracker_mark_validated(mgr->tracker,
+                                     mgr->validation_end_height);
+      }
+
+      log_info(LOG_COMP_SYNC,
+               "UTXO flush complete: validated tip now %u",
+               mgr->validation_end_height);
+    }
+
+    /* Clean up the validator */
+    ibd_validator_destroy(mgr->ibd_validator);
+    mgr->ibd_validator = NULL;
+
+    /* Transition to PRUNING if pruned node, otherwise back to DOWNLOADING */
+    if (mgr->prune_target_bytes > 0) {
+      mgr->mode = SYNC_MODE_PRUNING;
+    } else {
+      /* Archival node - resume downloading */
+      mgr->mode = SYNC_MODE_DOWNLOADING;
+      mgr->is_throttled = false;
+    }
+    break;
+  }
+
+  case SYNC_MODE_PRUNING: {
     /*
      * PRUNING: Deleting old block files to free disk space.
      *
-     * After flushing UTXO changes, pruned nodes delete the validated
+     * After flushing UTXO changes, pruned nodes delete validated
      * blocks from disk to stay within the prune target.
      *
-     * TODO (Phase 3): Implement prune logic:
-     *   - Calculate blocks to prune
-     *   - Delete old blk*.dat files
-     *   - Update block index (mark as pruned)
-     *   - Transition to DOWNLOADING to continue
+     * Downloads continue during pruning - we're actively freeing space.
      */
+
+    /* Continue downloads - we're actively freeing space */
+    for (size_t i = 0; i < mgr->peer_count; i++) {
+      peer_sync_state_t *ps = &mgr->peers[i];
+      if (!ps->sync_candidate || !peer_is_ready(ps->peer)) {
+        continue;
+      }
+      if (download_mgr_peer_is_idle(mgr->download_mgr, ps->peer)) {
+        download_mgr_peer_request_work(mgr->download_mgr, ps->peer);
+      }
+    }
+
+    /* TODO: Implement actual pruning logic:
+     *   - Calculate how many blocks to prune
+     *   - Delete old blk*.dat files
+     *   - Update block index to mark as pruned
+     *
+     * For now, just transition back to DOWNLOADING and clear throttle.
+     */
+    log_info(LOG_COMP_SYNC,
+             "Pruning complete (stub), resuming downloads");
+
+    mgr->mode = SYNC_MODE_DOWNLOADING;
+    mgr->is_throttled = false;
     break;
+  }
 
   case SYNC_MODE_IDLE:
   case SYNC_MODE_DONE:
@@ -1975,6 +2094,147 @@ static bool should_throttle_downloads(const sync_manager_t *mgr) {
       (uint64_t)(mgr->prune_target_bytes * PRUNE_HEADROOM_MULTIPLIER);
 
   return current_usage >= headroom_limit;
+}
+
+/* ============================================================================
+ * IBD Validation Helpers (Phase 3)
+ * ============================================================================
+ */
+
+/**
+ * Start chunk validation when storage pressure triggers.
+ *
+ * Finds a consecutive range of downloaded blocks and creates an ibd_validator
+ * to process them. Validation runs in parallel with downloads.
+ *
+ * Returns: true if validation started, false if no consecutive range available
+ */
+static bool sync_start_chunk_validation(sync_manager_t *mgr) {
+  /* Already validating? */
+  if (mgr->ibd_validator != NULL) {
+    return true;
+  }
+
+  /* Need block tracker to find consecutive ranges */
+  if (mgr->tracker == NULL) {
+    return false;
+  }
+
+  /* Find consecutive range of downloaded blocks */
+  block_range_t range;
+  if (!block_tracker_find_consecutive_range(mgr->tracker, &range)) {
+    log_debug(LOG_COMP_SYNC, "No consecutive blocks available for validation");
+    return false;
+  }
+
+  /* Limit chunk size to IBD_CHUNK_MAX_BLOCKS */
+  uint32_t chunk_end = range.start_height + IBD_CHUNK_MAX_BLOCKS - 1;
+  if (chunk_end > range.end_height) {
+    chunk_end = range.end_height;
+  }
+
+  /* Get node from callbacks for block loading */
+  node_t *node = mgr->callbacks.node;
+  if (node == NULL) {
+    log_error(LOG_COMP_SYNC, "Cannot start validation: no node in callbacks");
+    return false;
+  }
+
+  /* Get utxo_db from node */
+  utxo_db_t *utxo_db = node_get_utxo_db(node);
+  if (utxo_db == NULL) {
+    log_error(LOG_COMP_SYNC, "Cannot start validation: no UTXO database");
+    return false;
+  }
+
+  /* Determine if we should skip script validation (assumevalid) */
+  bool skip_scripts = (chunk_end <= PLATFORM_ASSUMEVALID_HEIGHT);
+
+  /* Create the validator */
+  mgr->ibd_validator = ibd_validator_create(
+      node, mgr->chainstate, utxo_db, range.start_height, chunk_end, skip_scripts);
+
+  if (mgr->ibd_validator == NULL) {
+    log_error(LOG_COMP_SYNC, "Failed to create IBD validator");
+    return false;
+  }
+
+  mgr->validation_start_height = range.start_height;
+  mgr->validation_end_height = chunk_end;
+
+  log_info(LOG_COMP_SYNC,
+           "Started chunk validation: heights %u-%u (%u blocks, scripts=%s)",
+           range.start_height, chunk_end, chunk_end - range.start_height + 1,
+           skip_scripts ? "skipped" : "verified");
+
+  return true;
+}
+
+/**
+ * Process validation work during a tick.
+ *
+ * Validates a batch of blocks (up to IBD_BLOCKS_PER_TICK) to avoid
+ * blocking the event loop for too long.
+ *
+ * Returns: true if validation is still in progress, false if done or error
+ */
+#define IBD_BLOCKS_PER_TICK 10
+
+static bool sync_process_validation_tick(sync_manager_t *mgr) {
+  if (mgr->ibd_validator == NULL) {
+    return false;
+  }
+
+  /* Validate a batch of blocks this tick */
+  for (int i = 0; i < IBD_BLOCKS_PER_TICK; i++) {
+    if (ibd_validator_is_complete(mgr->ibd_validator)) {
+      /* Chunk complete - transition to flushing */
+      sync_complete_validation_chunk(mgr);
+      return false;
+    }
+
+    ibd_valid_result_t result = ibd_validator_validate_next(mgr->ibd_validator);
+    if (result != IBD_VALID_OK) {
+      /* Validation error */
+      uint32_t error_height;
+      const char *error_msg;
+      ibd_validator_get_error(mgr->ibd_validator, &error_height, &error_msg);
+
+      log_error(LOG_COMP_SYNC, "Validation failed at height %u: %s (error %d)",
+                error_height, error_msg ? error_msg : "unknown", result);
+
+      /* Destroy validator and mark as failed */
+      ibd_validator_destroy(mgr->ibd_validator);
+      mgr->ibd_validator = NULL;
+
+      /* TODO: Handle validation failure - possibly disconnect peer, reorg, etc. */
+      return false;
+    }
+
+    mgr->blocks_validated_total++;
+  }
+
+  /* Still more blocks to validate */
+  return true;
+}
+
+/**
+ * Complete a validation chunk - flush UTXO changes and transition state.
+ *
+ * This transitions to SYNC_MODE_FLUSHING briefly while the atomic
+ * database transaction is committed.
+ */
+static void sync_complete_validation_chunk(sync_manager_t *mgr) {
+  if (mgr->ibd_validator == NULL) {
+    return;
+  }
+
+  log_info(LOG_COMP_SYNC,
+           "Chunk validation complete: heights %u-%u, transitioning to FLUSHING",
+           mgr->validation_start_height, mgr->validation_end_height);
+
+  /* Transition to FLUSHING state */
+  mgr->mode = SYNC_MODE_FLUSHING;
 }
 
 /* ============================================================================

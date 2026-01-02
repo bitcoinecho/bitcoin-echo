@@ -1768,7 +1768,8 @@ static echo_result_t node_init_sync(node_t *node) {
       .commit_header_batch = sync_cb_commit_header_batch,
       .flush_headers = NULL,
       .disconnect_peer = sync_cb_disconnect_peer,
-      .ctx = node};
+      .ctx = node,
+      .node = node};
 
   /* Create sync manager */
   node->sync_mgr = sync_create(chainstate, &callbacks, node->dispatcher);
