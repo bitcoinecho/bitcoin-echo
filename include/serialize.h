@@ -86,4 +86,28 @@ echo_result_t varint_write(uint8_t *buf, size_t buf_len, uint64_t value,
 echo_result_t varint_read(const uint8_t *buf, size_t buf_len, uint64_t *value,
                           size_t *consumed);
 
+/*
+ * Deserialize a uint32_t from buffer (little-endian).
+ * For trusted data only - no bounds checking performed.
+ */
+uint32_t deserialize_u32_le(const uint8_t *p);
+
+/*
+ * Deserialize a uint64_t from buffer (little-endian).
+ * For trusted data only - no bounds checking performed.
+ */
+uint64_t deserialize_u64_le(const uint8_t *p);
+
+/*
+ * Serialize a uint32_t to buffer (little-endian).
+ * Buffer must have at least 4 bytes available.
+ */
+void serialize_u32_le(uint8_t *p, uint32_t v);
+
+/*
+ * Serialize a uint64_t to buffer (little-endian).
+ * Buffer must have at least 8 bytes available.
+ */
+void serialize_u64_le(uint8_t *p, uint64_t v);
+
 #endif /* ECHO_SERIALIZE_H */
