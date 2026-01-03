@@ -341,6 +341,7 @@ echo_result_t block_storage_scan_heights(const block_storage_t *storage,
 
 /*
  * Get total disk usage of all block files.
+ * Scans directory and sums file sizes.
  */
 echo_result_t block_storage_get_total_size(const block_storage_t *storage,
                                               uint64_t *total_size) {

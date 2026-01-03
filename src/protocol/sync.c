@@ -1610,6 +1610,60 @@ void sync_tick(sync_manager_t *mgr) {
     /* Process validation work if active (parallel with downloads) */
     if (mgr->ibd_validator != NULL) {
       sync_process_validation_tick(mgr);
+
+      /*
+       * Phase 8.2: Blocking block detection during parallel validation.
+       *
+       * Even during normal downloading, if validation is active, we want to
+       * detect and prioritize blocking blocks that are stalling progress.
+       */
+      if (mgr->tracker != NULL && mgr->download_mgr != NULL) {
+        block_range_t range;
+        uint32_t consecutive_tip;
+
+        if (block_tracker_find_consecutive_range(mgr->tracker, &range)) {
+          consecutive_tip = range.end_height;
+        } else {
+          /* No consecutive range = validated_tip IS consecutive_tip */
+          consecutive_tip = block_tracker_get_validated_tip(mgr->tracker);
+        }
+
+        /* Clear sticky batch if tip advanced */
+        download_mgr_clear_sticky_batch(mgr->download_mgr, consecutive_tip);
+
+        /* Detect stall and create sticky batch */
+        if (download_mgr_check_consecutive_stall(mgr->download_mgr, consecutive_tip) &&
+            !download_mgr_has_sticky_batch(mgr->download_mgr)) {
+          block_index_db_t *bdb = node_get_block_index_db(mgr->callbacks.node);
+          if (bdb != NULL) {
+            hash256_t sticky_hashes[DOWNLOAD_STICKY_BATCH_SIZE];
+            uint32_t sticky_heights[DOWNLOAD_STICKY_BATCH_SIZE];
+            size_t sticky_count = 0;
+
+            for (uint32_t h = consecutive_tip + 1;
+                 h <= consecutive_tip + DOWNLOAD_STICKY_BATCH_SIZE &&
+                 sticky_count < DOWNLOAD_STICKY_BATCH_SIZE;
+                 h++) {
+              block_index_entry_t entry;
+              if (block_index_db_lookup_by_height(bdb, h, &entry) == ECHO_OK) {
+                memcpy(&sticky_hashes[sticky_count], &entry.hash,
+                       sizeof(hash256_t));
+                sticky_heights[sticky_count] = h;
+                sticky_count++;
+              }
+            }
+
+            if (sticky_count > 0) {
+              log_info(LOG_COMP_SYNC,
+                       "Parallel validation stall at consecutive_tip=%u, "
+                       "creating sticky batch for %zu blocks",
+                       consecutive_tip, sticky_count);
+              download_mgr_add_sticky_batch(mgr->download_mgr, sticky_hashes,
+                                            sticky_heights, sticky_count);
+            }
+          }
+        }
+      }
     }
 
     uint32_t our_best_height =
@@ -1727,10 +1781,65 @@ void sync_tick(sync_manager_t *mgr) {
       }
     }
 
+    /*
+     * Phase 8.2: Proactive blocking block detection.
+     *
+     * Even when not under storage pressure, detect blocking blocks early
+     * and prioritize fetching them. This prevents gaps from accumulating
+     * and ensures we can validate as soon as storage pressure triggers.
+     */
+    if (mgr->tracker != NULL && mgr->download_mgr != NULL) {
+      block_range_t range;
+      uint32_t consecutive_tip;
+
+      if (block_tracker_find_consecutive_range(mgr->tracker, &range)) {
+        consecutive_tip = range.end_height;
+      } else {
+        consecutive_tip = block_tracker_get_validated_tip(mgr->tracker);
+      }
+
+      /* Clear sticky batch if tip advanced */
+      download_mgr_clear_sticky_batch(mgr->download_mgr, consecutive_tip);
+
+      /* Detect stall and create sticky batch for blocking blocks */
+      if (download_mgr_check_consecutive_stall(mgr->download_mgr, consecutive_tip) &&
+          !download_mgr_has_sticky_batch(mgr->download_mgr)) {
+        block_index_db_t *bdb = node_get_block_index_db(mgr->callbacks.node);
+        if (bdb != NULL) {
+          hash256_t sticky_hashes[DOWNLOAD_STICKY_BATCH_SIZE];
+          uint32_t sticky_heights[DOWNLOAD_STICKY_BATCH_SIZE];
+          size_t sticky_count = 0;
+
+          for (uint32_t h = consecutive_tip + 1;
+               h <= consecutive_tip + DOWNLOAD_STICKY_BATCH_SIZE &&
+               sticky_count < DOWNLOAD_STICKY_BATCH_SIZE;
+               h++) {
+            block_index_entry_t entry;
+            if (block_index_db_lookup_by_height(bdb, h, &entry) == ECHO_OK) {
+              memcpy(&sticky_hashes[sticky_count], &entry.hash,
+                     sizeof(hash256_t));
+              sticky_heights[sticky_count] = h;
+              sticky_count++;
+            }
+          }
+
+          if (sticky_count > 0) {
+            log_info(LOG_COMP_SYNC,
+                     "Proactive stall at consecutive_tip=%u, "
+                     "creating sticky batch for %zu blocks [%u-%u]",
+                     consecutive_tip, sticky_count,
+                     sticky_heights[0], sticky_heights[sticky_count - 1]);
+            download_mgr_add_sticky_batch(mgr->download_mgr, sticky_hashes,
+                                          sticky_heights, sticky_count);
+          }
+        }
+      }
+    }
+
     break;
   }
 
-  case SYNC_MODE_THROTTLED:
+  case SYNC_MODE_THROTTLED: {
     /*
      * THROTTLED: Downloads paused, waiting for validation to complete.
      *
@@ -1752,7 +1861,79 @@ void sync_tick(sync_manager_t *mgr) {
     if (mgr->ibd_validator != NULL) {
       sync_process_validation_tick(mgr);
     }
+
+    /*
+     * Phase 8.2: Blocking block detection.
+     *
+     * When throttled, validation needs consecutive blocks. If consecutive_tip
+     * is stuck, we need to prioritize fetching the blocking blocks.
+     */
+    if (mgr->tracker != NULL && mgr->download_mgr != NULL) {
+      block_range_t range;
+      uint32_t consecutive_tip;
+
+      if (block_tracker_find_consecutive_range(mgr->tracker, &range)) {
+        consecutive_tip = range.end_height;
+      } else {
+        /* No consecutive range above validated_tip = validated_tip IS the
+         * consecutive_tip. Use tracker's validated_tip directly since it's
+         * already computed and available. */
+        consecutive_tip = block_tracker_get_validated_tip(mgr->tracker);
+      }
+
+      /* Check for stall and clear sticky batch if tip advanced */
+      download_mgr_clear_sticky_batch(mgr->download_mgr, consecutive_tip);
+
+      /* Detect if we're stalled waiting for blocking blocks */
+      if (download_mgr_check_consecutive_stall(mgr->download_mgr, consecutive_tip)) {
+        /* Stall detected! Create sticky batch if not already active. */
+        if (!download_mgr_has_sticky_batch(mgr->download_mgr)) {
+          /* Look up hashes for blocking blocks from block_index_db */
+          block_index_db_t *bdb = node_get_block_index_db(mgr->callbacks.node);
+          if (bdb != NULL) {
+            hash256_t sticky_hashes[DOWNLOAD_STICKY_BATCH_SIZE];
+            uint32_t sticky_heights[DOWNLOAD_STICKY_BATCH_SIZE];
+            size_t sticky_count = 0;
+
+            /* Get hashes for [consecutive_tip + 1, +STICKY_BATCH_SIZE] */
+            for (uint32_t h = consecutive_tip + 1;
+                 h <= consecutive_tip + DOWNLOAD_STICKY_BATCH_SIZE &&
+                 sticky_count < DOWNLOAD_STICKY_BATCH_SIZE;
+                 h++) {
+              block_index_entry_t entry;
+              if (block_index_db_lookup_by_height(bdb, h, &entry) == ECHO_OK) {
+                memcpy(&sticky_hashes[sticky_count], &entry.hash,
+                       sizeof(hash256_t));
+                sticky_heights[sticky_count] = h;
+                sticky_count++;
+              }
+            }
+
+            if (sticky_count > 0) {
+              log_info(LOG_COMP_SYNC,
+                       "Stall detected at consecutive_tip=%u, creating sticky "
+                       "batch for %zu blocking blocks",
+                       consecutive_tip, sticky_count);
+              download_mgr_add_sticky_batch(mgr->download_mgr, sticky_hashes,
+                                            sticky_heights, sticky_count);
+            }
+          }
+        }
+
+        /* Have idle peers request work - they'll get the sticky batch */
+        for (size_t i = 0; i < mgr->peer_count; i++) {
+          peer_sync_state_t *ps = &mgr->peers[i];
+          if (!ps->sync_candidate || !peer_is_ready(ps->peer)) {
+            continue;
+          }
+          if (download_mgr_peer_is_idle(mgr->download_mgr, ps->peer)) {
+            download_mgr_peer_request_work(mgr->download_mgr, ps->peer);
+          }
+        }
+      }
+    }
     break;
+  }
 
   case SYNC_MODE_VALIDATING:
     /*
@@ -1848,18 +2029,34 @@ void sync_tick(sync_manager_t *mgr) {
       }
     }
 
-    /* TODO: Implement actual pruning logic:
-     *   - Calculate how many blocks to prune
-     *   - Delete old blk*.dat files
-     *   - Update block index to mark as pruned
-     *
-     * For now, just transition back to DOWNLOADING and clear throttle.
+    /*
+     * Pruning happens in node_tick() via node_maybe_prune().
+     * Our job here is to check if we're still over the headroom limit.
+     * If so, stay throttled waiting for more consecutive blocks.
+     * If not, resume downloading.
      */
-    log_info(LOG_COMP_SYNC,
-             "Pruning complete (stub), resuming downloads");
-
-    mgr->mode = SYNC_MODE_DOWNLOADING;
-    mgr->is_throttled = false;
+    if (should_throttle_downloads(mgr)) {
+      /* Still over headroom limit - stay throttled.
+       * This happens when blocking blocks prevent validation from progressing.
+       * We can only prune up to (validated_height - 550), so if validation
+       * is stuck, pruning can't free enough space. */
+      log_debug(LOG_COMP_SYNC,
+                "Post-prune: still over headroom limit, staying throttled");
+      mgr->mode = SYNC_MODE_THROTTLED;
+      /* Keep is_throttled = true */
+    } else if (should_trigger_validation(mgr)) {
+      /* Under headroom but over prune target - resume downloading with parallel validation */
+      log_info(LOG_COMP_SYNC,
+               "Post-prune: under headroom limit, resuming downloads");
+      mgr->mode = SYNC_MODE_DOWNLOADING;
+      mgr->is_throttled = false;
+    } else {
+      /* Under prune target - fully clear throttle */
+      log_info(LOG_COMP_SYNC,
+               "Post-prune: under prune target, resuming downloads");
+      mgr->mode = SYNC_MODE_DOWNLOADING;
+      mgr->is_throttled = false;
+    }
     break;
   }
 
@@ -1899,8 +2096,14 @@ void sync_get_progress(const sync_manager_t *mgr, sync_progress_t *progress) {
     progress->tip_work = tip.chainwork;
   }
 
-  /* blocks_validated = validated tip height (absolute, not relative to session) */
-  progress->blocks_validated = progress->tip_height;
+  /* blocks_validated = validated tip from block_tracker during IBD.
+   * During decoupled IBD, the block_tracker tracks validated progress,
+   * not the chainstate (which only advances after UTXO flush). */
+  if (mgr->tracker != NULL) {
+    progress->blocks_validated = block_tracker_get_validated_tip(mgr->tracker);
+  } else {
+    progress->blocks_validated = progress->tip_height;
+  }
 
   if (mgr->best_header) {
     progress->best_header_height = mgr->best_header->height;
@@ -1921,9 +2124,9 @@ void sync_get_progress(const sync_manager_t *mgr, sync_progress_t *progress) {
     progress->consecutive_tip = progress->tip_height;
   }
 
-  /* Calculate percentage */
+  /* Calculate percentage based on validated blocks */
   if (progress->best_header_height > 0) {
-    progress->sync_percentage = (float)progress->tip_height /
+    progress->sync_percentage = (float)progress->blocks_validated /
                                 (float)progress->best_header_height * 100.0f;
   }
 }
@@ -1933,8 +2136,26 @@ bool sync_is_complete(const sync_manager_t *mgr) {
 }
 
 bool sync_is_ibd(const sync_manager_t *mgr) {
-  return mgr && (mgr->mode == SYNC_MODE_HEADERS ||
-                 mgr->mode == SYNC_MODE_BLOCKS);
+  if (!mgr) {
+    return false;
+  }
+
+  /*
+   * All modes that are part of Initial Block Download.
+   * CRITICAL: This must include ALL decoupled IBD modes, otherwise
+   * node_tick() will call sync_start() and reset the mode to BLOCKS.
+   */
+  switch (mgr->mode) {
+  case SYNC_MODE_HEADERS:
+  case SYNC_MODE_DOWNLOADING: /* Same as SYNC_MODE_BLOCKS */
+  case SYNC_MODE_THROTTLED:
+  case SYNC_MODE_VALIDATING:
+  case SYNC_MODE_FLUSHING:
+  case SYNC_MODE_PRUNING:
+    return true;
+  default:
+    return false;
+  }
 }
 
 /* ============================================================================
@@ -2041,11 +2262,9 @@ static bool sync_start_chunk_validation(sync_manager_t *mgr) {
     return false;
   }
 
-  /* Limit chunk size to IBD_CHUNK_MAX_BLOCKS */
-  uint32_t chunk_end = range.start_height + IBD_CHUNK_MAX_BLOCKS - 1;
-  if (chunk_end > range.end_height) {
-    chunk_end = range.end_height;
-  }
+  /* Use entire consecutive range - no artificial limit.
+   * We want to validate ALL consecutive blocks as fast as possible. */
+  uint32_t chunk_end = range.end_height;
 
   /* Get node from callbacks for block loading */
   node_t *node = mgr->callbacks.node;
@@ -2085,28 +2304,20 @@ static bool sync_start_chunk_validation(sync_manager_t *mgr) {
 }
 
 /**
- * Process validation work during a tick.
+ * Process validation work - validate entire chunk at once.
  *
- * Validates a batch of blocks (up to IBD_BLOCKS_PER_TICK) to avoid
- * blocking the event loop for too long.
+ * During IBD, we validate as fast as possible. No throttling, no time budgets.
+ * Just validate every block in the chunk sequentially until done.
  *
- * Returns: true if validation is still in progress, false if done or error
+ * Returns: true if validation still in progress, false if done or error
  */
-#define IBD_BLOCKS_PER_TICK 10
-
 static bool sync_process_validation_tick(sync_manager_t *mgr) {
   if (mgr->ibd_validator == NULL) {
     return false;
   }
 
-  /* Validate a batch of blocks this tick */
-  for (int i = 0; i < IBD_BLOCKS_PER_TICK; i++) {
-    if (ibd_validator_is_complete(mgr->ibd_validator)) {
-      /* Chunk complete - transition to flushing */
-      sync_complete_validation_chunk(mgr);
-      return false;
-    }
-
+  /* Validate ALL blocks in the chunk - no throttling */
+  while (!ibd_validator_is_complete(mgr->ibd_validator)) {
     ibd_valid_result_t result = ibd_validator_validate_next(mgr->ibd_validator);
     if (result != IBD_VALID_OK) {
       /* Validation error */
@@ -2120,16 +2331,15 @@ static bool sync_process_validation_tick(sync_manager_t *mgr) {
       /* Destroy validator and mark as failed */
       ibd_validator_destroy(mgr->ibd_validator);
       mgr->ibd_validator = NULL;
-
-      /* TODO: Handle validation failure - possibly disconnect peer, reorg, etc. */
       return false;
     }
 
     mgr->blocks_validated_total++;
   }
 
-  /* Still more blocks to validate */
-  return true;
+  /* Chunk complete - transition to flushing */
+  sync_complete_validation_chunk(mgr);
+  return false;
 }
 
 /**

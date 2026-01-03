@@ -175,14 +175,8 @@ ibd_validator_t *ibd_validator_create(node_t *node, chainstate_t *chainstate,
     return NULL;
   }
 
-  /* Limit chunk size */
+  /* Calculate chunk size for logging */
   uint32_t chunk_size = end_height - start_height + 1;
-  if (chunk_size > IBD_CHUNK_MAX_BLOCKS) {
-    log_warn(LOG_COMP_SYNC,
-             "ibd_validator: chunk size %u exceeds max %u, clamping",
-             chunk_size, IBD_CHUNK_MAX_BLOCKS);
-    end_height = start_height + IBD_CHUNK_MAX_BLOCKS - 1;
-  }
 
   ibd_validator_t *validator = calloc(1, sizeof(ibd_validator_t));
   if (validator == NULL) {

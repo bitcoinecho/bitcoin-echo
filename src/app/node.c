@@ -23,6 +23,7 @@
 #include "node.h"
 #include "block.h"
 #include "block_index_db.h"
+#include "block_tracker.h"
 #include "blocks_storage.h"
 #include "chainstate.h"
 #include "consensus.h"
@@ -70,6 +71,7 @@ struct node {
   utxo_db_t utxo_db;
   block_index_db_t block_index_db;
   block_storage_t block_storage;           /* File-per-block storage */
+  uint64_t cached_storage_size;            /* Cached size, updated every prune check */
   bool utxo_db_open;
   bool block_index_db_open;
   bool block_storage_init;
@@ -3541,16 +3543,8 @@ uint64_t node_get_block_storage_size(const node_t *node) {
   if (node == NULL || !node->block_storage_init) {
     return 0;
   }
-
-  uint64_t total_size = 0;
-  echo_result_t result = block_storage_get_total_size(
-      &node->block_storage, &total_size);
-
-  if (result != ECHO_OK) {
-    return 0;
-  }
-
-  return total_size;
+  /* Return cached value (updated every 10s by node_maybe_prune) */
+  return node->cached_storage_size;
 }
 
 echo_result_t node_load_block(node_t *node, const hash256_t *hash,
@@ -3684,8 +3678,12 @@ echo_result_t node_maybe_prune(node_t *node) {
    * potentially 100GB+ before pruning begins.
    */
 
-  /* Get current storage size */
-  uint64_t current_size_bytes = node_get_block_storage_size(node);
+  /* Get current storage size (expensive scan - update cache) */
+  uint64_t current_size_bytes = 0;
+  if (node->block_storage_init) {
+    block_storage_get_total_size(&node->block_storage, &current_size_bytes);
+    node->cached_storage_size = current_size_bytes;
+  }
   uint64_t target_size_bytes = node->config.prune_target_mb * 1024 * 1024;
 
   /* Check if we're over target */
@@ -3714,19 +3712,28 @@ echo_result_t node_maybe_prune(node_t *node) {
              (unsigned long long)node->config.prune_target_mb);
   }
 
-  /* Calculate how much to prune */
-  uint64_t excess_bytes = current_size_bytes - target_size_bytes;
+  /* Get validated height to calculate max prune height.
+   * We can safely prune all blocks up to (validated_height - 550). */
+  uint32_t validated_height = 0;
+  if (node->sync_mgr != NULL) {
+    const block_tracker_t *tracker = sync_get_block_tracker(node->sync_mgr);
+    if (tracker != NULL) {
+      validated_height = block_tracker_get_validated_tip(tracker);
+    }
+  }
 
-  /* Estimate blocks to prune (assuming ~1 MB per block on average) */
-  uint32_t blocks_to_prune = (uint32_t)(excess_bytes / (1024ULL * 1024ULL)) + 100;
+  /* Cannot prune until validated > 550 */
+  if (validated_height <= 550) {
+    log_debug(LOG_COMP_STORE, "Cannot prune: validated_height=%u (need >550)",
+              validated_height);
+    return ECHO_OK;
+  }
 
-  /* Get current pruned height and calculate target */
-  uint32_t current_pruned_height = node_get_pruned_height(node);
-  uint32_t target_height = current_pruned_height + blocks_to_prune;
+  /* Prune everything from 0 to (validated_height - 550) */
+  uint32_t target_height = validated_height - 550;
 
-  /* Perform pruning */
   if (node->block_storage_init) {
-    prune_blocks_to_target(node, current_pruned_height, target_height);
+    prune_blocks_to_target(node, 0, target_height);
   }
 
   return ECHO_OK;
@@ -3757,16 +3764,39 @@ static uint32_t prune_blocks_to_target(node_t *node, uint32_t start_height,
     return 0;
   }
 
-  /* Get current chain height for safety margin */
-  uint32_t chain_height = 0;
-  if (node->consensus != NULL) {
-    chain_height = consensus_get_height(node->consensus);
+  /*
+   * Get validated height for safety margin.
+   * During decoupled IBD, consensus height stays at 0 until validation runs.
+   * We must use the block_tracker's validated_tip to know what's actually safe to prune.
+   *
+   * CRITICAL: We can ONLY prune blocks that have been validated. If no validation
+   * has occurred yet, we must NOT prune anything, even if storage is full.
+   */
+  uint32_t validated_height = 0;
+  if (node->sync_mgr != NULL) {
+    const block_tracker_t *tracker = sync_get_block_tracker(node->sync_mgr);
+    if (tracker != NULL) {
+      validated_height = block_tracker_get_validated_tip(tracker);
+    }
+  }
+  /*
+   * NOTE: We intentionally do NOT fall back to consensus_get_height() here.
+   * During decoupled IBD, block_tracker is the source of truth for validated_tip.
+   * consensus_get_height() returns UINT32_MAX when uninitialized, which would
+   * bypass the safety check below.
+   */
+
+  /* Cannot prune until validation has made sufficient progress */
+  if (validated_height <= 550) {
+    log_debug(LOG_COMP_STORE,
+              "Cannot prune: validated_height=%u (need >550)", validated_height);
+    return 0;
   }
 
   /* Maintain safety margin: keep at least 550 blocks for reorg safety */
   uint32_t min_keep_height = 0;
-  if (chain_height > 550) {
-    min_keep_height = chain_height - 550;
+  if (validated_height > 550) {
+    min_keep_height = validated_height - 550;
   }
 
   /* Don't prune into the safety margin */

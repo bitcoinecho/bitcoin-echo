@@ -68,6 +68,16 @@
  */
 #define DOWNLOAD_MIN_PEERS_TO_KEEP 3
 
+/**
+ * Phase 8.2: Blocking block detection constants.
+ *
+ * When consecutive_tip doesn't advance for STALL_TIMEOUT_MS, we detect
+ * a blocking block and create a sticky batch to prioritize it.
+ */
+#define DOWNLOAD_STALL_TIMEOUT_MS 5000 /* 5 seconds without progress */
+#define DOWNLOAD_STICKY_BATCH_SIZE 64  /* Request 64 blocks in sticky batch */
+#define DOWNLOAD_STICKY_REDUNDANCY 3   /* Assign to 3 peers simultaneously */
+
 /* ============================================================================
  * Work Batch
  * ============================================================================
@@ -371,5 +381,92 @@ typedef struct {
  */
 void download_mgr_get_metrics(const download_mgr_t *mgr,
                               download_metrics_t *metrics);
+
+/* ============================================================================
+ * Phase 8.2: Blocking Block Detection
+ * ============================================================================
+ */
+
+/**
+ * Update consecutive_tip and check for stall.
+ *
+ * Call this from sync_tick() with the current consecutive_tip.
+ * If consecutive_tip hasn't advanced for DOWNLOAD_STALL_TIMEOUT_MS,
+ * returns true indicating a stall. The caller should then create a
+ * sticky batch for the blocking blocks.
+ *
+ * Parameters:
+ *   mgr             - Download manager
+ *   consecutive_tip - Current consecutive tip from block_tracker
+ *
+ * Returns:
+ *   true if stall detected (consecutive_tip stuck for 5+ seconds)
+ */
+bool download_mgr_check_consecutive_stall(download_mgr_t *mgr,
+                                          uint32_t consecutive_tip);
+
+/**
+ * Add a sticky batch for blocking blocks.
+ *
+ * When a stall is detected, call this with the hashes of blocking blocks.
+ * The sticky batch will be assigned to multiple peers simultaneously
+ * for redundant fetching.
+ *
+ * Parameters:
+ *   mgr     - Download manager
+ *   hashes  - Array of block hashes to request (blocking blocks)
+ *   heights - Array of corresponding heights
+ *   count   - Number of blocks (max DOWNLOAD_STICKY_BATCH_SIZE)
+ */
+void download_mgr_add_sticky_batch(download_mgr_t *mgr,
+                                   const hash256_t *hashes,
+                                   const uint32_t *heights,
+                                   size_t count);
+
+/**
+ * Clear the sticky batch when consecutive_tip advances.
+ *
+ * Call this when consecutive_tip advances past the blocking range.
+ * This allows normal batch assignment to resume.
+ *
+ * Parameters:
+ *   mgr             - Download manager
+ *   consecutive_tip - Current consecutive tip from block_tracker
+ */
+void download_mgr_clear_sticky_batch(download_mgr_t *mgr,
+                                     uint32_t consecutive_tip);
+
+/**
+ * Check if a sticky batch is currently active.
+ *
+ * Parameters:
+ *   mgr - Download manager
+ *
+ * Returns:
+ *   true if a sticky batch is in flight
+ */
+bool download_mgr_has_sticky_batch(const download_mgr_t *mgr);
+
+/**
+ * Get the blocking block height (consecutive_tip + 1) during a stall.
+ *
+ * Parameters:
+ *   mgr - Download manager
+ *
+ * Returns:
+ *   Height of the blocking block, or 0 if no stall
+ */
+uint32_t download_mgr_get_blocking_height(const download_mgr_t *mgr);
+
+/**
+ * Get the number of peers assigned to the sticky batch.
+ *
+ * Parameters:
+ *   mgr - Download manager
+ *
+ * Returns:
+ *   Number of peers currently assigned the sticky batch
+ */
+size_t download_mgr_sticky_batch_peer_count(const download_mgr_t *mgr);
 
 #endif /* ECHO_DOWNLOAD_MGR_H */

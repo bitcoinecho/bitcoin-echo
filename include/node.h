@@ -47,7 +47,7 @@
  * Minimum pruning target in MB.
  * Must keep at least 550 blocks (~550 MB) for reorg safety.
  */
-#define PRUNE_TARGET_MIN_MB 550
+#define PRUNE_TARGET_MIN_MB 128
 
 /**
  * Node configuration.

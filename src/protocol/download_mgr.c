@@ -54,6 +54,18 @@ struct download_mgr {
   /* Peer performance tracking */
   peer_perf_t peers[DOWNLOAD_MAX_PEERS];
   size_t peer_count;
+
+  /* Phase 8.2: Stall detection for blocking block prioritization */
+  uint32_t last_consecutive_tip;        /* Last observed consecutive_tip */
+  uint64_t last_consecutive_advance_ms; /* When it last advanced */
+
+  /* Sticky batch state - priority fetch for blocking blocks */
+  bool sticky_batch_active;                              /* Is a sticky batch in flight? */
+  hash256_t sticky_hashes[DOWNLOAD_STICKY_BATCH_SIZE];   /* Block hashes to prioritize */
+  uint32_t sticky_heights[DOWNLOAD_STICKY_BATCH_SIZE];   /* Corresponding heights */
+  size_t sticky_count;                                   /* Number of blocks in sticky batch */
+  peer_t *sticky_peers[DOWNLOAD_STICKY_REDUNDANCY];      /* Peers assigned sticky batch */
+  size_t sticky_peer_count;                              /* Number of peers assigned */
 };
 
 /* ============================================================================
@@ -408,6 +420,45 @@ bool download_mgr_peer_request_work(download_mgr_t *mgr, peer_t *peer) {
     LOG_INFO("download_mgr: freeing completed batch [%u-%u]", old_start, old_end);
     batch_node_destroy(old_node);
     perf->batch = NULL;
+  }
+
+  /* Phase 8.2: Check if sticky batch needs assignment.
+   *
+   * When a stall is detected, we create a sticky batch for blocking blocks.
+   * We assign this to multiple peers simultaneously for redundant fetching.
+   * First peer to deliver clears the stall; duplicates are deduplicated at storage.
+   */
+  if (mgr->sticky_batch_active &&
+      mgr->sticky_peer_count < DOWNLOAD_STICKY_REDUNDANCY) {
+    /* Check if this peer already has the sticky batch */
+    bool already_assigned = false;
+    for (size_t i = 0; i < mgr->sticky_peer_count; i++) {
+      if (mgr->sticky_peers[i] == peer) {
+        already_assigned = true;
+        break;
+      }
+    }
+
+    if (!already_assigned) {
+      /* Assign sticky batch to this peer */
+      mgr->sticky_peers[mgr->sticky_peer_count++] = peer;
+
+      /* Send getdata for sticky batch blocks */
+      if (mgr->callbacks.send_getdata != NULL) {
+        mgr->callbacks.send_getdata(peer, mgr->sticky_hashes, mgr->sticky_count,
+                                    mgr->callbacks.ctx);
+      }
+
+      LOG_INFO("download_mgr: assigned sticky batch [%u-%u] to peer %zu/%zu",
+               mgr->sticky_heights[0],
+               mgr->sticky_heights[mgr->sticky_count - 1],
+               mgr->sticky_peer_count, (size_t)DOWNLOAD_STICKY_REDUNDANCY);
+
+      /* Note: We don't set perf->batch for sticky batch - the peer can still
+       * receive normal batch work. Sticky batch blocks are tracked separately
+       * and deduplicated at storage layer. */
+      return true;
+    }
   }
 
   /* Try to get a batch from the queue */
@@ -861,4 +912,100 @@ void download_mgr_get_metrics(const download_mgr_t *mgr,
   metrics->aggregate_rate = download_mgr_aggregate_rate(mgr);
   metrics->active_peers = download_mgr_active_peer_count(mgr);
   metrics->stalled_peers = 0; /* No stall tracking in PULL model */
+}
+
+/* ============================================================================
+ * Phase 8.2: Blocking Block Detection
+ * ============================================================================
+ */
+
+bool download_mgr_check_consecutive_stall(download_mgr_t *mgr,
+                                          uint32_t consecutive_tip) {
+  if (mgr == NULL) {
+    return false;
+  }
+
+  uint64_t now = plat_time_ms();
+
+  /* Check if consecutive_tip advanced */
+  if (consecutive_tip > mgr->last_consecutive_tip) {
+    /* Progress! Reset stall timer. */
+    mgr->last_consecutive_tip = consecutive_tip;
+    mgr->last_consecutive_advance_ms = now;
+    return false;
+  }
+
+  /* First call - initialize tracking */
+  if (mgr->last_consecutive_advance_ms == 0) {
+    mgr->last_consecutive_tip = consecutive_tip;
+    mgr->last_consecutive_advance_ms = now;
+    return false;
+  }
+
+  /* Check if we've been stuck for too long */
+  uint64_t stall_duration = now - mgr->last_consecutive_advance_ms;
+  if (stall_duration < DOWNLOAD_STALL_TIMEOUT_MS) {
+    return false; /* Not stalled yet */
+  }
+
+  /* Stall detected - consecutive_tip hasn't advanced for 5+ seconds */
+  return true;
+}
+
+void download_mgr_add_sticky_batch(download_mgr_t *mgr,
+                                   const hash256_t *hashes,
+                                   const uint32_t *heights,
+                                   size_t count) {
+  if (mgr == NULL || hashes == NULL || heights == NULL || count == 0) {
+    return;
+  }
+
+  /* Clamp to max sticky batch size */
+  if (count > DOWNLOAD_STICKY_BATCH_SIZE) {
+    count = DOWNLOAD_STICKY_BATCH_SIZE;
+  }
+
+  /* Store the sticky batch */
+  memcpy(mgr->sticky_hashes, hashes, count * sizeof(hash256_t));
+  memcpy(mgr->sticky_heights, heights, count * sizeof(uint32_t));
+  mgr->sticky_count = count;
+  mgr->sticky_batch_active = true;
+  mgr->sticky_peer_count = 0;
+  memset(mgr->sticky_peers, 0, sizeof(mgr->sticky_peers));
+
+  LOG_INFO("download_mgr: created sticky batch for heights %u-%u (%zu blocks)",
+           heights[0], heights[count - 1], count);
+}
+
+void download_mgr_clear_sticky_batch(download_mgr_t *mgr,
+                                     uint32_t consecutive_tip) {
+  if (mgr == NULL || !mgr->sticky_batch_active) {
+    return;
+  }
+
+  /* Clear if consecutive_tip has advanced past the sticky batch */
+  uint32_t sticky_end = mgr->sticky_heights[mgr->sticky_count - 1];
+  if (consecutive_tip >= sticky_end) {
+    LOG_INFO("download_mgr: clearing sticky batch (consecutive_tip=%u >= end=%u)",
+             consecutive_tip, sticky_end);
+    mgr->sticky_batch_active = false;
+    mgr->sticky_count = 0;
+    mgr->sticky_peer_count = 0;
+    memset(mgr->sticky_peers, 0, sizeof(mgr->sticky_peers));
+  }
+}
+
+bool download_mgr_has_sticky_batch(const download_mgr_t *mgr) {
+  return mgr != NULL && mgr->sticky_batch_active;
+}
+
+uint32_t download_mgr_get_blocking_height(const download_mgr_t *mgr) {
+  if (mgr == NULL || !mgr->sticky_batch_active || mgr->sticky_count == 0) {
+    return 0;
+  }
+  return mgr->sticky_heights[0];
+}
+
+size_t download_mgr_sticky_batch_peer_count(const download_mgr_t *mgr) {
+  return mgr != NULL ? mgr->sticky_peer_count : 0;
 }

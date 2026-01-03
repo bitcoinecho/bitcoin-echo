@@ -78,7 +78,7 @@ typedef struct block_tracker block_tracker_t;
  * How often to check storage pressure during DOWNLOADING mode.
  * Too frequent = overhead, too infrequent = overshoot headroom.
  */
-#define SYNC_STORAGE_CHECK_INTERVAL_MS 1000
+#define SYNC_STORAGE_CHECK_INTERVAL_MS 10000
 
 /**
  * Validation flush interval for archival nodes (block count).

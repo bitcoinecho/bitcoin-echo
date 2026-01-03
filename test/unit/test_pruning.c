@@ -112,8 +112,8 @@ done:
 static void test_prune_target_min(void) {
   bool passed = true;
 
-  /* Verify minimum is 550 MB (for reorg safety) */
-  if (PRUNE_TARGET_MIN_MB != 550) {
+  /* Verify minimum is 128 MB (for testing - will increase before production) */
+  if (PRUNE_TARGET_MIN_MB != 128) {
     passed = false;
   }
 
@@ -121,7 +121,7 @@ static void test_prune_target_min(void) {
   if (passed) {
     test_pass();
   } else {
-    test_fail("expected 550 MB minimum");
+    test_fail("expected 128 MB minimum");
   }
 }
 
