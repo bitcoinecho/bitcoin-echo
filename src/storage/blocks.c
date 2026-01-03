@@ -1,7 +1,7 @@
 /*
  * Bitcoin Echo — Block File Storage Implementation
  *
- * Append-only block files compatible with Bitcoin Core format.
+ * File-per-block storage for IBD decoupled architecture.
  *
  * Build once. Build right. Stop.
  */
@@ -9,227 +9,120 @@
 #include "blocks_storage.h"
 #include "echo_config.h"
 #include "echo_types.h"
+#include "log.h"
 #include "platform.h"
+#include <dirent.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+/* ============================================================================
+ * FILE-PER-BLOCK STORAGE IMPLEMENTATION
+ * ============================================================================
+ */
 
 /*
- * Scan existing block files to find the current write position.
- * This is called during initialization to resume writing where we left off.
- * Handles gaps from pruned files (e.g., blk00000-blk00005 deleted).
+ * Get the path for a block file given its height.
+ * Format: {data_dir}/blocks/{height}.blk
  */
-static echo_result_t scan_block_files(block_file_manager_t *mgr) {
-  uint32_t file_index = 0;
-  uint32_t highest_found = UINT32_MAX; /* Track highest existing file */
-  uint32_t consecutive_missing = 0;
-  char path[512];
-
-  /*
-   * Find the highest numbered block file, accounting for gaps from pruning.
-   * Stop scanning after 1000 consecutive missing files (arbitrary but safe).
-   */
-  while (consecutive_missing < 1000) {
-    block_storage_get_path(mgr, file_index, path);
-
-    if (plat_file_exists(path)) {
-      highest_found = file_index;
-      consecutive_missing = 0;
-    } else {
-      consecutive_missing++;
-    }
-
-    file_index++;
-
-    /* Sanity check: don't scan more than 100,000 files */
-    if (file_index > 100000) {
-      break;
-    }
-  }
-
-  /* If no files found, start fresh */
-  if (highest_found == UINT32_MAX) {
-    mgr->current_file_index = 0;
-    mgr->current_file_offset = 0;
-    return ECHO_OK;
-  }
-
-  file_index = highest_found;
-
-  /* Open the last file and find its size */
-  block_storage_get_path(mgr, file_index, path);
-
-  FILE *f = fopen(path, "rb");
-  if (!f) {
-    return ECHO_ERR_PLATFORM_IO;
-  }
-
-  /* Seek to end to get file size */
-  if (fseek(f, 0, SEEK_END) != 0) {
-    fclose(f);
-    return ECHO_ERR_PLATFORM_IO;
-  }
-
-  long size = ftell(f);
-  fclose(f);
-
-  if (size < 0 || size > (long)BLOCK_FILE_MAX_SIZE) {
-    return ECHO_ERR_PLATFORM_IO;
-  }
-
-  /* If the last file is at max size, start a new file */
-  if (size >= (long)BLOCK_FILE_MAX_SIZE) {
-    mgr->current_file_index = file_index + 1;
-    mgr->current_file_offset = 0;
-  } else {
-    mgr->current_file_index = file_index;
-    mgr->current_file_offset = (uint32_t)size;
-  }
-
-  return ECHO_OK;
+void block_storage_get_height_path(const block_storage_t *storage,
+                                   uint32_t height, char *path_out) {
+  snprintf(path_out, 512, "%s/%s/%u.blk", storage->data_dir, ECHO_BLOCKS_DIR,
+           height);
 }
 
 /*
- * Initialize block file manager.
+ * Initialize file-per-block storage.
  */
-echo_result_t block_storage_init(block_file_manager_t *mgr,
-                                 const char *data_dir) {
-  if (!mgr || !data_dir) {
+echo_result_t block_storage_create(block_storage_t *storage,
+                                   const char *data_dir) {
+  if (storage == NULL || data_dir == NULL) {
     return ECHO_ERR_NULL_PARAM;
   }
 
   /* Copy data directory path */
   size_t len = strlen(data_dir);
-  if (len >= sizeof(mgr->data_dir)) {
+  if (len >= sizeof(storage->data_dir)) {
     return ECHO_ERR_BUFFER_TOO_SMALL;
   }
-  memcpy(mgr->data_dir, data_dir, len + 1);
+  memcpy(storage->data_dir, data_dir, len + 1);
 
   /* Create blocks directory */
   char blocks_dir[512];
   snprintf(blocks_dir, sizeof(blocks_dir), "%s/%s", data_dir, ECHO_BLOCKS_DIR);
 
   if (plat_dir_create(blocks_dir) != PLAT_OK) {
+    log_error(LOG_COMP_STORE, "Failed to create blocks directory: %s",
+              blocks_dir);
     return ECHO_ERR_PLATFORM_IO;
   }
 
-  /* Initialize batching state */
-  mgr->current_file = NULL;
-  mgr->blocks_since_flush = 0;
-
-  /* Scan existing files to find current position */
-  return scan_block_files(mgr);
-}
-
-/*
- * Get path to block file.
- */
-void block_storage_get_path(const block_file_manager_t *mgr,
-                            uint32_t file_index, char *path_out) {
-  snprintf(path_out, 512, "%s/%s/blk%05u.dat", mgr->data_dir, ECHO_BLOCKS_DIR,
-           file_index);
-}
-
-/*
- * Write a block to disk.
- *
- * IBD optimization: keeps file handle open across writes to avoid
- * per-block fopen/fclose syscall overhead.
- */
-echo_result_t block_storage_write(block_file_manager_t *mgr,
-                                  const uint8_t *block_data,
-                                  uint32_t block_size,
-                                  block_file_pos_t *pos_out) {
-  if (!mgr || !block_data || !pos_out) {
-    return ECHO_ERR_NULL_PARAM;
-  }
-
-  /* Check if we need to start a new file */
-  uint32_t record_size = BLOCK_FILE_RECORD_HEADER_SIZE + block_size;
-  bool need_new_file =
-      (mgr->current_file_offset + record_size > BLOCK_FILE_MAX_SIZE);
-
-  if (need_new_file) {
-    /* Flush and close current file before switching */
-    if (mgr->current_file != NULL) {
-      FILE *f = (FILE *)mgr->current_file;
-      fflush(f);
-      fclose(f);
-      mgr->current_file = NULL;
-      mgr->blocks_since_flush = 0;
-    }
-
-    /* Start new file */
-    mgr->current_file_index++;
-    mgr->current_file_offset = 0;
-  }
-
-  /* Open file if not already open */
-  if (mgr->current_file == NULL) {
-    char path[512];
-    block_storage_get_path(mgr, mgr->current_file_index, path);
-
-    FILE *f = fopen(path, "ab");
-    if (!f) {
-      return ECHO_ERR_PLATFORM_IO;
-    }
-    mgr->current_file = f;
-  }
-
-  FILE *f = (FILE *)mgr->current_file;
-
-  /* Write magic bytes (little-endian) */
-  uint32_t magic = ECHO_NETWORK_MAGIC;
-  uint8_t magic_bytes[4] = {(magic >> 0) & 0xFF, (magic >> 8) & 0xFF,
-                            (magic >> 16) & 0xFF, (magic >> 24) & 0xFF};
-
-  if (fwrite(magic_bytes, 1, 4, f) != 4) {
-    return ECHO_ERR_PLATFORM_IO;
-  }
-
-  /* Write block size (little-endian) */
-  uint8_t size_bytes[4] = {(block_size >> 0) & 0xFF, (block_size >> 8) & 0xFF,
-                           (block_size >> 16) & 0xFF,
-                           (block_size >> 24) & 0xFF};
-
-  if (fwrite(size_bytes, 1, 4, f) != 4) {
-    return ECHO_ERR_PLATFORM_IO;
-  }
-
-  /* Write block data */
-  if (fwrite(block_data, 1, block_size, f) != block_size) {
-    return ECHO_ERR_PLATFORM_IO;
-  }
-
-  /* Return position */
-  pos_out->file_index = mgr->current_file_index;
-  pos_out->file_offset = mgr->current_file_offset;
-
-  /* Update current position */
-  mgr->current_file_offset += record_size;
-  mgr->blocks_since_flush++;
-
-  /* Periodic flush for durability (every 100 blocks) */
-  if (mgr->blocks_since_flush >= BLOCK_STORAGE_FLUSH_INTERVAL) {
-    fflush(f);
-    mgr->blocks_since_flush = 0;
-  }
-
+  log_debug(LOG_COMP_STORE, "Initialized file-per-block storage at %s",
+            blocks_dir);
   return ECHO_OK;
 }
 
 /*
- * Read a block from disk.
- *
- * NOTE: If reading from the current write file, we must flush first
- * to ensure buffered writes are visible to the separate read handle.
+ * Write a block to storage by height.
  */
-echo_result_t block_storage_read(block_file_manager_t *mgr,
-                                 block_file_pos_t pos, uint8_t **block_out,
-                                 uint32_t *size_out) {
-  if (!mgr || !block_out || !size_out) {
+echo_result_t block_storage_write_height(block_storage_t *storage,
+                                         uint32_t height,
+                                         const uint8_t *block_data,
+                                         uint32_t block_size) {
+  if (storage == NULL || block_data == NULL) {
+    return ECHO_ERR_NULL_PARAM;
+  }
+
+  if (block_size == 0) {
+    return ECHO_ERR_INVALID_PARAM;
+  }
+
+  /* Get file path */
+  char path[512];
+  block_storage_get_height_path(storage, height, path);
+
+  /* Open file for writing (creates if doesn't exist, truncates if exists) */
+  FILE *f = fopen(path, "wb");
+  if (f == NULL) {
+    log_error(LOG_COMP_STORE, "Failed to open block file for writing: %s",
+              path);
+    return ECHO_ERR_PLATFORM_IO;
+  }
+
+  /* Write raw block data */
+  size_t written = fwrite(block_data, 1, block_size, f);
+  if (written != block_size) {
+    log_error(LOG_COMP_STORE,
+              "Failed to write block %u: wrote %zu of %u bytes", height,
+              written, block_size);
+    fclose(f);
+    /* Try to remove the partial file */
+    unlink(path);
+    return ECHO_ERR_PLATFORM_IO;
+  }
+
+  /* Flush and close */
+  if (fflush(f) != 0) {
+    log_error(LOG_COMP_STORE, "Failed to flush block %u", height);
+    fclose(f);
+    return ECHO_ERR_PLATFORM_IO;
+  }
+
+  fclose(f);
+  return ECHO_OK;
+}
+
+/*
+ * Read a block from storage by height.
+ */
+echo_result_t block_storage_read_height(block_storage_t *storage,
+                                        uint32_t height, uint8_t **block_out,
+                                        uint32_t *size_out) {
+  if (storage == NULL || block_out == NULL || size_out == NULL) {
     return ECHO_ERR_NULL_PARAM;
   }
 
@@ -237,293 +130,268 @@ echo_result_t block_storage_read(block_file_manager_t *mgr,
   *block_out = NULL;
   *size_out = 0;
 
-  /* CRITICAL: If reading from the current write file, flush buffered writes.
-   * Without this, the read handle won't see data still in stdio's buffer. */
-  if (pos.file_index == mgr->current_file_index && mgr->current_file != NULL) {
-    fflush((FILE *)mgr->current_file);
-  }
-
-  /* Get path to file */
+  /* Get file path */
   char path[512];
-  block_storage_get_path(mgr, pos.file_index, path);
+  block_storage_get_height_path(storage, height, path);
 
   /* Open file for reading */
   FILE *f = fopen(path, "rb");
-  if (!f) {
-    return ECHO_ERR_NOT_FOUND;
-  }
-
-  /* Seek to position */
-  if (fseek(f, pos.file_offset, SEEK_SET) != 0) {
-    fclose(f);
-    return ECHO_ERR_PLATFORM_IO;
-  }
-
-  /* Read and verify magic bytes */
-  uint8_t magic_bytes[4];
-  if (fread(magic_bytes, 1, 4, f) != 4) {
-    fclose(f);
-    return ECHO_ERR_TRUNCATED;
-  }
-
-  uint32_t magic =
-      ((uint32_t)magic_bytes[0] << 0) | ((uint32_t)magic_bytes[1] << 8) |
-      ((uint32_t)magic_bytes[2] << 16) | ((uint32_t)magic_bytes[3] << 24);
-
-  if (magic != ECHO_NETWORK_MAGIC) {
-    fclose(f);
-    return ECHO_ERR_INVALID_FORMAT;
-  }
-
-  /* Read block size */
-  uint8_t size_bytes[4];
-  if (fread(size_bytes, 1, 4, f) != 4) {
-    fclose(f);
-    return ECHO_ERR_TRUNCATED;
-  }
-
-  uint32_t block_size =
-      ((uint32_t)size_bytes[0] << 0) | ((uint32_t)size_bytes[1] << 8) |
-      ((uint32_t)size_bytes[2] << 16) | ((uint32_t)size_bytes[3] << 24);
-
-  /* Sanity check block size */
-  if (block_size == 0 || block_size > ECHO_MAX_BLOCK_SIZE * 4) {
-    fclose(f);
-    return ECHO_ERR_INVALID_FORMAT;
-  }
-
-  /* Allocate buffer for block */
-  uint8_t *block = (uint8_t *)malloc(block_size);
-  if (!block) {
-    fclose(f);
-    return ECHO_ERR_OUT_OF_MEMORY;
-  }
-
-  /* Read block data */
-  if (fread(block, 1, block_size, f) != block_size) {
-    free(block);
-    fclose(f);
-    return ECHO_ERR_TRUNCATED;
-  }
-
-  fclose(f);
-
-  /* Success */
-  *block_out = block;
-  *size_out = block_size;
-  return ECHO_OK;
-}
-
-/*
- * ============================================================================
- * PRUNING OPERATIONS
- * ============================================================================
- */
-
-/*
- * Delete a block file.
- */
-echo_result_t block_storage_delete_file(block_file_manager_t *mgr,
-                                        uint32_t file_index) {
-  if (mgr == NULL) {
-    return ECHO_ERR_NULL_PARAM;
-  }
-
-  /* Cannot delete the current write file */
-  if (file_index >= mgr->current_file_index) {
-    return ECHO_ERR_INVALID_PARAM;
-  }
-
-  char path[512];
-  block_storage_get_path(mgr, file_index, path);
-
-  /* Check if file exists */
-  if (!plat_file_exists(path)) {
-    return ECHO_ERR_NOT_FOUND;
-  }
-
-  /* Delete the file */
-  if (remove(path) != 0) {
-    return ECHO_ERR_PLATFORM_IO;
-  }
-
-  return ECHO_OK;
-}
-
-/*
- * Check if a block file exists.
- */
-echo_result_t block_storage_file_exists(const block_file_manager_t *mgr,
-                                        uint32_t file_index, bool *exists) {
-  if (mgr == NULL || exists == NULL) {
-    return ECHO_ERR_NULL_PARAM;
-  }
-
-  char path[512];
-  block_storage_get_path(mgr, file_index, path);
-
-  *exists = plat_file_exists(path);
-  return ECHO_OK;
-}
-
-/*
- * Get the size of a block file.
- *
- * For the current write file, returns tracked offset (includes buffered data).
- * For other files, queries the filesystem.
- */
-echo_result_t block_storage_get_file_size(const block_file_manager_t *mgr,
-                                          uint32_t file_index, uint64_t *size) {
-  if (mgr == NULL || size == NULL) {
-    return ECHO_ERR_NULL_PARAM;
-  }
-
-  /* For current write file, use tracked offset (includes buffered data) */
-  if (file_index == mgr->current_file_index && mgr->current_file != NULL) {
-    *size = mgr->current_file_offset;
-    return ECHO_OK;
-  }
-
-  char path[512];
-  block_storage_get_path(mgr, file_index, path);
-
-  /* Check if file exists */
-  if (!plat_file_exists(path)) {
-    *size = 0;
-    return ECHO_OK;
-  }
-
-  FILE *f = fopen(path, "rb");
   if (f == NULL) {
-    *size = 0;
-    return ECHO_OK;
+    return ECHO_ERR_NOT_FOUND;
   }
 
-  /* Seek to end to get file size */
+  /* Get file size */
   if (fseek(f, 0, SEEK_END) != 0) {
     fclose(f);
     return ECHO_ERR_PLATFORM_IO;
   }
 
   long file_size = ftell(f);
-  fclose(f);
+  if (file_size <= 0 || file_size > (long)ECHO_MAX_BLOCK_SIZE * 4) {
+    fclose(f);
+    return ECHO_ERR_INVALID_FORMAT;
+  }
 
-  if (file_size < 0) {
+  /* Seek back to start */
+  if (fseek(f, 0, SEEK_SET) != 0) {
+    fclose(f);
     return ECHO_ERR_PLATFORM_IO;
   }
 
-  *size = (uint64_t)file_size;
+  /* Allocate buffer */
+  uint8_t *block = (uint8_t *)malloc((size_t)file_size);
+  if (block == NULL) {
+    fclose(f);
+    return ECHO_ERR_OUT_OF_MEMORY;
+  }
+
+  /* Read entire file */
+  size_t bytes_read = fread(block, 1, (size_t)file_size, f);
+  fclose(f);
+
+  if (bytes_read != (size_t)file_size) {
+    free(block);
+    return ECHO_ERR_TRUNCATED;
+  }
+
+  *block_out = block;
+  *size_out = (uint32_t)file_size;
+  return ECHO_OK;
+}
+
+/*
+ * Prune (delete) a block from storage.
+ */
+echo_result_t block_storage_prune_height(block_storage_t *storage,
+                                         uint32_t height) {
+  if (storage == NULL) {
+    return ECHO_ERR_NULL_PARAM;
+  }
+
+  /* Get file path */
+  char path[512];
+  block_storage_get_height_path(storage, height, path);
+
+  /* Delete the file (ignore ENOENT - file doesn't exist is OK) */
+  if (unlink(path) != 0) {
+    /* Check if file didn't exist (that's fine, idempotent) */
+    if (!plat_file_exists(path)) {
+      return ECHO_OK;
+    }
+    log_error(LOG_COMP_STORE, "Failed to prune block %u", height);
+    return ECHO_ERR_PLATFORM_IO;
+  }
+
+  log_debug(LOG_COMP_STORE, "Pruned block %u", height);
+  return ECHO_OK;
+}
+
+/*
+ * Check if a block exists in storage.
+ */
+bool block_storage_exists_height(const block_storage_t *storage,
+                                 uint32_t height) {
+  if (storage == NULL) {
+    return false;
+  }
+
+  char path[512];
+  block_storage_get_height_path(storage, height, path);
+  return plat_file_exists(path);
+}
+
+/*
+ * Comparison function for qsort (ascending order).
+ */
+static int compare_heights(const void *a, const void *b) {
+  uint32_t ha = *(const uint32_t *)a;
+  uint32_t hb = *(const uint32_t *)b;
+  if (ha < hb)
+    return -1;
+  if (ha > hb)
+    return 1;
+  return 0;
+}
+
+/*
+ * Check if filename matches {digits}.blk pattern.
+ * Returns the parsed height on success, UINT32_MAX on failure.
+ */
+static uint32_t parse_block_filename(const char *name) {
+  size_t len = strlen(name);
+
+  /* Must be at least "0.blk" (5 chars) and end with ".blk" */
+  if (len < 5 || strcmp(name + len - 4, ".blk") != 0) {
+    return UINT32_MAX;
+  }
+
+  /* Check all chars before .blk are digits */
+  size_t digit_len = len - 4;
+  for (size_t i = 0; i < digit_len; i++) {
+    if (name[i] < '0' || name[i] > '9') {
+      return UINT32_MAX;
+    }
+  }
+
+  /* Parse height */
+  char *endptr;
+  unsigned long height = strtoul(name, &endptr, 10);
+
+  /* Ensure parsing stopped at .blk */
+  if (endptr != name + digit_len) {
+    return UINT32_MAX;
+  }
+
+  /* Check for overflow */
+  if (height > UINT32_MAX) {
+    return UINT32_MAX;
+  }
+
+  return (uint32_t)height;
+}
+
+/*
+ * Scan storage and return all stored block heights.
+ */
+echo_result_t block_storage_scan_heights(const block_storage_t *storage,
+                                         uint32_t **heights_out,
+                                         size_t *count_out) {
+  if (storage == NULL || heights_out == NULL || count_out == NULL) {
+    return ECHO_ERR_NULL_PARAM;
+  }
+
+  *heights_out = NULL;
+  *count_out = 0;
+
+  /* Build blocks directory path */
+  char blocks_dir[512];
+  snprintf(blocks_dir, sizeof(blocks_dir), "%s/%s", storage->data_dir,
+           ECHO_BLOCKS_DIR);
+
+  /* Open directory */
+  DIR *dir = opendir(blocks_dir);
+  if (dir == NULL) {
+    /* Directory doesn't exist = no blocks, return empty */
+    return ECHO_OK;
+  }
+
+  /* First pass: count matching files */
+  size_t count = 0;
+  struct dirent *entry;
+  while ((entry = readdir(dir)) != NULL) {
+    if (parse_block_filename(entry->d_name) != UINT32_MAX) {
+      count++;
+    }
+  }
+
+  /* Empty directory */
+  if (count == 0) {
+    closedir(dir);
+    return ECHO_OK;
+  }
+
+  /* Allocate array */
+  uint32_t *heights = (uint32_t *)malloc(count * sizeof(uint32_t));
+  if (heights == NULL) {
+    closedir(dir);
+    return ECHO_ERR_OUT_OF_MEMORY;
+  }
+
+  /* Second pass: collect heights */
+  rewinddir(dir);
+  size_t idx = 0;
+  while ((entry = readdir(dir)) != NULL && idx < count) {
+    uint32_t height = parse_block_filename(entry->d_name);
+    if (height != UINT32_MAX) {
+      heights[idx++] = height;
+    }
+  }
+
+  closedir(dir);
+
+  /* Sort heights in ascending order */
+  qsort(heights, idx, sizeof(uint32_t), compare_heights);
+
+  *heights_out = heights;
+  *count_out = idx;
+
+  log_debug(LOG_COMP_STORE, "Scanned %zu block files in storage", idx);
   return ECHO_OK;
 }
 
 /*
  * Get total disk usage of all block files.
- * Handles gaps from pruning (e.g., blk00000 deleted but blk00001+ exist).
  */
-echo_result_t block_storage_get_total_size(const block_file_manager_t *mgr,
-                                           uint64_t *total_size) {
-  if (mgr == NULL || total_size == NULL) {
+echo_result_t block_storage_get_total_size(const block_storage_t *storage,
+                                              uint64_t *total_size) {
+  if (storage == NULL || total_size == NULL) {
     return ECHO_ERR_NULL_PARAM;
   }
 
-  uint64_t total = 0;
-  char path[512];
+  *total_size = 0;
 
-  /* Iterate from 0 to current file, summing existing files */
-  for (uint32_t file_index = 0; file_index <= mgr->current_file_index;
-       file_index++) {
-    block_storage_get_path(mgr, file_index, path);
+  /* Build blocks directory path */
+  char blocks_dir[512];
+  snprintf(blocks_dir, sizeof(blocks_dir), "%s/%s", storage->data_dir,
+           ECHO_BLOCKS_DIR);
 
-    if (!plat_file_exists(path)) {
-      continue; /* File was pruned, skip it */
-    }
-
-    uint64_t file_size = 0;
-    echo_result_t result =
-        block_storage_get_file_size(mgr, file_index, &file_size);
-    if (result != ECHO_OK) {
-      continue; /* Skip files we can't read */
-    }
-
-    total += file_size;
+  /* Open directory */
+  DIR *dir = opendir(blocks_dir);
+  if (dir == NULL) {
+    return ECHO_OK; /* No directory = 0 bytes */
   }
 
+  struct dirent *entry;
+  uint64_t total = 0;
+
+  while ((entry = readdir(dir)) != NULL) {
+    /* Skip non-block files */
+    if (parse_block_filename(entry->d_name) == UINT32_MAX) {
+      continue;
+    }
+
+    /* Build full path and get file size */
+    char path[512];
+    snprintf(path, sizeof(path), "%s/%s", blocks_dir, entry->d_name);
+
+    struct stat st;
+    if (stat(path, &st) == 0 && S_ISREG(st.st_mode)) {
+      total += (uint64_t)st.st_size;
+    }
+  }
+
+  closedir(dir);
   *total_size = total;
   return ECHO_OK;
 }
 
 /*
- * Get the current write file index.
+ * Close/destroy block storage.
  */
-uint32_t block_storage_get_current_file(const block_file_manager_t *mgr) {
-  if (mgr == NULL) {
-    return 0;
-  }
-  return mgr->current_file_index;
-}
-
-/*
- * Get the lowest file index (for pruning scan).
- */
-echo_result_t block_storage_get_lowest_file(const block_file_manager_t *mgr,
-                                            uint32_t *file_index) {
-  if (mgr == NULL || file_index == NULL) {
-    return ECHO_ERR_NULL_PARAM;
-  }
-
-  char path[512];
-
-  /* Scan from 0 to find the first existing file */
-  for (uint32_t i = 0; i <= mgr->current_file_index; i++) {
-    block_storage_get_path(mgr, i, path);
-
-    if (plat_file_exists(path)) {
-      *file_index = i;
-      return ECHO_OK;
-    }
-  }
-
-  return ECHO_ERR_NOT_FOUND;
-}
-
-/*
- * ============================================================================
- * BATCHING OPERATIONS (IBD optimization)
- * ============================================================================
- */
-
-/*
- * Flush buffered writes to disk.
- */
-echo_result_t block_storage_flush(block_file_manager_t *mgr) {
-  if (mgr == NULL) {
-    return ECHO_ERR_NULL_PARAM;
-  }
-
-  if (mgr->current_file != NULL) {
-    FILE *f = (FILE *)mgr->current_file;
-    if (fflush(f) != 0) {
-      return ECHO_ERR_PLATFORM_IO;
-    }
-    mgr->blocks_since_flush = 0;
-  }
-
-  return ECHO_OK;
-}
-
-/*
- * Close the block storage manager.
- */
-void block_storage_close(block_file_manager_t *mgr) {
-  if (mgr == NULL) {
+void block_storage_destroy(block_storage_t *storage) {
+  if (storage == NULL) {
     return;
   }
-
-  if (mgr->current_file != NULL) {
-    FILE *f = (FILE *)mgr->current_file;
-    fflush(f);
-    fclose(f);
-    mgr->current_file = NULL;
-    mgr->blocks_since_flush = 0;
-  }
+  /* No-op for file-per-block storage - no open handles to close */
+  memset(storage, 0, sizeof(*storage));
 }

@@ -302,7 +302,7 @@ static void get_storage_components(void) {
   ASSERT_NOT_NULL(node);
 
   /* Block storage */
-  block_file_manager_t *bs = node_get_block_storage(node);
+  block_storage_t *bs = node_get_block_storage(node);
   ASSERT_NOT_NULL(bs);
 
   /* UTXO database */

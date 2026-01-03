@@ -14,6 +14,7 @@
 #include "block.h"
 #include "block_index_db.h"
 #include "block_tracker.h"
+#include "blocks_storage.h"
 #include "chainstate.h"
 #include "download_mgr.h"
 #include "echo_config.h"
@@ -577,6 +578,40 @@ sync_manager_t *sync_create(chainstate_t *chainstate,
       }
 
       free(stored_heights);
+    }
+
+    /*
+     * File-per-block recovery: Also scan the blocks/ directory.
+     *
+     * This catches blocks that were written to disk but not yet marked
+     * in the database (e.g., crash between write and DB update).
+     * Uses block_storage_scan_heights() to find all {height}.blk files.
+     */
+    block_storage_t *blk_storage = node_get_block_storage(callbacks->node);
+    if (blk_storage != NULL) {
+      uint32_t *fs_heights = NULL;
+      size_t fs_count = 0;
+
+      echo_result_t result = block_storage_scan_heights(blk_storage, &fs_heights, &fs_count);
+      if (result == ECHO_OK && fs_count > 0) {
+        uint32_t marked_count = 0;
+
+        /* Only mark heights above validated tip */
+        for (size_t i = 0; i < fs_count; i++) {
+          if (fs_heights[i] > validated_tip) {
+            block_tracker_mark_available(mgr->tracker, fs_heights[i]);
+            marked_count++;
+          }
+        }
+
+        if (marked_count > 0) {
+          log_info(LOG_COMP_SYNC,
+                   "Filesystem scan: found %u file-per-block files above tip %u",
+                   marked_count, validated_tip);
+        }
+      }
+
+      free(fs_heights);
     }
   }
 

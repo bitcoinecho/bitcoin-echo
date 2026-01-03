@@ -78,15 +78,14 @@ typedef struct {
  *   call block_index_db functions concurrently.
  */
 typedef struct {
-  db_t db;                        /* Underlying database handle */
-  db_stmt_t lookup_hash_stmt;     /* Prepared statement for lookup by hash */
-  db_stmt_t lookup_height_stmt;   /* Prepared statement for lookup by height */
-  db_stmt_t insert_stmt;          /* Prepared statement for inserts */
-  db_stmt_t update_status_stmt;   /* Prepared statement for status updates */
-  db_stmt_t update_data_pos_stmt; /* Prepared statement for data position */
-  db_stmt_t best_chain_stmt;      /* Prepared statement for best chain query */
-  bool stmts_prepared;            /* Whether statements are prepared */
-  pthread_mutex_t mutex;          /* Protects all prepared statement access */
+  db_t db;                      /* Underlying database handle */
+  db_stmt_t lookup_hash_stmt;   /* Prepared statement for lookup by hash */
+  db_stmt_t lookup_height_stmt; /* Prepared statement for lookup by height */
+  db_stmt_t insert_stmt;        /* Prepared statement for inserts */
+  db_stmt_t update_status_stmt; /* Prepared statement for status updates */
+  db_stmt_t best_chain_stmt;    /* Prepared statement for best chain query */
+  bool stmts_prepared;          /* Whether statements are prepared */
+  pthread_mutex_t mutex;        /* Protects all prepared statement access */
 } block_index_db_t;
 
 /* ========================================================================
@@ -241,25 +240,6 @@ echo_result_t block_index_db_insert(block_index_db_t *bdb,
 echo_result_t block_index_db_update_status(block_index_db_t *bdb,
                                            const hash256_t *hash,
                                            uint32_t status);
-
-/**
- * Update the block data file position.
- *
- * Called when a block is stored to disk to record where it was written.
- *
- * Parameters:
- *   bdb       - Block index database handle
- *   hash      - Block hash to update
- *   data_file - File index (blk*.dat number)
- *   data_pos  - Byte offset within file
- *
- * Returns:
- *   ECHO_OK on success, ECHO_ERR_NOT_FOUND if not found, error code on failure
- */
-echo_result_t block_index_db_update_data_pos(block_index_db_t *bdb,
-                                             const hash256_t *hash,
-                                             uint32_t data_file,
-                                             uint32_t data_pos);
 
 /* ========================================================================
  * Chain Queries
@@ -594,5 +574,44 @@ echo_result_t block_index_db_get_stored_heights(block_index_db_t *bdb,
                                                  uint32_t start_height,
                                                  uint32_t **heights_out,
                                                  size_t *count_out);
+
+/* ========================================================================
+ * File-Per-Block Storage Support
+ * ======================================================================== */
+
+/**
+ * Mark a block as having data stored (file-per-block mode).
+ *
+ * Sets the BLOCK_STATUS_HAVE_DATA flag for a block. With file-per-block
+ * storage, the block's location is determined by height alone, so no
+ * file position tracking is needed.
+ *
+ * Parameters:
+ *   bdb    - Block index database handle
+ *   hash   - Block hash to mark
+ *
+ * Returns:
+ *   ECHO_OK on success, ECHO_ERR_NOT_FOUND if block not in index
+ *
+ * Notes:
+ *   - Block location is derived from height: blocks/{height}.blk
+ */
+echo_result_t block_index_db_mark_have_data(block_index_db_t *bdb,
+                                             const hash256_t *hash);
+
+/**
+ * Clear the BLOCK_STATUS_HAVE_DATA flag (file-per-block mode).
+ *
+ * Used when a block file is pruned/deleted.
+ *
+ * Parameters:
+ *   bdb    - Block index database handle
+ *   hash   - Block hash to update
+ *
+ * Returns:
+ *   ECHO_OK on success, ECHO_ERR_NOT_FOUND if block not in index
+ */
+echo_result_t block_index_db_clear_have_data(block_index_db_t *bdb,
+                                              const hash256_t *hash);
 
 #endif /* ECHO_BLOCK_INDEX_DB_H */

@@ -1,7 +1,7 @@
 /*
  * Bitcoin Echo — Block File Storage Tests
  *
- * Tests for append-only block file storage.
+ * Tests for file-per-block storage.
  */
 
 #include "blocks_storage.h"
@@ -127,18 +127,21 @@ static void create_test_block(uint8_t *buf, uint32_t *size_out,
   *size_out = 81;
 }
 
-/*
- * Test: Initialize block storage manager.
+/* ============================================================================
+ * FILE-PER-BLOCK STORAGE TESTS
+ * ============================================================================
  */
-static void test_init(void) {
+
+/*
+ * Test: Create file-per-block storage.
+ */
+static void test_create(void) {
   cleanup_test_dir();
 
-  block_file_manager_t mgr;
-  echo_result_t result = block_storage_init(&mgr, TEST_DATA_DIR);
+  block_storage_t storage;
+  echo_result_t result = block_storage_create(&storage, TEST_DATA_DIR);
 
   ASSERT_EQ(result, ECHO_OK);
-  ASSERT_EQ(mgr.current_file_index, 0);
-  ASSERT_EQ(mgr.current_file_offset, 0);
 
   /* Verify blocks directory was created */
   char blocks_dir[512];
@@ -149,273 +152,300 @@ static void test_init(void) {
   ASSERT(stat(blocks_dir, &st) == 0);
   ASSERT(S_ISDIR(st.st_mode));
 
+  block_storage_destroy(&storage);
   cleanup_test_dir();
 }
 
 /*
- * Test: Write a single block.
+ * Test: Write and read block by height.
  */
-static void test_write_single_block(void) {
+static void test_write_read(void) {
   cleanup_test_dir();
 
-  block_file_manager_t mgr;
-  ASSERT_EQ(block_storage_init(&mgr, TEST_DATA_DIR), ECHO_OK);
+  block_storage_t storage;
+  ASSERT_EQ(block_storage_create(&storage, TEST_DATA_DIR), ECHO_OK);
+
+  /* Create test block */
+  uint8_t block_data[256];
+  uint32_t block_size;
+  create_test_block(block_data, &block_size, 42);
+
+  /* Write at height 100 */
+  ASSERT_EQ(block_storage_write_height(&storage, 100, block_data, block_size),
+            ECHO_OK);
+
+  /* Read back */
+  uint8_t *read_data = NULL;
+  uint32_t read_size = 0;
+  ASSERT_EQ(block_storage_read_height(&storage, 100, &read_data, &read_size),
+            ECHO_OK);
+
+  ASSERT(read_data != NULL);
+  ASSERT_EQ(read_size, block_size);
+  ASSERT(memcmp(read_data, block_data, block_size) == 0);
+
+  free(read_data);
+  block_storage_destroy(&storage);
+  cleanup_test_dir();
+}
+
+/*
+ * Test: Check block existence.
+ */
+static void test_exists(void) {
+  cleanup_test_dir();
+
+  block_storage_t storage;
+  ASSERT_EQ(block_storage_create(&storage, TEST_DATA_DIR), ECHO_OK);
+
+  /* Should not exist initially */
+  ASSERT(!block_storage_exists_height(&storage, 100));
+
+  /* Create test block */
+  uint8_t block_data[256];
+  uint32_t block_size;
+  create_test_block(block_data, &block_size, 42);
+
+  /* Write it */
+  ASSERT_EQ(block_storage_write_height(&storage, 100, block_data, block_size),
+            ECHO_OK);
+
+  /* Now should exist */
+  ASSERT(block_storage_exists_height(&storage, 100));
+
+  /* Other heights should not exist */
+  ASSERT(!block_storage_exists_height(&storage, 99));
+  ASSERT(!block_storage_exists_height(&storage, 101));
+
+  block_storage_destroy(&storage);
+  cleanup_test_dir();
+}
+
+/*
+ * Test: Prune block.
+ */
+static void test_prune(void) {
+  cleanup_test_dir();
+
+  block_storage_t storage;
+  ASSERT_EQ(block_storage_create(&storage, TEST_DATA_DIR), ECHO_OK);
+
+  /* Create test block */
+  uint8_t block_data[256];
+  uint32_t block_size;
+  create_test_block(block_data, &block_size, 42);
+
+  /* Write it */
+  ASSERT_EQ(block_storage_write_height(&storage, 100, block_data, block_size),
+            ECHO_OK);
+  ASSERT(block_storage_exists_height(&storage, 100));
+
+  /* Prune it */
+  ASSERT_EQ(block_storage_prune_height(&storage, 100), ECHO_OK);
+
+  /* Should no longer exist */
+  ASSERT(!block_storage_exists_height(&storage, 100));
+
+  /* Pruning non-existent block should be OK (idempotent) */
+  ASSERT_EQ(block_storage_prune_height(&storage, 100), ECHO_OK);
+
+  block_storage_destroy(&storage);
+  cleanup_test_dir();
+}
+
+/*
+ * Test: Scan heights.
+ */
+static void test_scan_heights(void) {
+  cleanup_test_dir();
+
+  block_storage_t storage;
+  ASSERT_EQ(block_storage_create(&storage, TEST_DATA_DIR), ECHO_OK);
 
   /* Create test block */
   uint8_t block_data[256];
   uint32_t block_size;
   create_test_block(block_data, &block_size, 1);
 
-  /* Write block */
-  block_file_pos_t pos;
-  echo_result_t result =
-      block_storage_write(&mgr, block_data, block_size, &pos);
+  /* Write blocks at various heights (out of order) */
+  ASSERT_EQ(block_storage_write_height(&storage, 100, block_data, block_size),
+            ECHO_OK);
+  ASSERT_EQ(block_storage_write_height(&storage, 50, block_data, block_size),
+            ECHO_OK);
+  ASSERT_EQ(block_storage_write_height(&storage, 200, block_data, block_size),
+            ECHO_OK);
+  ASSERT_EQ(block_storage_write_height(&storage, 1, block_data, block_size),
+            ECHO_OK);
 
-  ASSERT_EQ(result, ECHO_OK);
-  ASSERT_EQ(pos.file_index, 0);
-  ASSERT_EQ(pos.file_offset, 0);
+  /* Scan heights */
+  uint32_t *heights = NULL;
+  size_t count = 0;
+  ASSERT_EQ(block_storage_scan_heights(&storage, &heights, &count), ECHO_OK);
 
-  /* Manager should have updated position */
-  ASSERT_EQ(mgr.current_file_index, 0);
-  ASSERT_EQ(mgr.current_file_offset,
-            BLOCK_FILE_RECORD_HEADER_SIZE + block_size);
+  ASSERT_EQ(count, 4);
+  ASSERT(heights != NULL);
 
+  /* Should be sorted */
+  ASSERT_EQ(heights[0], 1);
+  ASSERT_EQ(heights[1], 50);
+  ASSERT_EQ(heights[2], 100);
+  ASSERT_EQ(heights[3], 200);
+
+  free(heights);
+  block_storage_destroy(&storage);
   cleanup_test_dir();
 }
 
 /*
- * Test: Read a block back.
+ * Test: Get total size.
  */
-static void test_read_block(void) {
+static void test_total_size(void) {
   cleanup_test_dir();
 
-  block_file_manager_t mgr;
-  ASSERT_EQ(block_storage_init(&mgr, TEST_DATA_DIR), ECHO_OK);
+  block_storage_t storage;
+  ASSERT_EQ(block_storage_create(&storage, TEST_DATA_DIR), ECHO_OK);
 
-  /* Create and write test block */
+  /* Initially empty */
+  uint64_t size = 0;
+  ASSERT_EQ(block_storage_get_total_size(&storage, &size), ECHO_OK);
+  ASSERT_EQ(size, 0);
+
+  /* Create test block */
   uint8_t block_data[256];
   uint32_t block_size;
   create_test_block(block_data, &block_size, 1);
 
-  block_file_pos_t pos;
-  ASSERT_EQ(block_storage_write(&mgr, block_data, block_size, &pos), ECHO_OK);
+  /* Write two blocks */
+  ASSERT_EQ(block_storage_write_height(&storage, 1, block_data, block_size),
+            ECHO_OK);
+  ASSERT_EQ(block_storage_write_height(&storage, 2, block_data, block_size),
+            ECHO_OK);
 
-  /* Read block back */
-  uint8_t *read_data = NULL;
-  uint32_t read_size = 0;
-  echo_result_t result = block_storage_read(&mgr, pos, &read_data, &read_size);
+  /* Check size */
+  ASSERT_EQ(block_storage_get_total_size(&storage, &size), ECHO_OK);
+  ASSERT_EQ(size, (uint64_t)block_size * 2);
 
-  ASSERT_EQ(result, ECHO_OK);
-  ASSERT(read_data != NULL);
-  ASSERT_EQ(read_size, block_size);
-
-  /* Verify data matches */
-  ASSERT(memcmp(read_data, block_data, block_size) == 0);
-
-  free(read_data);
+  block_storage_destroy(&storage);
   cleanup_test_dir();
 }
 
 /*
- * Test: Write multiple blocks.
+ * Test: Height path generation.
  */
-static void test_write_multiple_blocks(void) {
-  cleanup_test_dir();
-
-  block_file_manager_t mgr;
-  ASSERT_EQ(block_storage_init(&mgr, TEST_DATA_DIR), ECHO_OK);
-
-  block_file_pos_t positions[10];
-
-  /* Write 10 blocks */
-  for (uint32_t i = 0; i < 10; i++) {
-    uint8_t block_data[256];
-    uint32_t block_size;
-    create_test_block(block_data, &block_size, i);
-
-    ASSERT_EQ(block_storage_write(&mgr, block_data, block_size, &positions[i]),
-              ECHO_OK);
-  }
-
-  /* Read all blocks back and verify */
-  for (uint32_t i = 0; i < 10; i++) {
-    uint8_t *read_data = NULL;
-    uint32_t read_size = 0;
-    ASSERT_EQ(block_storage_read(&mgr, positions[i], &read_data, &read_size),
-              ECHO_OK);
-
-    /* Verify nonce in merkle root */
-    ASSERT_EQ(read_data[36], (i >> 0) & 0xFF);
-    ASSERT_EQ(read_data[37], (i >> 8) & 0xFF);
-
-    free(read_data);
-  }
-
-  cleanup_test_dir();
-}
-
-/*
- * Test: Resume after restart (scan existing files).
- */
-static void test_resume_after_restart(void) {
-  cleanup_test_dir();
-
-  block_file_manager_t mgr;
-  ASSERT_EQ(block_storage_init(&mgr, TEST_DATA_DIR), ECHO_OK);
-
-  /* Write some blocks */
-  uint8_t block_data[256];
-  uint32_t block_size;
-  create_test_block(block_data, &block_size, 1);
-
-  block_file_pos_t pos1, pos2;
-  ASSERT_EQ(block_storage_write(&mgr, block_data, block_size, &pos1), ECHO_OK);
-
-  create_test_block(block_data, &block_size, 2);
-  ASSERT_EQ(block_storage_write(&mgr, block_data, block_size, &pos2), ECHO_OK);
-
-  uint32_t expected_offset = mgr.current_file_offset;
-
-  /* Reinitialize manager (simulating restart) */
-  block_file_manager_t mgr2;
-  ASSERT_EQ(block_storage_init(&mgr2, TEST_DATA_DIR), ECHO_OK);
-
-  /* Should resume at same position */
-  ASSERT_EQ(mgr2.current_file_index, 0);
-  ASSERT_EQ(mgr2.current_file_offset, expected_offset);
-
-  /* Should be able to write more blocks */
-  create_test_block(block_data, &block_size, 3);
-  block_file_pos_t pos3;
-  ASSERT_EQ(block_storage_write(&mgr2, block_data, block_size, &pos3), ECHO_OK);
-
-  cleanup_test_dir();
-}
-
-/*
- * Test: Get block file path.
- */
-static void test_get_path(void) {
-  block_file_manager_t mgr;
-  strcpy(mgr.data_dir, TEST_DATA_DIR);
+static void test_height_path(void) {
+  block_storage_t storage;
+  strcpy(storage.data_dir, TEST_DATA_DIR);
 
   char path[512];
 
-  block_storage_get_path(&mgr, 0, path);
-  ASSERT(strstr(path, "blk00000.dat") != NULL);
+  block_storage_get_height_path(&storage, 0, path);
+  ASSERT(strstr(path, "/blocks/0.blk") != NULL);
 
-  block_storage_get_path(&mgr, 1, path);
-  ASSERT(strstr(path, "blk00001.dat") != NULL);
+  block_storage_get_height_path(&storage, 1, path);
+  ASSERT(strstr(path, "/blocks/1.blk") != NULL);
 
-  block_storage_get_path(&mgr, 99999, path);
-  ASSERT(strstr(path, "blk99999.dat") != NULL);
+  block_storage_get_height_path(&storage, 500000, path);
+  ASSERT(strstr(path, "/blocks/500000.blk") != NULL);
 }
 
 /*
- * Test: Read non-existent block.
+ * Test: Read non-existent height.
  */
 static void test_read_nonexistent(void) {
   cleanup_test_dir();
 
-  block_file_manager_t mgr;
-  ASSERT_EQ(block_storage_init(&mgr, TEST_DATA_DIR), ECHO_OK);
+  block_storage_t storage;
+  ASSERT_EQ(block_storage_create(&storage, TEST_DATA_DIR), ECHO_OK);
 
-  block_file_pos_t pos;
-  pos.file_index = 99;
-  pos.file_offset = 0;
-
-  uint8_t *block_data = NULL;
-  uint32_t block_size = 0;
+  uint8_t *read_data = NULL;
+  uint32_t read_size = 0;
 
   echo_result_t result =
-      block_storage_read(&mgr, pos, &block_data, &block_size);
+      block_storage_read_height(&storage, 999, &read_data, &read_size);
   ASSERT_EQ(result, ECHO_ERR_NOT_FOUND);
-  ASSERT(block_data == NULL);
+  ASSERT(read_data == NULL);
 
+  block_storage_destroy(&storage);
   cleanup_test_dir();
 }
 
 /*
- * Test: NULL parameter checks.
+ * Test: Null parameters for new API.
  */
 static void test_null_params(void) {
-  block_file_manager_t mgr;
+  block_storage_t storage;
   uint8_t block_data[256];
   uint32_t block_size = 81;
-  block_file_pos_t pos;
   uint8_t *read_data = NULL;
   uint32_t read_size = 0;
+  uint32_t *heights = NULL;
+  size_t count = 0;
+  uint64_t total_size = 0;
 
-  ASSERT_EQ(block_storage_init(NULL, TEST_DATA_DIR), ECHO_ERR_NULL_PARAM);
-  ASSERT_EQ(block_storage_init(&mgr, NULL), ECHO_ERR_NULL_PARAM);
+  ASSERT_EQ(block_storage_create(NULL, TEST_DATA_DIR), ECHO_ERR_NULL_PARAM);
+  ASSERT_EQ(block_storage_create(&storage, NULL), ECHO_ERR_NULL_PARAM);
 
-  ASSERT_EQ(block_storage_write(NULL, block_data, block_size, &pos),
+  ASSERT_EQ(block_storage_write_height(NULL, 1, block_data, block_size),
             ECHO_ERR_NULL_PARAM);
-  ASSERT_EQ(block_storage_write(&mgr, NULL, block_size, &pos),
-            ECHO_ERR_NULL_PARAM);
-  ASSERT_EQ(block_storage_write(&mgr, block_data, block_size, NULL),
+  ASSERT_EQ(block_storage_write_height(&storage, 1, NULL, block_size),
             ECHO_ERR_NULL_PARAM);
 
-  ASSERT_EQ(block_storage_read(NULL, pos, &read_data, &read_size),
+  ASSERT_EQ(block_storage_read_height(NULL, 1, &read_data, &read_size),
             ECHO_ERR_NULL_PARAM);
-  ASSERT_EQ(block_storage_read(&mgr, pos, NULL, &read_size),
+  ASSERT_EQ(block_storage_read_height(&storage, 1, NULL, &read_size),
             ECHO_ERR_NULL_PARAM);
-  ASSERT_EQ(block_storage_read(&mgr, pos, &read_data, NULL),
+  ASSERT_EQ(block_storage_read_height(&storage, 1, &read_data, NULL),
             ECHO_ERR_NULL_PARAM);
-}
 
-/*
- * Test: Large block (near max size).
- */
-static void test_large_block(void) {
-  cleanup_test_dir();
+  ASSERT_EQ(block_storage_prune_height(NULL, 1), ECHO_ERR_NULL_PARAM);
 
-  block_file_manager_t mgr;
-  ASSERT_EQ(block_storage_init(&mgr, TEST_DATA_DIR), ECHO_OK);
+  ASSERT_EQ(block_storage_scan_heights(NULL, &heights, &count),
+            ECHO_ERR_NULL_PARAM);
+  ASSERT_EQ(block_storage_scan_heights(&storage, NULL, &count),
+            ECHO_ERR_NULL_PARAM);
+  ASSERT_EQ(block_storage_scan_heights(&storage, &heights, NULL),
+            ECHO_ERR_NULL_PARAM);
 
-  /* Create a large block (1 MB) */
-  uint32_t large_size = 1024 * 1024;
-  uint8_t *large_block = (uint8_t *)malloc(large_size);
-  ASSERT(large_block != NULL);
-
-  /* Fill with pattern */
-  for (uint32_t i = 0; i < large_size; i++) {
-    large_block[i] = (uint8_t)(i & 0xFF);
-  }
-
-  /* Write it */
-  block_file_pos_t pos;
-  ASSERT_EQ(block_storage_write(&mgr, large_block, large_size, &pos), ECHO_OK);
-
-  /* Read it back */
-  uint8_t *read_data = NULL;
-  uint32_t read_size = 0;
-  ASSERT_EQ(block_storage_read(&mgr, pos, &read_data, &read_size), ECHO_OK);
-
-  ASSERT_EQ(read_size, large_size);
-  ASSERT(memcmp(read_data, large_block, large_size) == 0);
-
-  free(large_block);
-  free(read_data);
-  cleanup_test_dir();
+  ASSERT_EQ(block_storage_get_total_size(NULL, &total_size),
+            ECHO_ERR_NULL_PARAM);
+  ASSERT_EQ(block_storage_get_total_size(&storage, NULL),
+            ECHO_ERR_NULL_PARAM);
 }
 
 /*
  * Main test runner.
  */
 int main(void) {
-    test_suite_begin("Block Storage Tests");
+  test_suite_begin("Block Storage Tests");
 
-    test_case("Initialize block storage manager"); test_init(); test_pass();
-    test_case("Write single block"); test_write_single_block(); test_pass();
-    test_case("Read block"); test_read_block(); test_pass();
-    test_case("Write multiple blocks"); test_write_multiple_blocks(); test_pass();
-    test_case("Resume after restart"); test_resume_after_restart(); test_pass();
-    test_case("Get file path"); test_get_path(); test_pass();
-    test_case("Read nonexistent block"); test_read_nonexistent(); test_pass();
-    test_case("Null parameters"); test_null_params(); test_pass();
-    test_case("Large block handling"); test_large_block(); test_pass();
+  test_case("Create storage");
+  test_create();
+  test_pass();
+  test_case("Write and read by height");
+  test_write_read();
+  test_pass();
+  test_case("Block existence check");
+  test_exists();
+  test_pass();
+  test_case("Prune block");
+  test_prune();
+  test_pass();
+  test_case("Scan heights");
+  test_scan_heights();
+  test_pass();
+  test_case("Get total size");
+  test_total_size();
+  test_pass();
+  test_case("Height path generation");
+  test_height_path();
+  test_pass();
+  test_case("Read nonexistent height");
+  test_read_nonexistent();
+  test_pass();
+  test_case("Null parameters");
+  test_null_params();
+  test_pass();
 
-    test_suite_end();
-    return test_global_summary();
+  test_suite_end();
+  return test_global_summary();
 }

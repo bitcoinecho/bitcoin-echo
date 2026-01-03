@@ -17,7 +17,6 @@
 #include "block.h"
 #include "block_index_db.h"
 #include "block_tracker.h"
-#include "blocks_storage.h"
 #include "chainstate.h"
 #include "consensus.h"
 #include "echo_config.h"
@@ -355,74 +354,6 @@ done:
     test_pass();
   } else {
     test_fail("UTXO persistence check failed");
-  }
-}
-
-/**
- * Test: Block storage grows correctly in archival mode.
- */
-static void test_archival_block_storage(void) {
-  make_unique_test_dir();
-  cleanup_test_dir();
-  bool passed = true;
-
-  node_config_t config;
-  node_config_init(&config, TEST_DATA_DIR);
-  config.prune_target_mb = 0;
-
-  node_t *node = node_create(&config);
-  if (node == NULL) { passed = false; goto done; }
-
-  block_file_manager_t *bfm = node_get_block_storage(node);
-  if (bfm == NULL) { passed = false; node_destroy(node); goto done; }
-
-  /* Initial size should be 0 */
-  uint64_t initial_size;
-  if (block_storage_get_total_size(bfm, &initial_size) != ECHO_OK) {
-    passed = false;
-    node_destroy(node);
-    goto done;
-  }
-
-  /* Write some test data */
-  uint8_t test_block[1000] = {0};
-  block_file_pos_t pos;
-
-  for (int i = 0; i < 10; i++) {
-    if (block_storage_write(bfm, test_block, sizeof(test_block), &pos) != ECHO_OK) {
-      passed = false;
-      node_destroy(node);
-      goto done;
-    }
-  }
-
-  /* Size should have grown */
-  uint64_t final_size;
-  if (block_storage_get_total_size(bfm, &final_size) != ECHO_OK) {
-    passed = false;
-    node_destroy(node);
-    goto done;
-  }
-
-  /* Should be at least 10 * (1000 + header) bytes */
-  if (final_size < 10 * (1000 + BLOCK_FILE_RECORD_HEADER_SIZE)) {
-    passed = false;
-  }
-
-  /* Archival mode: storage should never decrease */
-  if (final_size < initial_size) {
-    passed = false;
-  }
-
-  node_destroy(node);
-
-done:
-  cleanup_test_dir();
-  test_case("Archival mode: block storage grows");
-  if (passed) {
-    test_pass();
-  } else {
-    test_fail("block storage growth check failed");
   }
 }
 
@@ -1177,68 +1108,6 @@ done:
 }
 
 /**
- * Test: Block storage write throughput.
- */
-static void test_stress_block_storage(void) {
-  make_unique_test_dir();
-  cleanup_test_dir();
-  bool passed = true;
-
-  node_config_t config;
-  node_config_init(&config, TEST_DATA_DIR);
-
-  node_t *node = node_create(&config);
-  if (node == NULL) { passed = false; goto done; }
-
-  block_file_manager_t *bfm = node_get_block_storage(node);
-  if (bfm == NULL) { passed = false; node_destroy(node); goto done; }
-
-  /* Create test block data (~1KB each) */
-  uint8_t block_data[1024];
-  memset(block_data, 0xAA, sizeof(block_data));
-
-  uint64_t start = plat_monotonic_ms();
-
-  /* Write 1000 blocks */
-  for (int i = 0; i < 1000; i++) {
-    block_file_pos_t pos;
-    if (block_storage_write(bfm, block_data, sizeof(block_data), &pos) != ECHO_OK) {
-      passed = false;
-      break;
-    }
-  }
-
-  uint64_t elapsed = plat_monotonic_ms() - start;
-
-  /* Should complete in reasonable time */
-  if (elapsed > 10000) {
-    passed = false;
-  }
-
-  /* Verify total size */
-  uint64_t total_size;
-  if (block_storage_get_total_size(bfm, &total_size) != ECHO_OK) {
-    passed = false;
-  }
-
-  /* Should be at least 1000 * 1024 bytes */
-  if (total_size < 1000 * 1024) {
-    passed = false;
-  }
-
-  node_destroy(node);
-
-done:
-  cleanup_test_dir();
-  test_case("Stress test: block storage writes");
-  if (passed) {
-    test_pass();
-  } else {
-    test_fail("block storage stress test failed");
-  }
-}
-
-/**
  * Test: Multiple restart cycles with data integrity.
  */
 static void test_stress_restart_cycles(void) {
@@ -1707,7 +1576,6 @@ int main(void) {
   test_archival_mine_blocks();
   test_archival_persistence();
   test_archival_utxo_persistence();
-  test_archival_block_storage();
 
   test_section("Pruned Mode Workflow");
   test_pruned_config();
@@ -1728,7 +1596,6 @@ int main(void) {
   test_section("Stress Tests");
   test_stress_many_blocks();
   test_stress_many_utxos();
-  test_stress_block_storage();
   test_stress_restart_cycles();
 
   test_section("Decoupled IBD");

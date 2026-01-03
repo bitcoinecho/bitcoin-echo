@@ -1,17 +1,13 @@
 /*
  * Bitcoin Echo — Block File Storage
  *
- * Manages persistent storage of raw blocks in append-only files.
- * Format is compatible with Bitcoin Core's blk*.dat files:
- *   - Network magic (4 bytes)
- *   - Block size (4 bytes, little-endian)
- *   - Raw block data (header + transactions)
+ * File-per-block storage for decoupled IBD architecture.
  *
- * Files are named blk00000.dat, blk00001.dat, etc., and stored in the
- * blocks/ directory. Each file grows to ~128 MB before a new file is created.
- *
- * Block positions are tracked externally (in the block index database).
- * This module only handles raw block storage and retrieval.
+ * Each block stored as individual file: blocks/{height}.blk
+ *   - Height used directly as filename (1.blk, 500000.blk, etc.)
+ *   - Raw serialized block data (no magic/size prefix)
+ *   - Trivial pruning via unlink()
+ *   - Natural handling of out-of-order downloads
  *
  * Build once. Build right. Stop.
  */
@@ -23,52 +19,27 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/*
- * Block file position.
- * Identifies a block's location on disk.
- */
-typedef struct {
-  uint32_t file_index;  /* File number (0 = blk00000.dat, 1 = blk00001.dat) */
-  uint32_t file_offset; /* Byte offset within file to start of magic bytes */
-} block_file_pos_t;
-
-/*
- * Block file manager.
- * Manages writing and reading blocks to/from disk.
+/* ============================================================================
+ * FILE-PER-BLOCK STORAGE API
  *
- * IBD optimization: keeps current write file open to avoid
- * per-block fopen/fclose syscall overhead.
+ * Each block is stored as an individual file named by height.
+ * Enables trivial pruning and naturally handles out-of-order downloads.
+ * ============================================================================
+ */
+
+/*
+ * Block storage manager for file-per-block storage.
+ * Minimal state - just tracks the data directory path.
  */
 typedef struct {
-  char data_dir[256];           /* Data directory path */
-  uint32_t current_file_index;  /* Current file being written */
-  uint32_t current_file_offset; /* Current offset in current file */
-  void *current_file;           /* Current write file handle (FILE*) */
-  uint32_t blocks_since_flush;  /* Blocks written since last flush */
-} block_file_manager_t;
+  char data_dir[256]; /* Data directory path (blocks/ is appended) */
+} block_storage_t;
 
 /*
- * Number of blocks between flushes.
- * Balances durability vs. performance during IBD.
- */
-#define BLOCK_STORAGE_FLUSH_INTERVAL 100
-
-/*
- * Maximum size of a single block file (128 MB).
- * When a file reaches this size, we start a new file.
- */
-#define BLOCK_FILE_MAX_SIZE (128 * 1024 * 1024)
-
-/*
- * Block file record header size (magic + size).
- */
-#define BLOCK_FILE_RECORD_HEADER_SIZE 8
-
-/*
- * Initialize block file manager.
+ * Initialize file-per-block storage.
  *
  * Parameters:
- *   mgr      - Manager to initialize
+ *   storage  - Storage handle to initialize
  *   data_dir - Path to data directory (blocks/ will be created inside)
  *
  * Returns:
@@ -76,193 +47,147 @@ typedef struct {
  *
  * Notes:
  *   - Creates blocks/ directory if it doesn't exist
- *   - Scans existing block files to find current write position
  */
-echo_result_t block_storage_init(block_file_manager_t *mgr,
-                                 const char *data_dir);
+echo_result_t block_storage_create(block_storage_t *storage,
+                                   const char *data_dir);
 
 /*
- * Write a block to disk.
+ * Write a block to storage by height.
  *
  * Parameters:
- *   mgr       - Block file manager
+ *   storage    - Storage handle
+ *   height     - Block height (determines filename)
  *   block_data - Raw block data (header + transactions)
  *   block_size - Size of block in bytes
- *   pos_out   - Output: position where block was written
  *
  * Returns:
  *   ECHO_OK on success, error code on failure
  *
  * Notes:
- *   - Writes network magic + size prefix + block data
- *   - Automatically creates new file if current file would exceed max size
- *   - Position is returned for storage in block index
+ *   - Creates file: blocks/XXXXXXXXX.blk (9-digit height)
+ *   - Overwrites if file already exists
+ *   - File contains raw block data only (no prefix)
  */
-echo_result_t block_storage_write(block_file_manager_t *mgr,
-                                  const uint8_t *block_data,
-                                  uint32_t block_size,
-                                  block_file_pos_t *pos_out);
+echo_result_t block_storage_write_height(block_storage_t *storage,
+                                         uint32_t height,
+                                         const uint8_t *block_data,
+                                         uint32_t block_size);
 
 /*
- * Read a block from disk.
+ * Read a block from storage by height.
  *
  * Parameters:
- *   mgr        - Block file manager
- *   pos        - Position of block (from block index)
+ *   storage    - Storage handle
+ *   height     - Block height to read
  *   block_out  - Output: pointer to allocated buffer with block data
  *   size_out   - Output: size of block in bytes
  *
  * Returns:
- *   ECHO_OK on success, error code on failure
+ *   ECHO_OK on success, ECHO_ERR_NOT_FOUND if not stored, error on failure
  *
  * Notes:
  *   - Allocates buffer with malloc(); caller must free()
- *   - Verifies magic bytes match network
- *   - Returns raw block data (without magic/size prefix)
+ *   - Returns raw block data
  */
-echo_result_t block_storage_read(block_file_manager_t *mgr,
-                                 block_file_pos_t pos, uint8_t **block_out,
-                                 uint32_t *size_out);
+echo_result_t block_storage_read_height(block_storage_t *storage,
+                                        uint32_t height,
+                                        uint8_t **block_out,
+                                        uint32_t *size_out);
 
 /*
- * Get path to block file.
+ * Prune (delete) a block from storage.
  *
  * Parameters:
- *   mgr        - Block file manager
- *   file_index - File index (0 = blk00000.dat, etc.)
- *   path_out   - Output buffer for path (at least 512 bytes)
+ *   storage - Storage handle
+ *   height  - Block height to prune
+ *
+ * Returns:
+ *   ECHO_OK on success (including if file didn't exist)
+ *   Error code on I/O failure
  *
  * Notes:
- *   - Helper function to construct block file paths
+ *   - Simply calls unlink() on the file
+ *   - Returns success if file doesn't exist (idempotent)
  */
-void block_storage_get_path(const block_file_manager_t *mgr,
-                            uint32_t file_index, char *path_out);
+echo_result_t block_storage_prune_height(block_storage_t *storage,
+                                         uint32_t height);
 
 /*
- * ============================================================================
- * PRUNING OPERATIONS
- * ============================================================================
- */
-
-/*
- * Delete a block file.
+ * Check if a block exists in storage.
  *
  * Parameters:
- *   mgr        - Block file manager
- *   file_index - Index of file to delete
+ *   storage - Storage handle
+ *   height  - Block height to check
+ *
+ * Returns:
+ *   true if block file exists, false otherwise
+ */
+bool block_storage_exists_height(const block_storage_t *storage,
+                                 uint32_t height);
+
+/*
+ * Scan storage and return all stored block heights.
+ *
+ * Parameters:
+ *   storage     - Storage handle
+ *   heights_out - Output: array of heights (caller must free)
+ *   count_out   - Output: number of heights
  *
  * Returns:
  *   ECHO_OK on success, error code on failure
  *
  * Notes:
- *   - File must exist
- *   - Used during pruning to reclaim disk space
- *   - Cannot delete the current write file
+ *   - Allocates heights_out with malloc(); caller must free()
+ *   - Returns heights in ascending order
+ *   - Returns empty array (count=0) if no blocks stored
+ *   - Used for restart recovery
  */
-echo_result_t block_storage_delete_file(block_file_manager_t *mgr,
-                                        uint32_t file_index);
-
-/*
- * Check if a block file exists.
- *
- * Parameters:
- *   mgr        - Block file manager
- *   file_index - Index of file to check
- *   exists     - Output: true if file exists, false otherwise
- *
- * Returns:
- *   ECHO_OK on success, error code on failure
- */
-echo_result_t block_storage_file_exists(const block_file_manager_t *mgr,
-                                        uint32_t file_index, bool *exists);
-
-/*
- * Get the size of a block file.
- *
- * Parameters:
- *   mgr        - Block file manager
- *   file_index - Index of file to query
- *   size       - Output: file size in bytes (0 if file doesn't exist)
- *
- * Returns:
- *   ECHO_OK on success, error code on failure
- */
-echo_result_t block_storage_get_file_size(const block_file_manager_t *mgr,
-                                          uint32_t file_index, uint64_t *size);
+echo_result_t block_storage_scan_heights(const block_storage_t *storage,
+                                         uint32_t **heights_out,
+                                         size_t *count_out);
 
 /*
  * Get total disk usage of all block files.
  *
  * Parameters:
- *   mgr        - Block file manager
+ *   storage    - Storage handle
  *   total_size - Output: total size of all block files in bytes
  *
  * Returns:
  *   ECHO_OK on success, error code on failure
  *
  * Notes:
- *   - Sums size of all blk*.dat files
+ *   - Sums size of all XXXXXXXXX.blk files
  *   - Used to check if pruning is needed
  */
-echo_result_t block_storage_get_total_size(const block_file_manager_t *mgr,
-                                           uint64_t *total_size);
+echo_result_t block_storage_get_total_size(const block_storage_t *storage,
+                                              uint64_t *total_size);
 
 /*
- * Get the current write file index.
+ * Get the path for a block file given its height.
  *
  * Parameters:
- *   mgr - Block file manager
- *
- * Returns:
- *   Index of the current file being written to
- */
-uint32_t block_storage_get_current_file(const block_file_manager_t *mgr);
-
-/*
- * Get the lowest file index (for pruning scan).
- *
- * Parameters:
- *   mgr        - Block file manager
- *   file_index - Output: lowest file index with existing file
- *
- * Returns:
- *   ECHO_OK if found, ECHO_ERR_NOT_FOUND if no files exist
- */
-echo_result_t block_storage_get_lowest_file(const block_file_manager_t *mgr,
-                                            uint32_t *file_index);
-
-/*
- * ============================================================================
- * BATCHING OPERATIONS (IBD optimization)
- * ============================================================================
- */
-
-/*
- * Flush buffered writes to disk.
- *
- * Parameters:
- *   mgr - Block file manager
- *
- * Returns:
- *   ECHO_OK on success, error code on failure
+ *   storage  - Storage handle
+ *   height   - Block height
+ *   path_out - Output buffer for path (at least 512 bytes)
  *
  * Notes:
- *   - Called automatically every BLOCK_STORAGE_FLUSH_INTERVAL blocks
- *   - Can be called manually for durability at checkpoints
+ *   - Helper function to construct block file paths
+ *   - Format: {data_dir}/blocks/XXXXXXXXX.blk
  */
-echo_result_t block_storage_flush(block_file_manager_t *mgr);
+void block_storage_get_height_path(const block_storage_t *storage,
+                                   uint32_t height, char *path_out);
 
 /*
- * Close the block storage manager.
+ * Close/destroy block storage.
  *
  * Parameters:
- *   mgr - Block file manager
+ *   storage - Storage handle
  *
  * Notes:
- *   - Flushes any pending writes
- *   - Closes the current write file
- *   - Must be called during shutdown for clean state
+ *   - No-op for file-per-block storage (no open handles to close)
+ *   - Safe to call on already-closed storage
  */
-void block_storage_close(block_file_manager_t *mgr);
+void block_storage_destroy(block_storage_t *storage);
 
 #endif /* ECHO_BLOCKS_STORAGE_H */

@@ -1062,6 +1062,134 @@ static void test_persistence(void) {
   test_pass();
 }
 
+static void test_mark_have_data(void) {
+  block_index_db_t bdb;
+  block_index_entry_t entry, retrieved;
+  echo_result_t result;
+
+  test_case("Mark block as having data (file-per-block mode)");
+
+  cleanup_test_db();
+
+  result = block_index_db_open(&bdb, TEST_DB_PATH);
+  if (result != ECHO_OK) {
+    test_fail("failed to open database");
+    cleanup_test_db();
+    return;
+  }
+
+  /* Insert block without HAVE_DATA flag */
+  make_test_entry(&entry, 100, 42, BLOCK_STATUS_VALID_HEADER);
+  result = block_index_db_insert(&bdb, &entry);
+  if (result != ECHO_OK) {
+    test_fail("failed to insert");
+    block_index_db_close(&bdb);
+    cleanup_test_db();
+    return;
+  }
+
+  /* Mark as having data */
+  result = block_index_db_mark_have_data(&bdb, &entry.hash);
+  if (result != ECHO_OK) {
+    test_fail_int("mark_have_data failed", ECHO_OK, result);
+    block_index_db_close(&bdb);
+    cleanup_test_db();
+    return;
+  }
+
+  /* Verify HAVE_DATA flag is set */
+  result = block_index_db_lookup_by_hash(&bdb, &entry.hash, &retrieved);
+  if (result != ECHO_OK) {
+    test_fail("failed to lookup");
+    block_index_db_close(&bdb);
+    cleanup_test_db();
+    return;
+  }
+  if (!(retrieved.status & BLOCK_STATUS_HAVE_DATA)) {
+    test_fail("HAVE_DATA flag not set");
+    block_index_db_close(&bdb);
+    cleanup_test_db();
+    return;
+  }
+
+  /* Try marking nonexistent block */
+  hash256_t fake_hash = {0};
+  fake_hash.bytes[0] = 0xFF;
+  result = block_index_db_mark_have_data(&bdb, &fake_hash);
+  if (result != ECHO_ERR_NOT_FOUND) {
+    test_fail_int("should return NOT_FOUND for nonexistent block",
+                  ECHO_ERR_NOT_FOUND, result);
+    block_index_db_close(&bdb);
+    cleanup_test_db();
+    return;
+  }
+
+  block_index_db_close(&bdb);
+  cleanup_test_db();
+  test_pass();
+}
+
+static void test_clear_have_data(void) {
+  block_index_db_t bdb;
+  block_index_entry_t entry, retrieved;
+  echo_result_t result;
+
+  test_case("Clear HAVE_DATA flag (pruning)");
+
+  cleanup_test_db();
+
+  result = block_index_db_open(&bdb, TEST_DB_PATH);
+  if (result != ECHO_OK) {
+    test_fail("failed to open database");
+    cleanup_test_db();
+    return;
+  }
+
+  /* Insert block with HAVE_DATA flag */
+  make_test_entry(&entry, 100, 42, BLOCK_STATUS_VALID_HEADER | BLOCK_STATUS_HAVE_DATA);
+  result = block_index_db_insert(&bdb, &entry);
+  if (result != ECHO_OK) {
+    test_fail("failed to insert");
+    block_index_db_close(&bdb);
+    cleanup_test_db();
+    return;
+  }
+
+  /* Clear HAVE_DATA (simulates pruning) */
+  result = block_index_db_clear_have_data(&bdb, &entry.hash);
+  if (result != ECHO_OK) {
+    test_fail_int("clear_have_data failed", ECHO_OK, result);
+    block_index_db_close(&bdb);
+    cleanup_test_db();
+    return;
+  }
+
+  /* Verify HAVE_DATA cleared and PRUNED set */
+  result = block_index_db_lookup_by_hash(&bdb, &entry.hash, &retrieved);
+  if (result != ECHO_OK) {
+    test_fail("failed to lookup");
+    block_index_db_close(&bdb);
+    cleanup_test_db();
+    return;
+  }
+  if (retrieved.status & BLOCK_STATUS_HAVE_DATA) {
+    test_fail("HAVE_DATA flag still set after clear");
+    block_index_db_close(&bdb);
+    cleanup_test_db();
+    return;
+  }
+  if (!(retrieved.status & BLOCK_STATUS_PRUNED)) {
+    test_fail("PRUNED flag not set after clear");
+    block_index_db_close(&bdb);
+    cleanup_test_db();
+    return;
+  }
+
+  block_index_db_close(&bdb);
+  cleanup_test_db();
+  test_pass();
+}
+
 /* ========================================================================
  * Main
  * ======================================================================== */
@@ -1085,6 +1213,8 @@ int main(void) {
   test_get_chainwork();
   test_get_chain_block();
   test_persistence();
+  test_mark_have_data();
+  test_clear_have_data();
 
   test_suite_end();
   return test_global_summary();

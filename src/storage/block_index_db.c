@@ -123,14 +123,6 @@ static echo_result_t prepare_statements(block_index_db_t *bdb) {
   if (result != ECHO_OK)
     return result;
 
-  /* Update block data position and set HAVE_DATA flag (when block is stored) */
-  result = db_prepare(&bdb->db,
-                      "UPDATE blocks SET data_file = ?, data_pos = ?, "
-                      "status = status | ? WHERE hash = ?",
-                      &bdb->update_data_pos_stmt);
-  if (result != ECHO_OK)
-    return result;
-
   /*
    * Best chain tip (highest height with VALID_CHAIN status).
    *
@@ -163,7 +155,6 @@ static void finalize_statements(block_index_db_t *bdb) {
     db_stmt_finalize(&bdb->lookup_height_stmt);
     db_stmt_finalize(&bdb->insert_stmt);
     db_stmt_finalize(&bdb->update_status_stmt);
-    db_stmt_finalize(&bdb->update_data_pos_stmt);
     db_stmt_finalize(&bdb->best_chain_stmt);
     bdb->stmts_prepared = false;
   }
@@ -515,60 +506,6 @@ echo_result_t block_index_db_insert(block_index_db_t *bdb,
   return result;
 }
 
-echo_result_t block_index_db_update_data_pos(block_index_db_t *bdb,
-                                             const hash256_t *hash,
-                                             uint32_t data_file,
-                                             uint32_t data_pos) {
-  echo_result_t result;
-
-  pthread_mutex_lock(&bdb->mutex);
-
-  /* Reset statement */
-  result = db_stmt_reset(&bdb->update_data_pos_stmt);
-  if (result != ECHO_OK) {
-    pthread_mutex_unlock(&bdb->mutex);
-    return result;
-  }
-
-  /* Bind data_file (parameter 1) */
-  result = db_bind_int(&bdb->update_data_pos_stmt, 1, (int)data_file);
-  if (result != ECHO_OK) {
-    pthread_mutex_unlock(&bdb->mutex);
-    return result;
-  }
-
-  /* Bind data_pos (parameter 2) */
-  result = db_bind_int(&bdb->update_data_pos_stmt, 2, (int)data_pos);
-  if (result != ECHO_OK) {
-    pthread_mutex_unlock(&bdb->mutex);
-    return result;
-  }
-
-  /* Bind HAVE_DATA flag (parameter 3) */
-  result = db_bind_int(&bdb->update_data_pos_stmt, 3, BLOCK_STATUS_HAVE_DATA);
-  if (result != ECHO_OK) {
-    pthread_mutex_unlock(&bdb->mutex);
-    return result;
-  }
-
-  /* Bind hash (parameter 4) */
-  result = db_bind_blob(&bdb->update_data_pos_stmt, 4, hash->bytes, 32);
-  if (result != ECHO_OK) {
-    pthread_mutex_unlock(&bdb->mutex);
-    return result;
-  }
-
-  /* Execute update */
-  result = db_step(&bdb->update_data_pos_stmt);
-  pthread_mutex_unlock(&bdb->mutex);
-
-  if (result == ECHO_DONE) {
-    return ECHO_OK;
-  }
-
-  return result;
-}
-
 echo_result_t block_index_db_update_status(block_index_db_t *bdb,
                                            const hash256_t *hash,
                                            uint32_t status) {
@@ -610,6 +547,92 @@ echo_result_t block_index_db_update_status(block_index_db_t *bdb,
   }
 
   pthread_mutex_unlock(&bdb->mutex);
+  return result;
+}
+
+/* ========================================================================
+ * File-Per-Block Storage Support
+ * ======================================================================== */
+
+echo_result_t block_index_db_mark_have_data(block_index_db_t *bdb,
+                                             const hash256_t *hash) {
+  if (bdb == NULL || hash == NULL) {
+    return ECHO_ERR_INVALID;
+  }
+
+  /* Use a simple UPDATE to set HAVE_DATA flag */
+  db_stmt_t stmt;
+  echo_result_t result = db_prepare(
+      &bdb->db, "UPDATE blocks SET status = status | ? WHERE hash = ?", &stmt);
+  if (result != ECHO_OK) {
+    return result;
+  }
+
+  result = db_bind_int(&stmt, 1, BLOCK_STATUS_HAVE_DATA);
+  if (result != ECHO_OK) {
+    db_stmt_finalize(&stmt);
+    return result;
+  }
+
+  result = db_bind_blob(&stmt, 2, hash->bytes, 32);
+  if (result != ECHO_OK) {
+    db_stmt_finalize(&stmt);
+    return result;
+  }
+
+  result = db_step(&stmt);
+  if (result == ECHO_DONE) {
+    int changes = db_changes(&bdb->db);
+    db_stmt_finalize(&stmt);
+    return (changes > 0) ? ECHO_OK : ECHO_ERR_NOT_FOUND;
+  }
+
+  db_stmt_finalize(&stmt);
+  return result;
+}
+
+echo_result_t block_index_db_clear_have_data(block_index_db_t *bdb,
+                                              const hash256_t *hash) {
+  if (bdb == NULL || hash == NULL) {
+    return ECHO_ERR_INVALID;
+  }
+
+  /* Clear HAVE_DATA flag and set PRUNED flag */
+  db_stmt_t stmt;
+  echo_result_t result = db_prepare(
+      &bdb->db,
+      "UPDATE blocks SET status = (status & ~?) | ? WHERE hash = ?",
+      &stmt);
+  if (result != ECHO_OK) {
+    return result;
+  }
+
+  result = db_bind_int(&stmt, 1, BLOCK_STATUS_HAVE_DATA);
+  if (result != ECHO_OK) {
+    db_stmt_finalize(&stmt);
+    return result;
+  }
+
+  result = db_bind_int(&stmt, 2, BLOCK_STATUS_PRUNED);
+  if (result != ECHO_OK) {
+    db_stmt_finalize(&stmt);
+    return result;
+  }
+
+  result = db_bind_blob(&stmt, 3, hash->bytes, 32);
+  if (result != ECHO_OK) {
+    db_stmt_finalize(&stmt);
+    return result;
+  }
+
+  result = db_step(&stmt);
+  if (result == ECHO_DONE) {
+    int changes = db_changes(&bdb->db);
+    db_stmt_finalize(&stmt);
+    return (changes > 0) ? ECHO_OK : ECHO_ERR_NOT_FOUND;
+  }
+
+  db_stmt_finalize(&stmt);
   return result;
 }
 
