@@ -1366,12 +1366,9 @@ static void queue_blocks_from_headers(sync_manager_t *mgr) {
       /* Check if we already have this block in download manager or storage */
       bool in_queue = download_mgr_has_block(mgr->download_mgr, &hash);
       if (!in_queue) {
-        block_t stored;
-        block_init(&stored);
-        bool in_storage = mgr->callbacks.get_block &&
-                          mgr->callbacks.get_block(&hash, &stored,
-                                                   mgr->callbacks.ctx) ==
-                              ECHO_OK;
+        /* Use lightweight file existence check instead of reading entire block */
+        bool in_storage = mgr->callbacks.node &&
+                          node_is_block_stored(mgr->callbacks.node, h);
         /* Log first iteration to debug */
         if (h == start_height) {
           log_info(LOG_COMP_SYNC,
@@ -1386,7 +1383,6 @@ static void queue_blocks_from_headers(sync_manager_t *mgr) {
             log_info(LOG_COMP_SYNC, "queue_blocks: queuing height %u", h);
           }
         }
-        block_free(&stored);
       } else if (h <= 5) {
         log_info(LOG_COMP_SYNC, "queue_blocks: height %u already in queue", h);
       }
@@ -1407,16 +1403,14 @@ static void queue_blocks_from_headers(sync_manager_t *mgr) {
     while (idx && idx->height >= start_height &&
            to_queue_count < batch_limit) {
       if (!download_mgr_has_block(mgr->download_mgr, &idx->hash)) {
-        block_t stored;
-        block_init(&stored);
-        if (!mgr->callbacks.get_block ||
-            mgr->callbacks.get_block(&idx->hash, &stored,
-                                      mgr->callbacks.ctx) != ECHO_OK) {
+        /* Use lightweight file existence check instead of reading entire block */
+        bool in_storage = mgr->callbacks.node &&
+                          node_is_block_stored(mgr->callbacks.node, idx->height);
+        if (!in_storage) {
           to_queue[to_queue_count] = idx->hash;
           heights[to_queue_count] = idx->height;
           to_queue_count++;
         }
-        block_free(&stored);
       }
       idx = idx->prev;
     }

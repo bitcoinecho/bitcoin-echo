@@ -809,6 +809,21 @@ uint32_t node_get_pruned_height(const node_t *node);
 bool node_is_block_pruned(const node_t *node, uint32_t height);
 
 /**
+ * Check if a block is stored at the given height.
+ *
+ * Lightweight existence check - only tests if file exists,
+ * does not read or parse the block.
+ *
+ * Parameters:
+ *   node   - The node
+ *   height - Block height to check
+ *
+ * Returns:
+ *   true if block file exists at this height
+ */
+bool node_is_block_stored(const node_t *node, uint32_t height);
+
+/**
  * Prune blocks up to the specified height.
  *
  * Deletes block files containing blocks up to (but not including) height.

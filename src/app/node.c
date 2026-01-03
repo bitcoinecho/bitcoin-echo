@@ -145,6 +145,7 @@ static echo_result_t sync_cb_get_block_hash_at_height(uint32_t height,
                                                        void *ctx);
 static void sync_cb_disconnect_peer(peer_t *peer, const char *reason,
                                     void *ctx);
+static uint64_t sync_cb_get_storage_size(void *ctx);
 
 /*
  * ============================================================================
@@ -1542,6 +1543,15 @@ static void sync_cb_disconnect_peer(peer_t *peer, const char *reason,
 }
 
 /**
+ * Get current block storage size in bytes.
+ * Used by sync manager for pruning pressure detection.
+ */
+static uint64_t sync_cb_get_storage_size(void *ctx) {
+  node_t *node = (node_t *)ctx;
+  return node_get_block_storage_size(node);
+}
+
+/**
  * Initialize sync manager with callbacks.
  */
 static echo_result_t node_init_sync(node_t *node) {
@@ -1571,6 +1581,7 @@ static echo_result_t node_init_sync(node_t *node) {
       .commit_header_batch = sync_cb_commit_header_batch,
       .flush_headers = NULL,
       .disconnect_peer = sync_cb_disconnect_peer,
+      .get_storage_size = sync_cb_get_storage_size,
       .ctx = node,
       .node = node};
 
@@ -3517,6 +3528,13 @@ bool node_is_block_pruned(const node_t *node, uint32_t height) {
 
   /* Block is pruned if its height is below the pruned height */
   return height < pruned_height;
+}
+
+bool node_is_block_stored(const node_t *node, uint32_t height) {
+  if (node == NULL || !node->block_storage_init) {
+    return false;
+  }
+  return block_storage_exists_height(&node->block_storage, height);
 }
 
 uint64_t node_get_block_storage_size(const node_t *node) {
