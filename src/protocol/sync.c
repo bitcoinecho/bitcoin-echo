@@ -97,9 +97,6 @@ struct sync_manager {
   /* Best known header chain */
   block_index_t *best_header;
 
-  /* Adaptive stalling timeout (in ms) - starts at 2s, grows on stalls */
-  uint64_t stalling_timeout_ms;
-
   /* Parallel request rate limiting */
   hash256_t last_parallel_request_hash;
   uint64_t last_parallel_request_time;
@@ -546,9 +543,6 @@ sync_manager_t *sync_create(chainstate_t *chainstate,
     }
   }
   mgr->peer_count = 0;
-
-  /* Initialize adaptive stalling timeout to 2 seconds */
-  mgr->stalling_timeout_ms = SYNC_BLOCK_STALLING_TIMEOUT_MS;
 
   /* Initialize pending headers queue for deferred persistence */
   mgr->pending_headers = NULL;
