@@ -126,6 +126,10 @@ struct sync_manager {
   /* Sequential queueing state for batch IBD architecture.
    * See IBD-BATCH-ARCHITECTURE.md for design rationale. */
   uint32_t queued_tip; /* Highest height queued to download manager */
+
+  /* Batch validation state for VALIDATE/FLUSH/PRUNE phases. */
+  uint32_t batch_validate_start;        /* Height where current batch validation started */
+  uint32_t blocks_validated_this_batch; /* Blocks validated in current batch (for periodic flush) */
 };
 
 /* ============================================================================
@@ -1606,12 +1610,111 @@ void sync_tick(sync_manager_t *mgr) {
      *
      * Find consecutive range: validated_tip+1 to first gap (or highest stored).
      * Validate sequentially (maintains UTXO ordering).
-     * Track UTXO changes in memory (batched for efficiency).
+     * UTXO changes are tracked by the consensus engine for subsequent flush.
      *
-     * Transition to FLUSH when range is validated.
-     *
-     * TODO (Phase 3): Implement validation chunk logic.
+     * Transition to FLUSH when:
+     *   - All consecutive blocks validated
+     *   - Periodic flush interval reached (archival nodes, for memory bounds)
      */
+    {
+      /* Get current validated height */
+      uint32_t validated_tip = 0;
+      if (mgr->callbacks.get_validated_height) {
+        validated_tip = mgr->callbacks.get_validated_height(mgr->callbacks.ctx);
+      }
+
+      /* Find highest consecutive stored block from validated_tip+1 */
+      uint32_t consecutive_end = validated_tip;
+      if (mgr->callbacks.find_consecutive_stored) {
+        consecutive_end = mgr->callbacks.find_consecutive_stored(
+            validated_tip + 1, mgr->callbacks.ctx);
+      }
+
+      /* Nothing to validate? Go to FLUSH */
+      if (consecutive_end <= validated_tip) {
+        log_info(LOG_COMP_SYNC, "No consecutive blocks to validate (validated=%u)",
+                 validated_tip);
+        mgr->mode = SYNC_MODE_FLUSH;
+        break;
+      }
+
+      /* Initialize batch tracking on first entry */
+      if (mgr->batch_validate_start == 0) {
+        mgr->batch_validate_start = validated_tip + 1;
+        mgr->blocks_validated_this_batch = 0;
+      }
+
+      /* Validate blocks one at a time per tick (allows event loop to breathe) */
+      uint32_t height_to_validate = validated_tip + 1;
+
+      if (mgr->callbacks.load_block_at_height &&
+          mgr->callbacks.validate_and_apply_block) {
+
+        block_t block;
+        memset(&block, 0, sizeof(block));
+
+        echo_result_t result = mgr->callbacks.load_block_at_height(
+            height_to_validate, &block, NULL, mgr->callbacks.ctx);
+
+        if (result == ECHO_OK) {
+          result = mgr->callbacks.validate_and_apply_block(&block,
+                                                           mgr->callbacks.ctx);
+          block_free(&block);
+
+          if (result == ECHO_OK) {
+            mgr->blocks_validated_this_batch++;
+            mgr->blocks_validated_total++;
+            mgr->last_progress_time = plat_time_ms();
+
+            /* Log progress periodically */
+            if (mgr->blocks_validated_this_batch % 1000 == 0) {
+              log_info(LOG_COMP_SYNC, "VALIDATE: %u blocks this batch (height %u)",
+                       mgr->blocks_validated_this_batch, height_to_validate);
+            }
+
+            /* Check for periodic flush (archival nodes with limited RAM) */
+            uint64_t prune_target = 0;
+            if (mgr->callbacks.get_storage_info) {
+              uint64_t storage_used = 0;
+              mgr->callbacks.get_storage_info(&storage_used, &prune_target,
+                                              mgr->callbacks.ctx);
+            }
+
+            bool is_archival = (prune_target == 0);
+            bool reached_flush_interval =
+                (SYNC_ARCHIVAL_FLUSH_INTERVAL > 0 &&
+                 mgr->blocks_validated_this_batch >= SYNC_ARCHIVAL_FLUSH_INTERVAL);
+
+            /* Check if we've reached the end of stored blocks or best header */
+            bool reached_end = (height_to_validate >= consecutive_end);
+            bool reached_tip = mgr->best_header &&
+                               (height_to_validate >= mgr->best_header->height);
+
+            if (reached_end || reached_tip || (is_archival && reached_flush_interval)) {
+              log_info(LOG_COMP_SYNC,
+                       "VALIDATE complete: %u blocks (height %u), transitioning to FLUSH",
+                       mgr->blocks_validated_this_batch, height_to_validate);
+              mgr->mode = SYNC_MODE_FLUSH;
+            }
+            /* Otherwise, continue validating in next tick */
+          } else {
+            log_error(LOG_COMP_SYNC, "Block validation failed at height %u",
+                      height_to_validate);
+            /* Validation failed - this is a serious error during IBD */
+            mgr->mode = SYNC_MODE_DONE; /* TODO: proper error handling */
+          }
+        } else {
+          /* Block not found - gap in storage, go to FLUSH with what we have */
+          log_warn(LOG_COMP_SYNC, "Block at height %u not found, going to FLUSH",
+                   height_to_validate);
+          mgr->mode = SYNC_MODE_FLUSH;
+        }
+      } else {
+        /* Callbacks not set - skip validation (test mode?) */
+        log_warn(LOG_COMP_SYNC, "VALIDATE callbacks not set, skipping to FLUSH");
+        mgr->mode = SYNC_MODE_FLUSH;
+      }
+    }
     break;
 
   case SYNC_MODE_FLUSH:
@@ -1626,9 +1729,57 @@ void sync_tick(sync_manager_t *mgr) {
      *   - For pruned: FLUSH -> PRUNE
      *   - For archival (more blocks): FLUSH -> DOWNLOAD
      *   - For archival (synced): FLUSH -> DONE
-     *
-     * TODO (Phase 3): Implement flush logic.
      */
+    {
+      /* Get current validated height to flush */
+      uint32_t validated_tip = 0;
+      if (mgr->callbacks.get_validated_height) {
+        validated_tip = mgr->callbacks.get_validated_height(mgr->callbacks.ctx);
+      }
+
+      /* Flush chainstate to database */
+      if (mgr->callbacks.flush_chainstate) {
+        echo_result_t result =
+            mgr->callbacks.flush_chainstate(validated_tip, mgr->callbacks.ctx);
+        if (result != ECHO_OK) {
+          log_error(LOG_COMP_SYNC, "Failed to flush chainstate at height %u",
+                    validated_tip);
+          /* Continue anyway - in-memory state is still valid */
+        } else {
+          log_info(LOG_COMP_SYNC, "FLUSH complete: persisted chainstate at height %u",
+                   validated_tip);
+        }
+      }
+
+      /* Reset batch tracking */
+      mgr->batch_validate_start = 0;
+      mgr->blocks_validated_this_batch = 0;
+
+      /* Check storage info to determine next state */
+      uint64_t prune_target = 0;
+      if (mgr->callbacks.get_storage_info) {
+        uint64_t storage_used = 0;
+        mgr->callbacks.get_storage_info(&storage_used, &prune_target,
+                                        mgr->callbacks.ctx);
+      }
+
+      bool is_archival = (prune_target == 0);
+      bool is_synced = mgr->best_header &&
+                       (validated_tip >= mgr->best_header->height);
+
+      if (is_synced) {
+        log_info(LOG_COMP_SYNC, "IBD complete at height %u", validated_tip);
+        mgr->mode = SYNC_MODE_DONE;
+      } else if (is_archival) {
+        /* Archival: go back to DOWNLOAD for more blocks */
+        log_info(LOG_COMP_SYNC, "Archival flush complete, back to DOWNLOAD");
+        mgr->mode = SYNC_MODE_DOWNLOAD;
+      } else {
+        /* Pruned: go to PRUNE to reclaim space */
+        log_info(LOG_COMP_SYNC, "Pruned flush complete, transitioning to PRUNE");
+        mgr->mode = SYNC_MODE_PRUNE;
+      }
+    }
     break;
 
   case SYNC_MODE_PRUNE:
@@ -1642,9 +1793,43 @@ void sync_tick(sync_manager_t *mgr) {
      * Transitions:
      *   - More blocks to sync: PRUNE -> DOWNLOAD
      *   - Fully synced: PRUNE -> DONE
-     *
-     * TODO (Phase 3): Implement prune logic.
      */
+    {
+      /* Get current validated height */
+      uint32_t validated_tip = 0;
+      if (mgr->callbacks.get_validated_height) {
+        validated_tip = mgr->callbacks.get_validated_height(mgr->callbacks.ctx);
+      }
+
+      /* Calculate safe prune target (keep reorg margin) */
+      uint32_t prune_up_to = 0;
+      if (validated_tip > SYNC_PRUNE_REORG_MARGIN) {
+        prune_up_to = validated_tip - SYNC_PRUNE_REORG_MARGIN;
+      }
+
+      /* Prune block files */
+      if (prune_up_to > 0 && mgr->callbacks.prune_block_files) {
+        uint32_t pruned = mgr->callbacks.prune_block_files(prune_up_to,
+                                                           mgr->callbacks.ctx);
+        if (pruned > 0) {
+          log_info(LOG_COMP_SYNC,
+                   "PRUNE complete: deleted %u blocks up to height %u",
+                   pruned, prune_up_to);
+        }
+      }
+
+      /* Determine next state */
+      bool is_synced = mgr->best_header &&
+                       (validated_tip >= mgr->best_header->height);
+
+      if (is_synced) {
+        log_info(LOG_COMP_SYNC, "IBD complete at height %u", validated_tip);
+        mgr->mode = SYNC_MODE_DONE;
+      } else {
+        /* More blocks to download */
+        mgr->mode = SYNC_MODE_DOWNLOAD;
+      }
+    }
     break;
 
   case SYNC_MODE_IDLE:

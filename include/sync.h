@@ -52,6 +52,18 @@
 /* Rolling window size for header peer response time tracking */
 #define SYNC_HEADER_RESPONSE_WINDOW 3
 
+/* Batch IBD: Periodic FLUSH interval for archival nodes (blocks).
+ * Archival nodes validate all blocks without pruning. To bound memory usage
+ * on systems with limited RAM, we flush UTXO changes to the database
+ * every N blocks. 10,000 blocks ≈ 200-300MB of UTXO delta memory.
+ * Set to 0 to disable periodic flush (single flush at end). */
+#define SYNC_ARCHIVAL_FLUSH_INTERVAL 10000
+
+/* Batch IBD: Reorg safety margin for pruning.
+ * We keep this many blocks after the validated tip to handle potential
+ * chain reorganizations. Matches DELTA_REORG_DEPTH in chainstate.h. */
+#define SYNC_PRUNE_REORG_MARGIN 550
+
 /* ============================================================================
  * Sync State
  * ============================================================================
@@ -340,6 +352,110 @@ typedef struct {
    */
   echo_result_t (*get_storage_info)(uint64_t *storage_used_bytes,
                                     uint64_t *prune_target_bytes, void *ctx);
+
+  /* ========================================================================
+   * Batch IBD Callbacks
+   *
+   * These callbacks support the batch validation cycle:
+   *   DOWNLOAD → DRAIN → VALIDATE → FLUSH → PRUNE
+   * ======================================================================== */
+
+  /**
+   * Load a block from storage by height.
+   *
+   * Used during VALIDATE phase to load downloaded blocks for validation.
+   *
+   * Parameters:
+   *   height    - Block height to load
+   *   block_out - Output: parsed block (caller must call block_free)
+   *   hash_out  - Output: block hash (optional, can be NULL)
+   *   ctx       - User context
+   *
+   * Returns:
+   *   ECHO_OK on success
+   *   ECHO_ERR_NOT_FOUND if block not stored at this height
+   */
+  echo_result_t (*load_block_at_height)(uint32_t height, block_t *block_out,
+                                        hash256_t *hash_out, void *ctx);
+
+  /**
+   * Validate and apply a block to the consensus engine.
+   *
+   * Performs full consensus validation (PoW, scripts, UTXO checks) and
+   * applies the block to the in-memory chainstate. UTXO changes are
+   * tracked for subsequent database flush.
+   *
+   * Parameters:
+   *   block - Block to validate and apply
+   *   ctx   - User context
+   *
+   * Returns:
+   *   ECHO_OK if block is valid and applied
+   *   ECHO_ERR_INVALID if block fails validation
+   */
+  echo_result_t (*validate_and_apply_block)(const block_t *block, void *ctx);
+
+  /**
+   * Flush chainstate changes to the database atomically.
+   *
+   * Persists all UTXO changes (additions and deletions) that have
+   * accumulated since the last flush. Uses a single database transaction
+   * for atomicity. Updates the validated tip height in the database.
+   *
+   * Parameters:
+   *   validated_tip - New validated tip height to store
+   *   ctx           - User context
+   *
+   * Returns:
+   *   ECHO_OK on success
+   */
+  echo_result_t (*flush_chainstate)(uint32_t validated_tip, void *ctx);
+
+  /**
+   * Prune old block files to reclaim disk space.
+   *
+   * Deletes block files for heights from 0 up to (and including) the
+   * specified height. The reorg safety margin (550 blocks) should be
+   * accounted for by the caller.
+   *
+   * Parameters:
+   *   up_to_height - Delete blocks from height 0 to this height (inclusive)
+   *   ctx          - User context
+   *
+   * Returns:
+   *   Number of blocks actually pruned
+   */
+  uint32_t (*prune_block_files)(uint32_t up_to_height, void *ctx);
+
+  /**
+   * Get the current validated (chainstate) height.
+   *
+   * Returns the height of the highest block that has been validated
+   * and applied to the in-memory UTXO set. Used by VALIDATE phase
+   * to determine where to start validation.
+   *
+   * Parameters:
+   *   ctx - User context
+   *
+   * Returns:
+   *   Validated tip height, or 0 if no blocks validated yet
+   */
+  uint32_t (*get_validated_height)(void *ctx);
+
+  /**
+   * Find the highest consecutive block stored on disk starting from a height.
+   *
+   * Scans storage to find the highest height H such that all blocks
+   * from start_height to H are present on disk (no gaps).
+   *
+   * Parameters:
+   *   start_height - Height to start scanning from
+   *   ctx          - User context
+   *
+   * Returns:
+   *   Highest consecutive height, or start_height-1 if start_height not stored
+   */
+  uint32_t (*find_consecutive_stored)(uint32_t start_height, void *ctx);
 
   /* Context pointer passed to all callbacks */
   void *ctx;

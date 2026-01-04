@@ -147,6 +147,27 @@ static echo_result_t sync_cb_get_block_hash_at_height(uint32_t height,
 static void sync_cb_disconnect_peer(peer_t *peer, const char *reason,
                                     void *ctx);
 
+/* Batch IBD callbacks */
+static echo_result_t sync_cb_load_block_at_height(uint32_t height,
+                                                  block_t *block_out,
+                                                  hash256_t *hash_out, void *ctx);
+static echo_result_t sync_cb_validate_and_apply_block(const block_t *block,
+                                                      void *ctx);
+static echo_result_t sync_cb_flush_chainstate(uint32_t validated_tip, void *ctx);
+static uint32_t sync_cb_prune_block_files(uint32_t up_to_height, void *ctx);
+static uint32_t sync_cb_get_validated_height(void *ctx);
+static uint32_t sync_cb_find_consecutive_stored(uint32_t start_height, void *ctx);
+
+/* Forward declarations for UTXO flush (defined later in file) */
+typedef struct {
+  utxo_db_t *udb;
+  size_t inserted;
+  size_t total;
+  size_t last_logged;
+  echo_result_t result;
+} utxo_flush_ctx_t;
+static bool utxo_flush_callback(const utxo_entry_t *entry, void *user_data);
+
 /*
  * ============================================================================
  * ORPHAN BLOCK FILE CLEANUP
@@ -1660,6 +1681,243 @@ static echo_result_t sync_cb_get_storage_info(uint64_t *storage_used_bytes,
   return ECHO_OK;
 }
 
+/*
+ * ============================================================================
+ * BATCH IBD CALLBACKS
+ *
+ * These callbacks support the batch IBD architecture:
+ *   DOWNLOAD → DRAIN → VALIDATE → FLUSH → PRUNE (cycle)
+ * ============================================================================
+ */
+
+/**
+ * Load a block from file storage by height.
+ *
+ * Reads the block file, deserializes it, and computes the block hash.
+ */
+static echo_result_t sync_cb_load_block_at_height(uint32_t height,
+                                                  block_t *block_out,
+                                                  hash256_t *hash_out,
+                                                  void *ctx) {
+  node_t *node = (node_t *)ctx;
+  if (node == NULL || block_out == NULL) {
+    return ECHO_ERR_NULL_PARAM;
+  }
+
+  block_storage_t *storage = node_get_block_storage(node);
+  if (storage == NULL) {
+    return ECHO_ERR_INVALID;
+  }
+
+  /* Read raw block data from file */
+  uint8_t *block_data = NULL;
+  uint32_t block_size = 0;
+  echo_result_t result =
+      block_storage_read_height(storage, height, &block_data, &block_size);
+  if (result != ECHO_OK) {
+    return result;
+  }
+
+  /* Parse the block */
+  size_t bytes_read = 0;
+  result = block_parse(block_data, block_size, block_out, &bytes_read);
+  free(block_data);
+
+  if (result != ECHO_OK) {
+    log_error(LOG_COMP_SYNC, "Failed to parse block at height %u", height);
+    return result;
+  }
+
+  /* Compute block hash if requested */
+  if (hash_out != NULL) {
+    if (block_header_hash(&block_out->header, hash_out) != ECHO_OK) {
+      block_free(block_out);
+      return ECHO_ERR_INVALID;
+    }
+  }
+
+  return ECHO_OK;
+}
+
+/**
+ * Validate and apply a block using the consensus engine.
+ *
+ * This is the core validation path for batch IBD - validates all consensus
+ * rules and updates the UTXO set in memory.
+ */
+static echo_result_t sync_cb_validate_and_apply_block(const block_t *block,
+                                                      void *ctx) {
+  node_t *node = (node_t *)ctx;
+  if (node == NULL || block == NULL) {
+    return ECHO_ERR_NULL_PARAM;
+  }
+
+  consensus_result_t result;
+  consensus_result_init(&result);
+
+  echo_result_t err =
+      consensus_validate_and_apply_block(node->consensus, block, &result);
+  if (err != ECHO_OK) {
+    log_error(LOG_COMP_CONS, "Block validation failed: %s",
+              consensus_error_str(result.error));
+    return err;
+  }
+
+  return ECHO_OK;
+}
+
+/**
+ * Flush the in-memory UTXO set to database.
+ *
+ * Atomic flush: begins transaction, clears existing UTXOs, inserts all
+ * current UTXOs, commits. This handles both additions and deletions
+ * from the validation batch.
+ */
+static echo_result_t sync_cb_flush_chainstate(uint32_t validated_tip, void *ctx) {
+  node_t *node = (node_t *)ctx;
+  if (node == NULL || node->consensus == NULL) {
+    return ECHO_ERR_NULL_PARAM;
+  }
+
+  uint64_t flush_start = plat_monotonic_ms();
+
+  /* Get the chainstate UTXO set */
+  chainstate_t *chainstate = consensus_get_chainstate(node->consensus);
+  if (chainstate == NULL) {
+    return ECHO_ERR_INVALID;
+  }
+
+  const utxo_set_t *utxo_set = chainstate_get_utxo_set(chainstate);
+  if (utxo_set == NULL) {
+    return ECHO_ERR_INVALID;
+  }
+
+  size_t utxo_count = utxo_set_size(utxo_set);
+  log_info(LOG_COMP_DB, "Batch UTXO flush at height %u: persisting %zu UTXOs...",
+           validated_tip, utxo_count);
+
+  /* Begin transaction for atomic flush */
+  echo_result_t result = db_begin(&node->utxo_db.db);
+  if (result != ECHO_OK) {
+    log_error(LOG_COMP_DB, "Failed to begin UTXO flush transaction: %d", result);
+    return result;
+  }
+
+  /* Clear existing UTXOs (atomic replacement) */
+  result = utxo_db_clear(&node->utxo_db);
+  if (result != ECHO_OK) {
+    log_error(LOG_COMP_DB, "Failed to clear UTXO database: %d", result);
+    (void)db_rollback(&node->utxo_db.db);
+    return result;
+  }
+
+  /* Insert all UTXOs from memory */
+  utxo_flush_ctx_t flush_ctx = {
+      .udb = &node->utxo_db,
+      .inserted = 0,
+      .total = utxo_count,
+      .last_logged = 0,
+      .result = ECHO_OK,
+  };
+
+  if (utxo_count > 0) {
+    utxo_set_foreach(utxo_set, utxo_flush_callback, &flush_ctx);
+  }
+
+  if (flush_ctx.result != ECHO_OK) {
+    log_error(LOG_COMP_DB, "UTXO flush failed: %d", flush_ctx.result);
+    (void)db_rollback(&node->utxo_db.db);
+    return flush_ctx.result;
+  }
+
+  /* Commit transaction */
+  result = db_commit(&node->utxo_db.db);
+  if (result != ECHO_OK) {
+    log_error(LOG_COMP_DB, "Failed to commit UTXO flush transaction: %d", result);
+    return result;
+  }
+
+  uint64_t flush_elapsed = plat_monotonic_ms() - flush_start;
+  double rate = flush_elapsed > 0 ? (double)flush_ctx.inserted / flush_elapsed : 0.0;
+  log_info(LOG_COMP_DB,
+           "Batch UTXO flush complete in %lums: %zu inserted (%.1f/ms)",
+           (unsigned long)flush_elapsed, flush_ctx.inserted, rate);
+
+  return ECHO_OK;
+}
+
+/**
+ * Prune block files up to a given height.
+ *
+ * Deletes block files from height 0 to up_to_height (inclusive).
+ * Returns the number of blocks actually deleted.
+ */
+static uint32_t sync_cb_prune_block_files(uint32_t up_to_height, void *ctx) {
+  node_t *node = (node_t *)ctx;
+  if (node == NULL) {
+    return 0;
+  }
+
+  block_storage_t *storage = node_get_block_storage(node);
+  if (storage == NULL) {
+    return 0;
+  }
+
+  /* Prune from genesis to up_to_height */
+  uint32_t pruned = block_storage_prune_range(storage, 0, up_to_height);
+  if (pruned > 0) {
+    log_debug(LOG_COMP_SYNC, "Pruned %u block files (heights 0-%u)",
+              pruned, up_to_height);
+  }
+
+  return pruned;
+}
+
+/**
+ * Get the current validated chain height.
+ */
+static uint32_t sync_cb_get_validated_height(void *ctx) {
+  node_t *node = (node_t *)ctx;
+  if (node == NULL || node->consensus == NULL) {
+    return 0;
+  }
+
+  chainstate_t *chainstate = consensus_get_chainstate(node->consensus);
+  if (chainstate == NULL) {
+    return 0;
+  }
+
+  return chainstate_get_height(chainstate);
+}
+
+/**
+ * Find the highest consecutive stored block starting from a given height.
+ *
+ * Scans forward from start_height to find blocks that are stored on disk.
+ * Returns the height of the last consecutive stored block, or start_height-1
+ * if the block at start_height is not stored.
+ */
+static uint32_t sync_cb_find_consecutive_stored(uint32_t start_height, void *ctx) {
+  node_t *node = (node_t *)ctx;
+  if (node == NULL) {
+    return start_height > 0 ? start_height - 1 : 0;
+  }
+
+  block_storage_t *storage = node_get_block_storage(node);
+  if (storage == NULL) {
+    return start_height > 0 ? start_height - 1 : 0;
+  }
+
+  /* Scan forward until we find a gap */
+  uint32_t height = start_height;
+  while (block_storage_exists_height(storage, height)) {
+    height++;
+  }
+
+  /* Return the last consecutive stored height */
+  return height > start_height ? height - 1 : (start_height > 0 ? start_height - 1 : 0);
+}
+
 /**
  * Initialize sync manager with callbacks.
  */
@@ -1683,7 +1941,6 @@ static echo_result_t node_init_sync(node_t *node) {
       .store_block = sync_cb_store_block,
       .validate_header = sync_cb_validate_header,
       .store_header = sync_cb_store_header,
-      /* NOTE: validate_and_apply_block removed - validation handled by batch architecture */
       .send_getheaders = sync_cb_send_getheaders,
       .send_getdata_blocks = sync_cb_send_getdata_blocks,
       .get_block_hash_at_height = sync_cb_get_block_hash_at_height,
@@ -1692,6 +1949,13 @@ static echo_result_t node_init_sync(node_t *node) {
       .flush_headers = NULL,
       .disconnect_peer = sync_cb_disconnect_peer,
       .get_storage_info = sync_cb_get_storage_info,
+      /* Batch IBD callbacks */
+      .load_block_at_height = sync_cb_load_block_at_height,
+      .validate_and_apply_block = sync_cb_validate_and_apply_block,
+      .flush_chainstate = sync_cb_flush_chainstate,
+      .prune_block_files = sync_cb_prune_block_files,
+      .get_validated_height = sync_cb_get_validated_height,
+      .find_consecutive_stored = sync_cb_find_consecutive_stored,
       .ctx = node};
 
   /* Create sync manager */
@@ -3208,15 +3472,6 @@ echo_result_t node_apply_block(node_t *node, const block_t *block) {
  * Strategy: DELETE all from SQLite, then INSERT all from memory.
  * This is simpler and more reliable than delta-tracking.
  */
-
-/* Context for UTXO flush callback */
-typedef struct {
-  utxo_db_t *udb;
-  size_t inserted;
-  size_t total;
-  size_t last_logged;
-  echo_result_t result;
-} utxo_flush_ctx_t;
 
 /* Progress logging interval: every 5 million UTXOs */
 #define UTXO_FLUSH_LOG_INTERVAL 5000000
