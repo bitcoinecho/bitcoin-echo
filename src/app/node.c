@@ -25,10 +25,6 @@
 #include "block_index_db.h"
 #include "blocks_storage.h"
 #include "chainstate.h"
-#include "chase.h"
-#include "chaser.h"
-#include "chaser_confirm.h"
-#include "chaser_validate.h"
 #include "consensus.h"
 #include "discovery.h"
 #include "echo_config.h"
@@ -90,11 +86,6 @@ struct node {
   /* Sync manager */
   sync_manager_t *sync_mgr;
 
-  /* Chase event system */
-  chase_dispatcher_t *dispatcher;
-  chaser_validate_t *chaser_validate;
-  chaser_confirm_t *chaser_confirm;
-
   /* Peer discovery and management */
   peer_addr_manager_t addr_manager;
   peer_t peers[NODE_MAX_PEERS];
@@ -128,7 +119,6 @@ static echo_result_t node_restore_chain_state(node_t *node);
 static echo_result_t node_init_mempool(node_t *node);
 static echo_result_t node_init_discovery(node_t *node);
 static echo_result_t node_init_sync(node_t *node);
-static echo_result_t node_init_chase(node_t *node);
 static void node_cleanup(node_t *node);
 static echo_result_t node_cleanup_orphan_block_files(node_t *node);
 
@@ -313,14 +303,6 @@ node_t *node_create(const node_config_t *config) {
 
     /* Step 3: Initialize consensus engine (full node only) */
     result = node_init_consensus(node);
-    if (result != ECHO_OK) {
-      node_cleanup(node);
-      free(node);
-      return NULL;
-    }
-
-    /* Step 3b: Initialize chase event system (full node only) */
-    result = node_init_chase(node);
     if (result != ECHO_OK) {
       node_cleanup(node);
       free(node);
@@ -857,94 +839,6 @@ static echo_result_t node_init_consensus(node_t *node) {
     return result;
   }
 
-  return ECHO_OK;
-}
-
-/**
- * Initialize chase event system and chasers.
- *
- * Creates the event dispatcher and validation/confirmation chasers.
- * These components handle parallel block validation and sequential
- * confirmation.
- */
-static echo_result_t node_init_chase(node_t *node) {
-  /* Create chase event dispatcher */
-  node->dispatcher = chase_dispatcher_create();
-  if (node->dispatcher == NULL) {
-    log_error(LOG_COMP_MAIN, "Failed to create chase dispatcher");
-    return ECHO_ERR_OUT_OF_MEMORY;
-  }
-
-  /* Get chainstate for chasers */
-  chainstate_t *chainstate = consensus_get_chainstate(node->consensus);
-  if (chainstate == NULL) {
-    log_error(LOG_COMP_MAIN, "Failed to get chainstate for chasers");
-    return ECHO_ERR_INVALID;
-  }
-
-  /*
-   * Create validation chaser with threadpool.
-   * Worker count 0 = auto-detect CPU count.
-   * Max backlog 0 = default (50 concurrent validations).
-   */
-  node->chaser_validate = chaser_validate_create(
-      node, node->dispatcher, chainstate, 0, 0);
-  if (node->chaser_validate == NULL) {
-    log_error(LOG_COMP_MAIN, "Failed to create validation chaser");
-    return ECHO_ERR_OUT_OF_MEMORY;
-  }
-
-  /* Create confirmation chaser (single-threaded, sequential) */
-  node->chaser_confirm = chaser_confirm_create(
-      node, node->dispatcher, chainstate);
-  if (node->chaser_confirm == NULL) {
-    log_error(LOG_COMP_MAIN, "Failed to create confirmation chaser");
-    return ECHO_ERR_OUT_OF_MEMORY;
-  }
-
-  /* Set checkpoint for validation bypass.
-   *
-   * Use PLATFORM_ASSUMEVALID_HEIGHT as the checkpoint for fresh IBD.
-   * This skips full validation (including script verification) for
-   * historical blocks that have been network-validated for years.
-   *
-   * We use the MAX of:
-   * 1. Current validated height (from checkpoint restore or previous runs)
-   * 2. AssumeValid height (for fresh IBD optimization)
-   *
-   * This prevents validation failures during parallel block download, where
-   * block N might be validated before block N-1's UTXOs are applied.
-   */
-  uint32_t validated_height = consensus_get_height(node->consensus);
-  uint32_t checkpoint_height = validated_height;
-
-  /* During fresh IBD (validated_height < assumevalid), use assumevalid */
-  if (validated_height < PLATFORM_ASSUMEVALID_HEIGHT) {
-    checkpoint_height = PLATFORM_ASSUMEVALID_HEIGHT;
-    log_info(LOG_COMP_MAIN, "Fresh IBD: using AssumeValid checkpoint at %u",
-             checkpoint_height);
-  }
-
-  if (checkpoint_height > 0 && checkpoint_height != UINT32_MAX) {
-    chaser_validate_set_checkpoint(node->chaser_validate, checkpoint_height);
-    chaser_confirm_set_checkpoint(node->chaser_confirm, checkpoint_height);
-  }
-
-  /* Start chasers (subscribes them to events) */
-  if (chaser_start(&node->chaser_validate->base) != 0) {
-    log_error(LOG_COMP_MAIN, "Failed to start validation chaser");
-    return ECHO_ERR_INVALID;
-  }
-
-  if (chaser_start(&node->chaser_confirm->base) != 0) {
-    log_error(LOG_COMP_MAIN, "Failed to start confirmation chaser");
-    return ECHO_ERR_INVALID;
-  }
-
-  /* Fire CHASE_START to begin chaser operations */
-  chase_notify_default(node->dispatcher, CHASE_START);
-
-  log_info(LOG_COMP_MAIN, "Chase event system initialized and started");
   return ECHO_OK;
 }
 
@@ -1789,7 +1683,7 @@ static echo_result_t node_init_sync(node_t *node) {
       .store_block = sync_cb_store_block,
       .validate_header = sync_cb_validate_header,
       .store_header = sync_cb_store_header,
-      /* NOTE: validate_and_apply_block removed - validation is now chase-driven */
+      /* NOTE: validate_and_apply_block removed - validation handled by batch architecture */
       .send_getheaders = sync_cb_send_getheaders,
       .send_getdata_blocks = sync_cb_send_getdata_blocks,
       .get_block_hash_at_height = sync_cb_get_block_hash_at_height,
@@ -1801,7 +1695,7 @@ static echo_result_t node_init_sync(node_t *node) {
       .ctx = node};
 
   /* Create sync manager */
-  node->sync_mgr = sync_create(chainstate, &callbacks, node->dispatcher);
+  node->sync_mgr = sync_create(chainstate, &callbacks);
   if (node->sync_mgr == NULL) {
     log_error(LOG_COMP_MAIN, "Failed to create sync manager");
     return ECHO_ERR_OUT_OF_MEMORY;
@@ -1974,34 +1868,10 @@ void node_destroy(node_t *node) {
  * Cleanup all node resources.
  */
 static void node_cleanup(node_t *node) {
-  /*
-   * Destroy chase event system (reverse order of creation).
-   * Signal CHASE_STOP first to allow chasers to drain their queues.
-   */
-  if (node->dispatcher != NULL) {
-    chase_notify_default(node->dispatcher, CHASE_STOP);
-  }
-
-  if (node->chaser_confirm != NULL) {
-    chaser_confirm_destroy(node->chaser_confirm);
-    node->chaser_confirm = NULL;
-  }
-
-  if (node->chaser_validate != NULL) {
-    chaser_validate_destroy(node->chaser_validate);
-    node->chaser_validate = NULL;
-  }
-
-  /* Destroy sync manager first (it unsubscribes from dispatcher) */
+  /* Destroy sync manager */
   if (node->sync_mgr != NULL) {
     sync_destroy(node->sync_mgr);
     node->sync_mgr = NULL;
-  }
-
-  /* Destroy dispatcher after subscribers are cleaned up */
-  if (node->dispatcher != NULL) {
-    chase_dispatcher_destroy(node->dispatcher);
-    node->dispatcher = NULL;
   }
 
   /* Destroy mempool */
@@ -3645,21 +3515,8 @@ echo_result_t node_process_received_block(node_t *node, const block_t *block) {
     return ECHO_ERR_INVALID;
   }
 
-  /*
-   * Unified validation path: Store block and fire CHASE_CHECKED.
-   * This routes ALL blocks (IBD + relay) through the chase event system:
-   *   CHASE_CHECKED → chaser_validate → CHASE_VALID → chaser_confirm
-   *
-   * A single code path for all blocks simplifies reasoning about state.
-   */
-
-  /* Determine block height from parent */
-  uint32_t height = 0;
-  if (existing != NULL) {
-    /* Header already known - use its height */
-    height = existing->height;
-  } else {
-    /* Look up parent to compute height */
+  /* Verify parent is known (reject orphan blocks) */
+  if (existing == NULL) {
     const block_index_t *parent = consensus_lookup_block_index(
         node->consensus, &block->header.prev_hash);
     if (parent == NULL) {
@@ -3667,7 +3524,6 @@ echo_result_t node_process_received_block(node_t *node, const block_t *block) {
       log_debug(LOG_COMP_CONS, "Orphan block received (parent unknown)");
       return ECHO_ERR_NOT_FOUND;
     }
-    height = parent->height + 1;
   }
 
   /* Store block to disk */
@@ -3675,11 +3531,6 @@ echo_result_t node_process_received_block(node_t *node, const block_t *block) {
   if (result != ECHO_OK && result != ECHO_ERR_EXISTS) {
     log_error(LOG_COMP_STORE, "Failed to store received block: %d", result);
     return result;
-  }
-
-  /* Fire CHASE_CHECKED to trigger validation pipeline */
-  if (node->dispatcher != NULL) {
-    chase_notify_height(node->dispatcher, CHASE_CHECKED, height);
   }
 
   return ECHO_OK;
