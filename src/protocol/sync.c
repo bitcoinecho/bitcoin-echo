@@ -2161,6 +2161,31 @@ void sync_get_progress(const sync_manager_t *mgr, sync_progress_t *progress) {
     progress->sync_percentage = (float)progress->tip_height /
                                 (float)progress->best_header_height * 100.0f;
   }
+
+  /* DRAIN phase progress for GUI visualization */
+  if (mgr->mode == SYNC_MODE_DRAIN) {
+    progress->drain_target = mgr->drain_target_height;
+    /* Calculate remaining: inflight + pending + disk gaps */
+    uint32_t validated_tip = progress->tip_height;
+    if (mgr->callbacks.get_validated_height) {
+      validated_tip = mgr->callbacks.get_validated_height(mgr->callbacks.ctx);
+    }
+    /* Total blocks needed = drain_target - validated_tip */
+    uint32_t total_needed = 0;
+    if (mgr->drain_target_height > validated_tip) {
+      total_needed = mgr->drain_target_height - validated_tip;
+    }
+    /* Remaining = inflight + pending (gaps are included in these counts) */
+    progress->drain_remaining =
+        (uint32_t)(progress->blocks_in_flight + progress->blocks_pending);
+    /* If remaining is 0 but we're still in DRAIN, count disk gaps */
+    if (progress->drain_remaining == 0 && total_needed > 0) {
+      progress->drain_remaining = total_needed;
+    }
+  } else {
+    progress->drain_target = 0;
+    progress->drain_remaining = 0;
+  }
 }
 
 bool sync_is_complete(const sync_manager_t *mgr) {

@@ -495,6 +495,10 @@ typedef struct {
   size_t sync_peers;       /* Number of peers syncing with */
   size_t blocks_in_flight; /* Currently downloading */
 
+  /* DRAIN phase progress (for GUI visualization) */
+  uint32_t drain_target;    /* Target height to drain to (0 if not in DRAIN) */
+  uint32_t drain_remaining; /* Blocks still needed (inflight + pending + gaps) */
+
   /* Chain info */
   uint32_t tip_height;         /* Current validated tip height */
   uint32_t best_header_height; /* Best header chain height */

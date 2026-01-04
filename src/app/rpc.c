@@ -2626,6 +2626,13 @@ static echo_result_t rpc_getsyncstatus(node_t *node, const json_value_t *params,
   json_builder_append(builder, ",\"blocks_in_flight\":");
   json_builder_uint(builder, (uint64_t)progress.blocks_in_flight);
 
+  /* DRAIN phase progress for GUI visualization */
+  json_builder_append(builder, ",\"drain_target\":");
+  json_builder_uint(builder, progress.drain_target);
+
+  json_builder_append(builder, ",\"drain_remaining\":");
+  json_builder_uint(builder, progress.drain_remaining);
+
   /* Sync percentage */
   json_builder_append(builder, ",\"sync_percentage\":");
   json_builder_number(builder, progress.sync_percentage);
