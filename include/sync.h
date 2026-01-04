@@ -457,6 +457,21 @@ typedef struct {
    */
   uint32_t (*find_consecutive_stored)(uint32_t start_height, void *ctx);
 
+  /**
+   * Check if a block exists at a given height (lightweight).
+   *
+   * Used for parallel gap-filling in DRAIN mode. This is a lightweight
+   * stat() check - does not load the block data.
+   *
+   * Parameters:
+   *   height - Block height to check
+   *   ctx    - User context
+   *
+   * Returns:
+   *   true if block exists at height, false otherwise
+   */
+  bool (*block_exists_at_height)(uint32_t height, void *ctx);
+
   /* Context pointer passed to all callbacks */
   void *ctx;
 } sync_callbacks_t;

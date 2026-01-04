@@ -2617,6 +2617,9 @@ static echo_result_t rpc_getsyncstatus(node_t *node, const json_value_t *params,
   json_builder_append(builder, ",\"tip_height\":");
   json_builder_uint(builder, progress.tip_height);
 
+  json_builder_append(builder, ",\"blocks_downloaded\":");
+  json_builder_uint(builder, progress.blocks_downloaded);
+
   json_builder_append(builder, ",\"blocks_pending\":");
   json_builder_uint(builder, progress.blocks_pending);
 

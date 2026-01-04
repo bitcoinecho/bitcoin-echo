@@ -1339,6 +1339,11 @@ echo_result_t node_store_block(node_t *node, const block_t *block) {
     return ECHO_ERR_NOT_FOUND;
   }
 
+  /* Skip if block already exists at this height (avoid duplicate storage) */
+  if (block_storage_exists_height(&node->block_storage, height)) {
+    return ECHO_OK;
+  }
+
   /* Serialize block to bytes */
   size_t block_size = block_serialize_size(block);
   uint8_t *block_data = malloc(block_size);
@@ -1863,11 +1868,26 @@ static uint32_t sync_cb_prune_block_files(uint32_t up_to_height, void *ctx) {
     return 0;
   }
 
-  /* Prune from genesis to up_to_height */
-  uint32_t pruned = block_storage_prune_range(storage, 0, up_to_height);
+  /* Get current pruned height to prune from */
+  uint32_t current_pruned = node_get_pruned_height(node);
+  if (current_pruned >= up_to_height) {
+    return 0; /* Already pruned past target */
+  }
+
+  /* Prune from current pruned height to up_to_height */
+  uint32_t pruned = block_storage_prune_range(storage, current_pruned, up_to_height);
   if (pruned > 0) {
-    log_debug(LOG_COMP_SYNC, "Pruned %u block files (heights 0-%u)",
-              pruned, up_to_height);
+    log_debug(LOG_COMP_SYNC, "Pruned %u block files (heights %u-%u)",
+              pruned, current_pruned, up_to_height);
+
+    /* Update prune height in database so RPC reports correct value */
+    if (node->block_index_db_open) {
+      echo_result_t result = block_index_db_mark_pruned(
+          &node->block_index_db, current_pruned, up_to_height);
+      if (result != ECHO_OK) {
+        log_warn(LOG_COMP_SYNC, "Failed to mark pruned in database");
+      }
+    }
   }
 
   return pruned;
@@ -1919,6 +1939,23 @@ static uint32_t sync_cb_find_consecutive_stored(uint32_t start_height, void *ctx
 }
 
 /**
+ * Check if a block exists at a given height (lightweight stat check).
+ */
+static bool sync_cb_block_exists_at_height(uint32_t height, void *ctx) {
+  node_t *node = (node_t *)ctx;
+  if (node == NULL) {
+    return false;
+  }
+
+  block_storage_t *storage = node_get_block_storage(node);
+  if (storage == NULL) {
+    return false;
+  }
+
+  return block_storage_exists_height(storage, height);
+}
+
+/**
  * Initialize sync manager with callbacks.
  */
 static echo_result_t node_init_sync(node_t *node) {
@@ -1956,6 +1993,7 @@ static echo_result_t node_init_sync(node_t *node) {
       .prune_block_files = sync_cb_prune_block_files,
       .get_validated_height = sync_cb_get_validated_height,
       .find_consecutive_stored = sync_cb_find_consecutive_stored,
+      .block_exists_at_height = sync_cb_block_exists_at_height,
       .ctx = node};
 
   /* Create sync manager */

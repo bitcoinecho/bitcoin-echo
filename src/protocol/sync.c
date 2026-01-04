@@ -127,9 +127,23 @@ struct sync_manager {
    * See IBD-BATCH-ARCHITECTURE.md for design rationale. */
   uint32_t queued_tip; /* Highest height queued to download manager */
 
+  /* DRAIN phase target: the highest block that was queued when entering DRAIN.
+   * DRAIN completes when all blocks from validated_tip+1 to drain_target_height
+   * are stored consecutively (no gaps). */
+  uint32_t drain_target_height;
+
   /* Batch validation state for VALIDATE/FLUSH/PRUNE phases. */
   uint32_t batch_validate_start;        /* Height where current batch validation started */
   uint32_t blocks_validated_this_batch; /* Blocks validated in current batch (for periodic flush) */
+
+  /* Per-phase timing for GUI rate calculations.
+   * Rates reset each time we enter DOWNLOAD or VALIDATE phase, giving
+   * meaningful "blocks/sec THIS phase" instead of cumulative averages. */
+  uint64_t phase_download_start_time;   /* When current DOWNLOAD phase started */
+  uint32_t phase_download_start_count;  /* blocks_received_total at DOWNLOAD start */
+  uint64_t phase_drain_start_time;      /* When current DRAIN phase started */
+  uint64_t phase_validate_start_time;   /* When current VALIDATE phase started */
+  uint32_t phase_validate_start_height; /* Validated height at VALIDATE start */
 };
 
 /* ============================================================================
@@ -632,6 +646,9 @@ echo_result_t sync_start(sync_manager_t *mgr) {
     mgr->block_sync_start_time = now;
     mgr->block_sync_start_height = validated_height;
     mgr->queued_tip = validated_height; /* Sequential queueing starts from validated tip */
+    /* Initialize per-phase timing for GUI rate display */
+    mgr->phase_download_start_time = now;
+    mgr->phase_download_start_count = 0; /* Fresh start */
   } else {
     log_info(LOG_COMP_SYNC, "Starting headers-first sync");
     mgr->mode = SYNC_MODE_HEADERS;
@@ -780,6 +797,9 @@ echo_result_t sync_handle_headers(sync_manager_t *mgr, peer_t *peer,
           mgr->block_sync_start_time = plat_time_ms();
           mgr->block_sync_start_height = tip_height;
         }
+        /* Initialize per-phase timing for GUI rate display */
+        mgr->phase_download_start_time = plat_time_ms();
+        mgr->phase_download_start_count = mgr->blocks_received_total;
       }
     }
     return ECHO_OK;
@@ -917,6 +937,9 @@ echo_result_t sync_handle_headers(sync_manager_t *mgr, peer_t *peer,
           mgr->block_sync_start_time = plat_time_ms();
           mgr->block_sync_start_height = tip_height;
         }
+        /* Initialize per-phase timing for GUI rate display */
+        mgr->phase_download_start_time = plat_time_ms();
+        mgr->phase_download_start_count = mgr->blocks_received_total;
       }
     }
   }
@@ -1031,11 +1054,14 @@ echo_result_t sync_handle_block(sync_manager_t *mgr, peer_t *peer,
   /* Notify download manager of block receipt for performance tracking.
    * Calculate approximate block size: header + tx count varint + txs.
    * This doesn't need to be exact - it's for relative peer comparison.
-   */
+   *
+   * Returns false if this is a duplicate (from cooperative redundancy during
+   * DRAIN - same block requested from multiple peers, first wins). */
   size_t block_bytes = 80 + block->tx_count * 250; /* Rough estimate: 250 bytes/tx avg */
-  download_mgr_block_received(mgr->download_mgr, peer, &block_hash, block_bytes);
+  bool is_new_block = download_mgr_block_received(mgr->download_mgr, peer, &block_hash, block_bytes);
 
-  /* Store block if callback provided (before validation - we need the data) */
+  /* Store block if callback provided (before validation - we need the data).
+   * Storage layer handles its own deduplication. */
   if (mgr->callbacks.store_block) {
     mgr->callbacks.store_block(block, mgr->callbacks.ctx);
   }
@@ -1056,8 +1082,11 @@ echo_result_t sync_handle_block(sync_manager_t *mgr, peer_t *peer,
     }
   }
 
-  mgr->blocks_received_total++;
-  ps->blocks_received++;
+  /* Only count unique blocks - duplicates from redundant requests are ignored */
+  if (is_new_block) {
+    mgr->blocks_received_total++;
+    ps->blocks_received++;
+  }
   ps->last_delivery_time = plat_time_ms(); /* Track for session reputation */
   mgr->last_progress_time = ps->last_delivery_time;
 
@@ -1195,20 +1224,35 @@ static void queue_blocks_from_headers(sync_manager_t *mgr) {
   }
 
   /* Storage-based throttling: don't queue if we've hit the prune target.
-   * This triggers the DOWNLOAD→DRAIN transition for pruned nodes. */
+   * This triggers the DOWNLOAD→DRAIN transition for pruned nodes.
+   *
+   * EXCEPTION: Allow gap-filling when in DRAIN mode. DRAIN's job is to fill
+   * gaps so we can validate and prune. Without filling gaps, we're stuck:
+   * can't validate (gap), can't prune (nothing new validated), can't download
+   * (storage full). Allow one batch to break the cycle.
+   */
+  bool allow_gap_fill = false;
   if (mgr->callbacks.get_storage_info) {
     uint64_t storage_used = 0;
     uint64_t prune_target = 0;
     if (mgr->callbacks.get_storage_info(&storage_used, &prune_target,
                                          mgr->callbacks.ctx) == ECHO_OK) {
       if (prune_target > 0 && storage_used >= prune_target) {
-        /* Storage limit reached - stop queueing, let DRAIN phase handle it */
-        log_info(LOG_COMP_SYNC,
-                 "queue_blocks: storage limit reached (%llu >= %llu bytes), "
-                 "stopping queue",
-                 (unsigned long long)storage_used,
-                 (unsigned long long)prune_target);
-        return;
+        /* Storage limit reached - check for gap-filling exception */
+        if (mgr->mode == SYNC_MODE_DRAIN) {
+          /* In DRAIN mode - allow gap-fill to complete the batch */
+          log_info(LOG_COMP_SYNC,
+                   "queue_blocks: storage full but DRAIN mode, allowing gap-fill");
+          allow_gap_fill = true;
+        } else {
+          /* DOWNLOAD mode and truly full - stop queueing */
+          log_info(LOG_COMP_SYNC,
+                   "queue_blocks: storage limit reached (%llu >= %llu bytes), "
+                   "stopping queue",
+                   (unsigned long long)storage_used,
+                   (unsigned long long)prune_target);
+          return;
+        }
       }
     }
   }
@@ -1233,6 +1277,11 @@ static void queue_blocks_from_headers(sync_manager_t *mgr) {
   uint32_t heights[QUEUE_BATCH_SIZE];
   size_t to_queue_count = 0;
   size_t batch_limit = QUEUE_BATCH_SIZE;
+
+  /* Gap-filling: limit to one batch to avoid excessive storage overage */
+  if (allow_gap_fill) {
+    batch_limit = DOWNLOAD_BATCH_SIZE;
+  }
 
   /* Check how much room download_mgr has - don't over-queue */
   size_t dm_pending = download_mgr_pending_count(mgr->download_mgr);
@@ -1286,6 +1335,83 @@ static void queue_blocks_from_headers(sync_manager_t *mgr) {
     /* Update queued_tip to track what we've queued */
     mgr->queued_tip = highest_queued;
   }
+}
+
+/**
+ * Queue ALL gap blocks for parallel gap-filling in DRAIN mode.
+ *
+ * Unlike queue_blocks_from_headers which queues sequentially, this function:
+ * 1. Scans the ENTIRE range from start_height to end_height
+ * 2. Identifies ALL missing blocks (gaps)
+ * 3. Queues them ALL at once for parallel download
+ *
+ * This enables DRAIN to fill all gaps in a single pass rather than
+ * sequentially finding and filling one gap at a time.
+ *
+ * Returns: Number of gap blocks queued
+ */
+static size_t queue_gap_fill_blocks(sync_manager_t *mgr, uint32_t start_height,
+                                    uint32_t end_height) {
+  if (!mgr || !mgr->callbacks.block_exists_at_height ||
+      !mgr->callbacks.get_block_hash_at_height) {
+    return 0;
+  }
+
+  if (start_height > end_height) {
+    return 0;
+  }
+
+  /* Use same batch size as queue_blocks_from_headers */
+  #define GAP_FILL_BATCH_SIZE ((size_t)DOWNLOAD_MAX_BATCHES * DOWNLOAD_BATCH_SIZE)
+  hash256_t to_queue[GAP_FILL_BATCH_SIZE];
+  uint32_t heights[GAP_FILL_BATCH_SIZE];
+  size_t gap_count = 0;
+
+  /* Check download manager capacity */
+  size_t dm_pending = download_mgr_pending_count(mgr->download_mgr);
+  size_t dm_inflight = download_mgr_inflight_count(mgr->download_mgr);
+  size_t available = GAP_FILL_BATCH_SIZE;
+  if (dm_pending + dm_inflight >= GAP_FILL_BATCH_SIZE) {
+    /* Download manager is full */
+    return 0;
+  }
+  available = GAP_FILL_BATCH_SIZE - dm_pending - dm_inflight;
+
+  /* Scan the entire range and collect ALL missing blocks */
+  for (uint32_t h = start_height; h <= end_height && gap_count < available; h++) {
+    /* Skip blocks that are already stored */
+    if (mgr->callbacks.block_exists_at_height(h, mgr->callbacks.ctx)) {
+      continue;
+    }
+
+    /* Skip blocks already in download manager (pending or inflight) */
+    if (download_mgr_has_height(mgr->download_mgr, h)) {
+      continue;
+    }
+
+    /* Get the hash for this height */
+    hash256_t hash;
+    if (mgr->callbacks.get_block_hash_at_height(h, &hash, mgr->callbacks.ctx) !=
+        ECHO_OK) {
+      log_warn(LOG_COMP_SYNC, "gap_fill: hash lookup failed for height %u", h);
+      continue;
+    }
+
+    to_queue[gap_count] = hash;
+    heights[gap_count] = h;
+    gap_count++;
+  }
+
+  if (gap_count > 0) {
+    log_info(LOG_COMP_SYNC,
+             "DRAIN gap-fill: queueing %zu missing blocks in range [%u, %u]",
+             gap_count, start_height, end_height);
+
+    /* Add all gaps to download manager at once */
+    download_mgr_add_work(mgr->download_mgr, to_queue, heights, gap_count);
+  }
+
+  return gap_count;
 }
 
 void sync_tick(sync_manager_t *mgr) {
@@ -1583,26 +1709,45 @@ void sync_tick(sync_manager_t *mgr) {
       }
     }
 
-    /* Transition to DRAIN only when we have a reason to stop downloading */
-    if (pending == 0 && inflight > 0 &&
-        (all_blocks_queued || storage_limit_reached)) {
-      log_info(LOG_COMP_SYNC,
-               "DOWNLOAD complete, transitioning to DRAIN (inflight=%zu, "
-               "queued_tip=%u, best=%u, storage_limit=%s)",
-               inflight, mgr->queued_tip, best_height,
-               storage_limit_reached ? "yes" : "no");
-      mgr->mode = SYNC_MODE_DRAIN;
-    } else if (pending == 0 && inflight == 0) {
-      /* All work complete - check if we're fully synced */
-      uint32_t tip_height = chainstate_get_height(mgr->chainstate);
-      if (!mgr->best_header || tip_height >= mgr->best_header->height) {
+    /* Transition to DRAIN when we have a reason to stop downloading.
+     *
+     * Storage limit case: Transition immediately when storage is full,
+     * even if pending > 0. Clear pending blocks since we can't store them.
+     * This ensures pruned nodes cycle through DRAIN→VALIDATE→PRUNE promptly.
+     *
+     * Normal case: Wait for pending == 0 before transitioning. */
+    if (storage_limit_reached && inflight > 0) {
+      /* Storage full - transition now, clear pending blocks */
+      if (pending > 0) {
         log_info(LOG_COMP_SYNC,
-                 "Sync complete: validated=%u, best_header=%u",
-                 tip_height,
-                 mgr->best_header ? mgr->best_header->height : 0);
-        mgr->mode = SYNC_MODE_DONE;
+                 "Storage limit reached with %zu pending blocks, clearing queue",
+                 pending);
+        download_mgr_clear_pending(mgr->download_mgr);
       }
-      /* Otherwise, stay in DOWNLOAD - more headers may arrive */
+      log_info(LOG_COMP_SYNC,
+               "DOWNLOAD→DRAIN: storage limit reached (inflight=%zu, "
+               "queued_tip=%u, best=%u)",
+               inflight, mgr->queued_tip, best_height);
+      mgr->drain_target_height = mgr->queued_tip;
+      mgr->phase_drain_start_time = plat_time_ms();
+      mgr->mode = SYNC_MODE_DRAIN;
+    } else if (pending == 0 && (all_blocks_queued || storage_limit_reached)) {
+      /*
+       * DOWNLOAD → DRAIN transition.
+       *
+       * Go to DRAIN when all blocks are queued OR storage is full.
+       * DRAIN will handle:
+       *   - Waiting for in-flight blocks
+       *   - Detecting and filling any gaps
+       *   - Transitioning to VALIDATE when ready
+       */
+      log_info(LOG_COMP_SYNC,
+               "DOWNLOAD→DRAIN: %s (inflight=%zu, queued_tip=%u, best=%u)",
+               storage_limit_reached ? "storage full" : "all blocks queued",
+               inflight, mgr->queued_tip, best_height);
+      mgr->drain_target_height = mgr->queued_tip;
+      mgr->phase_drain_start_time = plat_time_ms();
+      mgr->mode = SYNC_MODE_DRAIN;
     }
 
     break;
@@ -1610,18 +1755,98 @@ void sync_tick(sync_manager_t *mgr) {
 
   case SYNC_MODE_DRAIN:
     /*
-     * DRAIN: Let in-flight requests complete before validation.
+     * DRAIN: Parallel gap-filling to complete the batch.
      *
-     * Stop sending new getdata requests and wait for peers to deliver
-     * outstanding batches. Timeout stalled peers after 30 seconds.
+     * When entering DRAIN, drain_target_height captures what was queued.
+     * DRAIN's job is to ensure all blocks from validated_tip+1 to
+     * drain_target_height are stored, filling any gaps in parallel.
      *
-     * Transition to VALIDATE when batches_in_flight == 0.
+     * Strategy:
+     *   1. Grace period: wait 3s for in-flight blocks to land naturally
+     *   2. After grace: scan ENTIRE range and queue ALL missing blocks
+     *   3. Have ALL idle peers request work immediately
+     *   4. Make redundant requests for in-flight blocks (acceleration)
+     *   5. Transition to VALIDATE when all blocks are consecutive
      */
     {
+      /* Grace period: wait for in-flight blocks to land before scanning gaps.
+       * When entering DRAIN, there are typically 2000-3000 blocks in flight.
+       * If we immediately scan for gaps, we'd find "gaps" that are just
+       * blocks mid-transit. Wait 3s to let those arrive naturally. */
+      #define DRAIN_GRACE_PERIOD_MS 3000
+      uint64_t now = plat_time_ms();
+      uint64_t drain_elapsed = now - mgr->phase_drain_start_time;
+      bool in_grace_period = (drain_elapsed < DRAIN_GRACE_PERIOD_MS);
+
       size_t inflight = download_mgr_inflight_count(mgr->download_mgr);
-      if (inflight == 0) {
-        log_info(LOG_COMP_SYNC, "DRAIN complete, transitioning to VALIDATE");
+      size_t pending = download_mgr_pending_count(mgr->download_mgr);
+
+      /* Get current state */
+      uint32_t validated_tip = 0;
+      if (mgr->callbacks.get_validated_height) {
+        validated_tip = mgr->callbacks.get_validated_height(mgr->callbacks.ctx);
+      }
+
+      /* Find highest consecutive stored block from validated_tip+1 */
+      uint32_t consecutive_end = validated_tip;
+      if (mgr->callbacks.find_consecutive_stored) {
+        consecutive_end = mgr->callbacks.find_consecutive_stored(
+            validated_tip + 1, mgr->callbacks.ctx);
+      }
+
+      /* Check if all originally queued blocks are stored consecutively */
+      bool all_blocks_ready = (consecutive_end >= mgr->drain_target_height);
+
+      if (all_blocks_ready && inflight == 0 && pending == 0) {
+        /* All blocks from DOWNLOAD phase are stored consecutively - VALIDATE */
+        log_info(LOG_COMP_SYNC,
+                 "DRAIN→VALIDATE: all %u blocks ready (target=%u, consecutive=%u)",
+                 consecutive_end - validated_tip, mgr->drain_target_height,
+                 consecutive_end);
         mgr->mode = SYNC_MODE_VALIDATE;
+        mgr->phase_validate_start_time = plat_time_ms();
+        mgr->phase_validate_start_height = validated_tip;
+      } else if (in_grace_period) {
+        /* Still in grace period - just accelerate in-flight, don't scan gaps yet */
+        if (inflight > 0) {
+          download_mgr_drain_accelerate(mgr->download_mgr, 3000);
+        }
+      } else {
+        /*
+         * Grace period over - aggressive parallel gap-filling.
+         *
+         * 1. Queue ALL missing blocks in the range (not just one batch)
+         * 2. Have ALL idle peers grab work immediately
+         * 3. Make redundant requests for slow in-flight blocks
+         */
+
+        /* Parallel gap-fill: scan entire range and queue all missing blocks */
+        size_t gaps_queued = queue_gap_fill_blocks(
+            mgr, validated_tip + 1, mgr->drain_target_height);
+
+        if (gaps_queued > 0) {
+          log_info(LOG_COMP_SYNC,
+                   "DRAIN: queued %zu gap blocks for parallel download",
+                   gaps_queued);
+        }
+
+        /* Enlist ALL idle peers to grab work immediately */
+        for (size_t i = 0; i < mgr->peer_count; i++) {
+          peer_sync_state_t *ps = &mgr->peers[i];
+          if (!ps->sync_candidate || !peer_is_ready(ps->peer)) {
+            continue;
+          }
+          if (download_mgr_peer_is_idle(mgr->download_mgr, ps->peer)) {
+            download_mgr_peer_request_work(mgr->download_mgr, ps->peer);
+          }
+        }
+
+        /* Accelerate: make redundant requests for stalled in-flight blocks.
+         * 1500ms stall timeout - if a peer hasn't delivered in 1.5s,
+         * have idle peers help with those specific blocks. */
+        if (inflight > 0) {
+          download_mgr_drain_accelerate(mgr->download_mgr, 1500);
+        }
       }
     }
     break;
@@ -1815,6 +2040,9 @@ void sync_tick(sync_manager_t *mgr) {
         /* Archival: go back to DOWNLOAD for more blocks */
         log_info(LOG_COMP_SYNC, "Archival flush complete, back to DOWNLOAD");
         mgr->mode = SYNC_MODE_DOWNLOAD;
+        /* Reset per-phase timing for GUI rate display */
+        mgr->phase_download_start_time = plat_time_ms();
+        mgr->phase_download_start_count = mgr->blocks_received_total;
       } else {
         /* Pruned: go to PRUNE to reclaim space */
         log_info(LOG_COMP_SYNC, "Pruned flush complete, transitioning to PRUNE");
@@ -1869,6 +2097,9 @@ void sync_tick(sync_manager_t *mgr) {
       } else {
         /* More blocks to download */
         mgr->mode = SYNC_MODE_DOWNLOAD;
+        /* Reset per-phase timing for GUI rate display */
+        mgr->phase_download_start_time = plat_time_ms();
+        mgr->phase_download_start_count = mgr->blocks_received_total;
       }
     }
     break;
@@ -2021,28 +2252,50 @@ void sync_get_metrics(sync_manager_t *mgr, sync_metrics_t *metrics) {
   /* Mode string */
   metrics->mode_string = sync_mode_string(progress.mode);
 
-  /* VALIDATION RATE: Blocks added to chain per second (strict order)
-   * This is the rate we can advance the chainstate tip. */
-  metrics->validation_rate_bps = calc_blocks_per_second(mgr);
+  /* Per-phase rate calculations.
+   * Rates reset each time we enter a new DOWNLOAD or VALIDATE phase, giving
+   * meaningful "blocks/sec THIS phase" instead of cumulative averages.
+   * During transitional phases (DRAIN, FLUSH, PRUNE), rates are 0. */
+  uint64_t now = plat_time_ms();
 
-  /* DOWNLOAD RATE: Blocks received from network per second (any order)
-   * This shows how fast we're getting data, regardless of ordering. */
-  if (mgr->block_sync_start_time > 0) {
-    uint64_t now = plat_time_ms();
-    uint64_t elapsed_ms = now - mgr->block_sync_start_time;
+  /* DOWNLOAD RATE: Blocks received this DOWNLOAD phase / elapsed time.
+   * Only meaningful during DOWNLOAD phase. */
+  if (progress.mode == SYNC_MODE_DOWNLOAD && mgr->phase_download_start_time > 0) {
+    uint64_t elapsed_ms = now - mgr->phase_download_start_time;
     if (elapsed_ms > 0) {
-      metrics->download_rate_bps =
-          (float)mgr->blocks_received_total * 1000.0f / (float)elapsed_ms;
+      uint32_t blocks_this_phase = mgr->blocks_received_total - mgr->phase_download_start_count;
+      metrics->download_rate_bps = (float)blocks_this_phase * 1000.0f / (float)elapsed_ms;
     }
   }
 
-  /* ETA in seconds (based on validation rate - the true sync bottleneck).
-   * Downloads may race ahead, but validation determines actual sync progress. */
-  if (metrics->validation_rate_bps > 0 &&
-      progress.best_header_height > progress.tip_height) {
+  /* VALIDATION RATE: Blocks validated this VALIDATE phase / elapsed time.
+   * Only meaningful during VALIDATE phase. */
+  if (progress.mode == SYNC_MODE_VALIDATE && mgr->phase_validate_start_time > 0) {
+    uint64_t elapsed_ms = now - mgr->phase_validate_start_time;
+    if (elapsed_ms > 0) {
+      uint32_t current_height = chainstate_get_height(mgr->chainstate);
+      uint32_t validated_this_phase = 0;
+      if (current_height > mgr->phase_validate_start_height) {
+        validated_this_phase = current_height - mgr->phase_validate_start_height;
+      }
+      metrics->validation_rate_bps = (float)validated_this_phase * 1000.0f / (float)elapsed_ms;
+    }
+  }
+
+  /* ETA in seconds - use validation rate when validating, otherwise use a
+   * blended rate from overall sync progress for rough estimation. */
+  if (progress.best_header_height > progress.tip_height) {
     uint32_t remaining = progress.best_header_height - progress.tip_height;
-    metrics->eta_seconds =
-        (uint64_t)((float)remaining / metrics->validation_rate_bps);
+    if (metrics->validation_rate_bps > 0) {
+      /* Use current validation rate if actively validating */
+      metrics->eta_seconds = (uint64_t)((float)remaining / metrics->validation_rate_bps);
+    } else if (mgr->block_sync_start_time > 0) {
+      /* Fall back to overall rate for ETA estimation when not validating */
+      float overall_rate = calc_blocks_per_second(mgr);
+      if (overall_rate > 0) {
+        metrics->eta_seconds = (uint64_t)((float)remaining / overall_rate);
+      }
+    }
   }
 
   /* Storage metrics from callback */

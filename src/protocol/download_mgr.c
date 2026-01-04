@@ -475,40 +475,67 @@ bool download_mgr_block_received(download_mgr_t *mgr, peer_t *peer,
   perf->last_delivery_time = now;
   update_peer_window(perf, now);
 
-  /* Check if block is in peer's batch */
-  if (perf->batch == NULL) {
-    /* Late delivery - peer has no batch (was split or completed) */
-    LOG_DEBUG("download_mgr: late block delivery from idle peer");
-    return true;
-  }
+  /* First, try to find block in the delivering peer's batch (most common case) */
+  if (perf->batch != NULL) {
+    for (size_t i = 0; i < perf->batch->count; i++) {
+      if (memcmp(&perf->batch->hashes[i], hash, sizeof(hash256_t)) == 0) {
+        /* Found it - check if already received (duplicate) */
+        if (perf->batch->received[i]) {
+          LOG_DEBUG("download_mgr: duplicate block at index %zu (already received), "
+                    "remaining=%zu unchanged",
+                    i, perf->batch->remaining);
+          return false; /* Duplicate - don't count */
+        }
 
-  /* Find the block in the batch */
-  for (size_t i = 0; i < perf->batch->count; i++) {
-    if (memcmp(&perf->batch->hashes[i], hash, sizeof(hash256_t)) == 0) {
-      /* Found it - check if already received (duplicate) */
-      if (perf->batch->received[i]) {
-        /* Already received this block - don't decrement remaining.
-         * This happens when a batch is stolen and reassigned: we request
-         * all blocks again, and the new peer may send duplicates. */
-        LOG_DEBUG("download_mgr: duplicate block at index %zu (already received), "
-                  "remaining=%zu unchanged",
+        /* First time receiving this block - mark received and decrement */
+        perf->batch->received[i] = true;
+        if (perf->batch->remaining > 0) {
+          perf->batch->remaining--;
+        }
+        LOG_DEBUG("download_mgr: block received at index %zu, batch remaining=%zu",
                   i, perf->batch->remaining);
         return true;
       }
-
-      /* First time receiving this block - mark received and decrement */
-      perf->batch->received[i] = true;
-      if (perf->batch->remaining > 0) {
-        perf->batch->remaining--;
-      }
-      LOG_DEBUG("download_mgr: block received at index %zu, batch remaining=%zu",
-                i, perf->batch->remaining);
-      return true;
     }
   }
 
-  /* Block not in batch - late delivery or unrequested */
-  LOG_DEBUG("download_mgr: block not in peer's batch (late delivery)");
+  /* Block not in delivering peer's batch (or peer has no batch).
+   * This happens during DRAIN mode when idle peers fulfill redundant requests.
+   * Search ALL assigned batches to find and mark the block as received. */
+  for (size_t p = 0; p < mgr->peer_count; p++) {
+    peer_perf_t *other = &mgr->peers[p];
+    if (other->peer == NULL || other->batch == NULL) {
+      continue;
+    }
+    /* Don't re-check the delivering peer's batch */
+    if (other == perf) {
+      continue;
+    }
+
+    for (size_t i = 0; i < other->batch->count; i++) {
+      if (memcmp(&other->batch->hashes[i], hash, sizeof(hash256_t)) == 0) {
+        /* Found it in another peer's batch */
+        if (other->batch->received[i]) {
+          LOG_DEBUG("download_mgr: duplicate block (already in peer %p batch)",
+                    (void *)other->peer);
+          return false; /* Duplicate - don't count */
+        }
+
+        /* Mark as received in the owning batch */
+        other->batch->received[i] = true;
+        if (other->batch->remaining > 0) {
+          other->batch->remaining--;
+        }
+        LOG_DEBUG("download_mgr: DRAIN block received via redundant request, "
+                  "owning batch remaining=%zu",
+                  other->batch->remaining);
+        return true;
+      }
+    }
+  }
+
+  /* Block not in any batch - truly late delivery or unrequested */
+  LOG_DEBUG("download_mgr: block not in any batch (late delivery)");
   return true;
 }
 
@@ -778,6 +805,34 @@ bool download_mgr_has_block(const download_mgr_t *mgr, const hash256_t *hash) {
   return false;
 }
 
+bool download_mgr_has_height(const download_mgr_t *mgr, uint32_t height) {
+  if (mgr == NULL) {
+    return false;
+  }
+
+  /* Check queued batches */
+  for (batch_node_t *node = mgr->queue_head; node != NULL; node = node->next) {
+    for (size_t i = 0; i < node->batch.count; i++) {
+      if (node->batch.heights[i] == height) {
+        return true;
+      }
+    }
+  }
+
+  /* Check assigned batches */
+  for (size_t i = 0; i < mgr->peer_count; i++) {
+    if (mgr->peers[i].batch != NULL) {
+      for (size_t j = 0; j < mgr->peers[i].batch->count; j++) {
+        if (mgr->peers[i].batch->heights[j] == height) {
+          return true;
+        }
+      }
+    }
+  }
+
+  return false;
+}
+
 bool download_mgr_get_peer_stats(const download_mgr_t *mgr, const peer_t *peer,
                                  float *bytes_per_second,
                                  uint32_t *blocks_remaining) {
@@ -816,6 +871,110 @@ size_t download_mgr_pending_count(const download_mgr_t *mgr) {
     total += node->batch.remaining;
   }
   return total;
+}
+
+void download_mgr_clear_pending(download_mgr_t *mgr) {
+  if (mgr == NULL) {
+    return;
+  }
+
+  /* Pop and destroy all queued (pending) batches.
+   * Does NOT affect assigned batches - those will complete normally. */
+  size_t cleared = 0;
+  batch_node_t *node;
+  while ((node = queue_pop_front(mgr)) != NULL) {
+    cleared += node->batch.remaining;
+    batch_node_destroy(node);
+  }
+
+  if (cleared > 0) {
+    log_debug(LOG_COMP_SYNC, "download_mgr: cleared %zu pending blocks", cleared);
+  }
+}
+
+size_t download_mgr_drain_accelerate(download_mgr_t *mgr, uint64_t stall_timeout_ms) {
+  if (mgr == NULL || mgr->callbacks.send_getdata == NULL) {
+    return 0;
+  }
+
+  uint64_t now = plat_time_ms();
+  size_t requests_sent = 0;
+
+  /* Collect idle peers (no work or completed their batch) */
+  peer_t *idle_peers[DOWNLOAD_MAX_PEERS];
+  size_t idle_count = 0;
+
+  for (size_t i = 0; i < mgr->peer_count; i++) {
+    peer_perf_t *perf = &mgr->peers[i];
+    if (perf->peer == NULL) {
+      continue;
+    }
+    /* Idle = no batch, or batch is complete */
+    if (perf->batch == NULL || perf->batch->remaining == 0) {
+      idle_peers[idle_count++] = perf->peer;
+    }
+  }
+
+  if (idle_count == 0) {
+    return 0; /* No idle peers to help */
+  }
+
+  /* Collect blocks from stalled/slow peers */
+  hash256_t blocks_to_request[DOWNLOAD_BATCH_SIZE * DOWNLOAD_MAX_PEERS];
+  size_t blocks_count = 0;
+
+  for (size_t i = 0; i < mgr->peer_count; i++) {
+    peer_perf_t *perf = &mgr->peers[i];
+    if (perf->peer == NULL || perf->batch == NULL) {
+      continue;
+    }
+    if (perf->batch->remaining == 0) {
+      continue; /* Already complete */
+    }
+
+    /* Check if peer is stalled (no delivery in stall_timeout_ms) */
+    uint64_t since_last = now - perf->last_delivery_time;
+    if (since_last < stall_timeout_ms) {
+      continue; /* Still delivering, not stalled */
+    }
+
+    /* Collect unreceived blocks from this stalled peer's batch */
+    work_batch_t *batch = perf->batch;
+    for (size_t j = 0; j < batch->count && blocks_count < sizeof(blocks_to_request)/sizeof(blocks_to_request[0]); j++) {
+      if (!batch->received[j]) {
+        blocks_to_request[blocks_count++] = batch->hashes[j];
+      }
+    }
+  }
+
+  if (blocks_count == 0) {
+    return 0; /* No stalled blocks to request */
+  }
+
+  /* Limit blocks per getdata to avoid overwhelming peers.
+   * Bitcoin Core uses similar limits. 64 is conservative. */
+  #define ACCELERATE_MAX_PER_PEER 64
+  size_t per_peer = (blocks_count < ACCELERATE_MAX_PER_PEER)
+                    ? blocks_count : ACCELERATE_MAX_PER_PEER;
+
+  /* Distribute stalled blocks across idle peers (round-robin).
+   * Each peer gets up to 64 blocks, not the entire set. */
+  size_t offset = 0;
+  for (size_t i = 0; i < idle_count && offset < blocks_count; i++) {
+    size_t count = (blocks_count - offset < per_peer)
+                   ? (blocks_count - offset) : per_peer;
+    mgr->callbacks.send_getdata(idle_peers[i], blocks_to_request + offset, count,
+                                mgr->callbacks.ctx);
+    offset += count;
+    requests_sent++;
+  }
+
+  if (requests_sent > 0) {
+    LOG_INFO("download_mgr: DRAIN accelerate - requested %zu blocks from %zu idle peers",
+             blocks_count, requests_sent);
+  }
+
+  return requests_sent;
 }
 
 size_t download_mgr_inflight_count(const download_mgr_t *mgr) {

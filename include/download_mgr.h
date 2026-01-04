@@ -311,6 +311,12 @@ float download_mgr_aggregate_rate(const download_mgr_t *mgr);
 bool download_mgr_has_block(const download_mgr_t *mgr, const hash256_t *hash);
 
 /**
+ * Check if a block height is being tracked (in any batch).
+ * Used for parallel gap-filling in DRAIN mode to avoid duplicate requests.
+ */
+bool download_mgr_has_height(const download_mgr_t *mgr, uint32_t height);
+
+/**
  * Get performance stats for a specific peer.
  */
 bool download_mgr_get_peer_stats(const download_mgr_t *mgr, const peer_t *peer,
@@ -327,6 +333,29 @@ bool download_mgr_get_peer_stats(const download_mgr_t *mgr, const peer_t *peer,
  * Maps to queued batches * remaining blocks.
  */
 size_t download_mgr_pending_count(const download_mgr_t *mgr);
+
+/**
+ * Clear all pending (queued but not yet assigned) blocks.
+ * Used when storage limit is reached to trigger DRAIN phase.
+ * Does NOT affect in-flight blocks - those will complete normally.
+ */
+void download_mgr_clear_pending(download_mgr_t *mgr);
+
+/**
+ * DRAIN mode: Request in-flight blocks from idle peers (redundant requests).
+ *
+ * Cooperative redundancy: Rather than stealing work from slow peers,
+ * we ask idle faster peers to ALSO request those blocks. First response
+ * wins, duplicates are discarded. Slow peers aren't punished - they
+ * contribute what they can while fast peers pick up slack.
+ *
+ * Call this periodically during DRAIN phase to accelerate completion.
+ *
+ * @param mgr           Download manager
+ * @param stall_timeout_ms  Consider peers stalled if no delivery in this time
+ * @return Number of redundant requests issued
+ */
+size_t download_mgr_drain_accelerate(download_mgr_t *mgr, uint64_t stall_timeout_ms);
 
 /**
  * Get inflight count (blocks assigned but not received).
