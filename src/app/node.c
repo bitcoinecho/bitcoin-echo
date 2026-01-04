@@ -73,7 +73,7 @@ struct node {
   /* Storage layer (NULL if in observer mode) */
   utxo_db_t utxo_db;
   block_index_db_t block_index_db;
-  block_file_manager_t block_storage;
+  block_storage_t block_storage;
   bool utxo_db_open;
   bool block_index_db_open;
   bool block_storage_init;
@@ -169,69 +169,54 @@ static void sync_cb_disconnect_peer(peer_t *peer, const char *reason,
  *   - A crash occurred after writing block data but before updating the DB
  *   - Development/debugging sessions left orphaned data
  *
- * This function scans block files and deletes any not referenced by the DB,
- * ensuring we don't waste disk space on unreachable data.
+ * With file-per-block storage, we scan all stored heights and delete any
+ * that aren't in the block index database.
  */
 static echo_result_t node_cleanup_orphan_block_files(node_t *node) {
   if (node == NULL || !node->block_storage_init || !node->block_index_db_open) {
     return ECHO_ERR_NULL_PARAM;
   }
 
-  /* Get list of file indices referenced by blocks in the DB */
-  uint32_t *referenced_files = NULL;
-  size_t referenced_count = 0;
-  echo_result_t result = block_index_db_get_referenced_files(
-      &node->block_index_db, &referenced_files, &referenced_count);
+  /* Scan all block heights on disk */
+  uint32_t *stored_heights = NULL;
+  size_t stored_count = 0;
+  echo_result_t result = block_storage_scan_heights(
+      &node->block_storage, &stored_heights, &stored_count);
   if (result != ECHO_OK) {
-    log_warn(LOG_COMP_STORE, "Failed to query referenced block files: %d",
-             result);
+    log_warn(LOG_COMP_STORE, "Failed to scan stored block heights: %d", result);
     return result;
   }
 
-  /* Scan all block files on disk */
+  if (stored_count == 0) {
+    return ECHO_OK; /* No blocks stored */
+  }
+
+  /* Check each stored height against the database */
   uint32_t files_deleted = 0;
-  uint64_t bytes_freed = 0;
-  uint32_t current_file = block_storage_get_current_file(&node->block_storage);
 
-  for (uint32_t file_idx = 0; file_idx < current_file; file_idx++) {
-    bool exists = false;
-    result = block_storage_file_exists(&node->block_storage, file_idx, &exists);
-    if (result != ECHO_OK || !exists) {
-      continue;
-    }
+  for (size_t i = 0; i < stored_count; i++) {
+    uint32_t height = stored_heights[i];
 
-    /* Check if this file is referenced */
-    bool is_referenced = false;
-    for (size_t i = 0; i < referenced_count; i++) {
-      if (referenced_files[i] == file_idx) {
-        is_referenced = true;
-        break;
-      }
-    }
+    /* Look up this height in the block index */
+    block_index_entry_t entry;
+    result = block_index_db_lookup_by_height(&node->block_index_db, height, &entry);
 
-    if (!is_referenced) {
-      /* Get file size before deleting (for logging) */
-      uint64_t file_size = 0;
-      block_storage_get_file_size(&node->block_storage, file_idx, &file_size);
-
-      /* Delete orphan file */
-      result = block_storage_delete_file(&node->block_storage, file_idx);
+    if (result == ECHO_ERR_NOT_FOUND) {
+      /* Height not in database - orphan file, delete it */
+      result = block_storage_prune_height(&node->block_storage, height);
       if (result == ECHO_OK) {
         files_deleted++;
-        bytes_freed += file_size;
       } else {
-        log_warn(LOG_COMP_STORE, "Failed to delete orphan block file %u: %d",
-                 file_idx, result);
+        log_warn(LOG_COMP_STORE, "Failed to delete orphan block at height %u: %d",
+                 height, result);
       }
     }
   }
 
-  free(referenced_files);
+  free(stored_heights);
 
   if (files_deleted > 0) {
-    log_info(LOG_COMP_STORE,
-             "Cleaned up %u orphan block files, freed %llu MB",
-             files_deleted, (unsigned long long)(bytes_freed / (1024 * 1024)));
+    log_info(LOG_COMP_STORE, "Cleaned up %u orphan block files", files_deleted);
   }
 
   return ECHO_OK;
@@ -472,7 +457,7 @@ static echo_result_t node_init_databases(node_t *node) {
   db_set_ibd_mode(&node->block_index_db.db, true);
 
   /* Initialize block file storage */
-  result = block_storage_init(&node->block_storage, node->config.data_dir);
+  result = block_storage_create(&node->block_storage, node->config.data_dir);
   if (result != ECHO_OK) {
     return result;
   }
@@ -1347,7 +1332,7 @@ static echo_result_t sync_cb_get_block(const hash256_t *hash, block_t *block_out
     return ECHO_ERR_NOT_FOUND;
   }
 
-  /* Look up block position in database */
+  /* Look up block in database to get height */
   block_index_entry_t entry;
   echo_result_t result =
       block_index_db_lookup_by_hash(&node->block_index_db, hash, &entry);
@@ -1355,22 +1340,19 @@ static echo_result_t sync_cb_get_block(const hash256_t *hash, block_t *block_out
     return result;
   }
 
-  /* Check if block data is stored (data_file != -1) */
+  /* Check if block data is stored (data_file >= 0 means stored) */
   if (entry.data_file < 0) {
     return ECHO_ERR_NOT_FOUND; /* Header only, no block data */
   }
 
-  /* Load block data from storage */
-  block_file_pos_t pos;
-  pos.file_index = (uint32_t)entry.data_file;
-  pos.file_offset = entry.data_pos;
-
+  /* Load block data from storage by height */
   uint8_t *block_data = NULL;
   uint32_t block_size = 0;
-  result = block_storage_read(&node->block_storage, pos, &block_data, &block_size);
+  result = block_storage_read_height(&node->block_storage, entry.height,
+                                     &block_data, &block_size);
   if (result != ECHO_OK) {
-    log_warn(LOG_COMP_STORE, "Failed to read block from file %u offset %u: %d",
-             pos.file_index, pos.file_offset, result);
+    log_warn(LOG_COMP_STORE, "Failed to read block at height %u: %d",
+             entry.height, result);
     return result;
   }
 
@@ -1392,8 +1374,7 @@ static echo_result_t sync_cb_get_block(const hash256_t *hash, block_t *block_out
  *
  * Called by sync manager to persist a block after download.
  * Stores the block to disk immediately so out-of-order blocks don't need
- * to be re-downloaded. Records the file position in the database and
- * in-memory block index for later retrieval.
+ * to be re-downloaded. Uses file-per-block storage indexed by height.
  */
 echo_result_t node_store_block(node_t *node, const block_t *block) {
   if (node == NULL || block == NULL) {
@@ -1413,6 +1394,36 @@ echo_result_t node_store_block(node_t *node, const block_t *block) {
     return result;
   }
 
+  /* Look up block height from database or in-memory index */
+  uint32_t height = 0;
+  bool found_height = false;
+
+  /* Try in-memory block index first */
+  chainstate_t *chainstate = consensus_get_chainstate(node->consensus);
+  if (chainstate != NULL) {
+    block_index_map_t *index_map = chainstate_get_block_index_map(chainstate);
+    block_index_t *block_index = block_index_map_lookup(index_map, &block_hash);
+    if (block_index != NULL) {
+      height = block_index->height;
+      found_height = true;
+    }
+  }
+
+  /* Fall back to database lookup */
+  if (!found_height && node->block_index_db_open) {
+    block_index_entry_t entry;
+    result = block_index_db_lookup_by_hash(&node->block_index_db, &block_hash, &entry);
+    if (result == ECHO_OK) {
+      height = entry.height;
+      found_height = true;
+    }
+  }
+
+  if (!found_height) {
+    log_warn(LOG_COMP_STORE, "Cannot store block: height unknown");
+    return ECHO_ERR_NOT_FOUND;
+  }
+
   /* Serialize block to bytes */
   size_t block_size = block_serialize_size(block);
   uint8_t *block_data = malloc(block_size);
@@ -1429,10 +1440,9 @@ echo_result_t node_store_block(node_t *node, const block_t *block) {
     return result;
   }
 
-  /* Write to block storage */
-  block_file_pos_t pos;
-  result = block_storage_write(&node->block_storage, block_data,
-                               (uint32_t)written, &pos);
+  /* Write to block storage by height */
+  result = block_storage_write_height(&node->block_storage, height,
+                                      block_data, (uint32_t)written);
   free(block_data);
 
   if (result != ECHO_OK) {
@@ -1440,10 +1450,10 @@ echo_result_t node_store_block(node_t *node, const block_t *block) {
     return result;
   }
 
-  /* Update block index database with file position */
+  /* Mark block as stored in database (use data_file=0 as "stored" flag) */
   if (node->block_index_db_open) {
     result = block_index_db_update_data_pos(&node->block_index_db, &block_hash,
-                                            pos.file_index, pos.file_offset);
+                                            0, 0);
     if (result != ECHO_OK && result != ECHO_ERR_NOT_FOUND) {
       log_warn(LOG_COMP_STORE, "Failed to update block index DB: %d", result);
       /* Continue anyway - block is stored on disk */
@@ -1451,22 +1461,16 @@ echo_result_t node_store_block(node_t *node, const block_t *block) {
   }
 
   /* Update in-memory block index if available */
-  chainstate_t *chainstate = consensus_get_chainstate(node->consensus);
   if (chainstate != NULL) {
     block_index_map_t *index_map = chainstate_get_block_index_map(chainstate);
     block_index_t *block_index = block_index_map_lookup(index_map, &block_hash);
     if (block_index != NULL) {
-      block_index->data_file = pos.file_index;
-      block_index->data_pos = pos.file_offset;
-      log_info(LOG_COMP_STORE, "Block stored: height=%u, file=%u, offset=%u",
-               block_index->height, pos.file_index, pos.file_offset);
-    } else {
-      log_warn(LOG_COMP_STORE, "Block stored but no block_index found");
+      block_index->data_file = 0; /* Mark as stored */
+      block_index->data_pos = 0;
     }
   }
 
-  log_debug(LOG_COMP_STORE, "Block stored at file %u offset %u (height lookup pending)",
-            pos.file_index, pos.file_offset);
+  log_info(LOG_COMP_STORE, "Block stored at height %u", height);
 
   return ECHO_OK;
 }
@@ -1998,9 +2002,9 @@ static void node_cleanup(node_t *node) {
     node->utxo_db_open = false;
   }
 
-  /* Close block storage (flushes any buffered writes) */
+  /* Close block storage */
   if (node->block_storage_init) {
-    block_storage_close(&node->block_storage);
+    block_storage_destroy(&node->block_storage);
     node->block_storage_init = false;
   }
 
@@ -2167,7 +2171,7 @@ peer_addr_manager_t *node_get_addr_manager(node_t *node) {
   return &node->addr_manager;
 }
 
-block_file_manager_t *node_get_block_storage(node_t *node) {
+block_storage_t *node_get_block_storage(node_t *node) {
   if (node == NULL) {
     return NULL;
   }
@@ -3774,7 +3778,7 @@ echo_result_t node_load_block(node_t *node, const hash256_t *hash,
     return ECHO_ERR_NOT_FOUND;
   }
 
-  /* Look up block position in database */
+  /* Look up block in database to get height */
   block_index_entry_t entry;
   echo_result_t result =
       block_index_db_lookup_by_hash(&node->block_index_db, hash, &entry);
@@ -3782,19 +3786,16 @@ echo_result_t node_load_block(node_t *node, const hash256_t *hash,
     return result;
   }
 
-  /* Check if block data is stored */
+  /* Check if block data is stored (data_file >= 0 means stored) */
   if (entry.data_file < 0) {
     return ECHO_ERR_NOT_FOUND;
   }
 
-  /* Load block data from storage */
-  block_file_pos_t pos;
-  pos.file_index = (uint32_t)entry.data_file;
-  pos.file_offset = entry.data_pos;
-
+  /* Load block data from storage by height */
   uint8_t *block_data = NULL;
   uint32_t block_size = 0;
-  result = block_storage_read(&node->block_storage, pos, &block_data, &block_size);
+  result = block_storage_read_height(&node->block_storage, entry.height,
+                                     &block_data, &block_size);
   if (result != ECHO_OK) {
     return result;
   }
@@ -3891,132 +3892,30 @@ uint32_t node_prune_blocks(node_t *node, uint32_t target_height) {
     return current_pruned_height;
   }
 
-  log_info(LOG_COMP_STORE, "Pruning blocks starting from height %u",
-           current_pruned_height);
+  log_info(LOG_COMP_STORE, "Pruning blocks from height %u to %u",
+           current_pruned_height, target_height);
 
   /*
-   * Strategy: Delete old block files and mark their blocks as pruned.
-   *
-   * We delete entire block files (blk*.dat), querying the database
-   * to find the actual max height in each file before deletion.
-   * This handles early blocks correctly (which were tiny and packed
-   * many per file) as well as modern blocks (~1-2 MB each).
+   * With file-per-block storage, pruning is simple: delete each block file
+   * individually using block_storage_prune_range().
    */
+  uint32_t blocks_pruned = block_storage_prune_range(
+      &node->block_storage, current_pruned_height, target_height);
 
-  /* Get the lowest file index */
-  uint32_t lowest_file = 0;
-  echo_result_t result = block_storage_get_lowest_file(&node->block_storage,
-                                                        &lowest_file);
-  if (result != ECHO_OK) {
-    log_warn(LOG_COMP_STORE, "No block files found for pruning");
-    return current_pruned_height;
-  }
-
-  /* Get current write file (don't delete it) */
-  uint32_t current_file = block_storage_get_current_file(&node->block_storage);
-
-  /* Calculate how many bytes we need to free */
-  uint64_t current_size = node_get_block_storage_size(node);
-  uint64_t target_size = node->config.prune_target_mb * 1024ULL * 1024ULL;
-  uint64_t bytes_to_free = (current_size > target_size) ? (current_size - target_size) : 0;
-
-  /* Delete old block files until we've freed enough space */
-  uint32_t files_deleted = 0;
-  uint64_t bytes_freed = 0;
-  uint32_t actual_max_pruned_height = current_pruned_height;
-
-  for (uint32_t file_idx = lowest_file; file_idx < current_file; file_idx++) {
-    /* Check if file exists */
-    bool exists = false;
-    result = block_storage_file_exists(&node->block_storage, file_idx, &exists);
-    if (result != ECHO_OK || !exists) {
-      continue;
-    }
-
-    /* Get max block height in this file BEFORE deleting */
-    uint32_t file_max_height = 0;
-    result = block_index_db_get_file_max_height(
-        (block_index_db_t *)&node->block_index_db, file_idx, &file_max_height);
-    if (result != ECHO_OK) {
-      log_warn(LOG_COMP_STORE,
-               "Could not determine max height in blk%05u.dat, skipping",
-               file_idx);
-      continue;
-    }
-
-    /*
-     * CRITICAL: Don't delete files within the 550-block safety margin!
-     *
-     * We must keep at least 550 blocks for potential reorg handling.
-     * Additionally, during IBD, blocks are downloaded ahead of validation,
-     * so we must also ensure we don't delete unvalidated blocks.
-     *
-     * The min_keep_height (chain_height - 550) enforces both constraints:
-     * - Maintains reorg safety margin
-     * - Since chain_height is validated height, anything >= min_keep_height
-     *   is either within the safety margin or not yet validated
-     *
-     * Bug fixed 2025-01-01: Previously checked against chain_height directly,
-     * which didn't respect the 550-block safety margin.
-     */
-    if (file_max_height >= min_keep_height) {
-      log_debug(LOG_COMP_STORE,
-                "Skipping blk%05u.dat: within safety margin (max %u >= keep %u)",
-                file_idx, file_max_height, min_keep_height);
-      continue;
-    }
-
-    /* Get file size before deleting */
-    uint64_t file_size = 0;
-    block_storage_get_file_size(&node->block_storage, file_idx, &file_size);
-
-    /* Delete the file */
-    result = block_storage_delete_file(
-        (block_file_manager_t *)&node->block_storage, file_idx);
-    if (result == ECHO_OK) {
-      files_deleted++;
-      bytes_freed += file_size;
-
-      /* Track highest block in all deleted files */
-      if (file_max_height + 1 > actual_max_pruned_height) {
-        actual_max_pruned_height = file_max_height + 1;
-      }
-
-      log_info(LOG_COMP_STORE,
-               "Deleted blk%05u.dat (%llu MB, blocks up to height %u)",
-               file_idx, (unsigned long long)(file_size / (1024 * 1024)),
-               file_max_height);
-    } else {
-      log_warn(LOG_COMP_STORE, "Failed to delete blk%05u.dat: %d",
-               file_idx, result);
-    }
-
-    /* Stop if we've freed enough bytes */
-    if (bytes_freed >= bytes_to_free) {
-      break;
-    }
-  }
-
-  /* Mark blocks as pruned in the database using ACTUAL heights, not estimate */
-  if (files_deleted > 0 && actual_max_pruned_height > current_pruned_height) {
-    result = block_index_db_mark_pruned(
-        (block_index_db_t *)&node->block_index_db,
-        current_pruned_height, actual_max_pruned_height);
+  /* Mark blocks as pruned in the database */
+  if (blocks_pruned > 0) {
+    echo_result_t result = block_index_db_mark_pruned(
+        &node->block_index_db, current_pruned_height, target_height);
     if (result != ECHO_OK) {
       log_warn(LOG_COMP_DB, "Failed to mark blocks as pruned: %d", result);
     }
+
+    log_info(LOG_COMP_STORE, "Pruning complete: deleted %u block files",
+             blocks_pruned);
   }
 
   /* Get and return the new pruned height */
-  uint32_t new_pruned_height = node_get_pruned_height(node);
-
-  if (files_deleted > 0) {
-    log_info(LOG_COMP_STORE,
-             "Pruning complete: deleted %u files, freed %llu MB",
-             files_deleted, (unsigned long long)(bytes_freed / (1024 * 1024)));
-  }
-
-  return new_pruned_height;
+  return node_get_pruned_height(node);
 }
 
 echo_result_t node_maybe_prune(node_t *node) {

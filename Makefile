@@ -197,7 +197,7 @@ $(TEST_CHAINSTATE): test/unit/test_chainstate.c src/consensus/chainstate.c src/c
 $(TEST_CONSENSUS): test/unit/test_consensus.c src/consensus/consensus.c src/consensus/chainstate.c src/consensus/utxo.c src/consensus/block_validate.c src/consensus/tx_validate.c src/consensus/script.c src/consensus/sig_verify.c src/consensus/merkle.c src/consensus/block.c src/consensus/tx.c src/consensus/serialize.c src/crypto/sha256.c src/crypto/sha1.c src/crypto/ripemd160.c src/crypto/secp256k1.c src/platform/posix.c src/app/log.c $(TEST_UTILS_OBJ) $(LIBSECP_OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
-$(TEST_BLOCK_STORAGE): test/unit/test_block_storage.c src/storage/blocks.c src/platform/posix.c src/consensus/block.c src/consensus/tx.c src/consensus/serialize.c src/crypto/sha256.c  $(TEST_UTILS_OBJ)
+$(TEST_BLOCK_STORAGE): test/unit/test_block_storage.c src/storage/blocks.c src/platform/posix.c src/consensus/block.c src/consensus/tx.c src/consensus/serialize.c src/crypto/sha256.c src/app/log.c $(TEST_UTILS_OBJ)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
 $(TEST_DB): test/unit/test_db.c src/storage/db.c lib/sqlite/sqlite3.c  $(TEST_UTILS_OBJ)

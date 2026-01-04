@@ -357,7 +357,7 @@ peer_addr_manager_t *node_get_addr_manager(node_t *node);
  * Returns:
  *   Pointer to block storage manager
  */
-block_file_manager_t *node_get_block_storage(node_t *node);
+block_storage_t *node_get_block_storage(node_t *node);
 
 /**
  * Get the UTXO database.

@@ -3,7 +3,7 @@
  *
  * Tests for block pruning functionality including:
  * - Block status flags for pruned blocks
- * - Block storage file operations (delete, size)
+ * - Block storage pruning operations (height-based)
  * - Block index database pruning operations
  * - Pruning configuration
  */
@@ -128,121 +128,52 @@ static void test_prune_target_min(void) {
 }
 
 /*
- * Test: Block storage file existence check.
+ * Test: Block storage exists check (height-based).
  */
-static void test_block_storage_file_exists(void) {
+static void test_block_storage_exists_height(void) {
   cleanup_test_dir();
   bool passed = true;
 
-  block_file_manager_t mgr;
-  if (block_storage_init(&mgr, TEST_DATA_DIR) != ECHO_OK) {
+  block_storage_t storage;
+  if (block_storage_create(&storage, TEST_DATA_DIR) != ECHO_OK) {
     passed = false;
     goto done;
   }
 
-  /* File 0 should not exist yet */
-  bool exists = true;
-  if (block_storage_file_exists(&mgr, 0, &exists) != ECHO_OK) {
-    passed = false;
-    goto done;
-  }
-  if (exists != false) {
+  /* Block at height 0 should not exist yet */
+  if (block_storage_exists_height(&storage, 0) != false) {
     passed = false;
     goto done;
   }
 
-  /* Write a block to create the file */
+  /* Write a block at height 0 */
   uint8_t block_data[100] = {0};
-  block_file_pos_t pos;
-  if (block_storage_write(&mgr, block_data, 100, &pos) != ECHO_OK) {
+  if (block_storage_write_height(&storage, 0, block_data, 100) != ECHO_OK) {
     passed = false;
     goto done;
   }
 
-  /* Now file 0 should exist */
-  if (block_storage_file_exists(&mgr, 0, &exists) != ECHO_OK) {
-    passed = false;
-    goto done;
-  }
-  if (exists != true) {
+  /* Now block at height 0 should exist */
+  if (block_storage_exists_height(&storage, 0) != true) {
     passed = false;
     goto done;
   }
 
-  /* File 1 should not exist */
-  if (block_storage_file_exists(&mgr, 1, &exists) != ECHO_OK) {
+  /* Block at height 1 should not exist */
+  if (block_storage_exists_height(&storage, 1) != false) {
     passed = false;
     goto done;
   }
-  if (exists != false) {
-    passed = false;
-    goto done;
-  }
+
+  block_storage_destroy(&storage);
 
 done:
   cleanup_test_dir();
-  test_case("Block storage file exists check");
+  test_case("Block storage exists height check");
   if (passed) {
     test_pass();
   } else {
-    test_fail("file existence check failed");
-  }
-}
-
-/*
- * Test: Block storage file size query.
- */
-static void test_block_storage_get_file_size(void) {
-  cleanup_test_dir();
-  bool passed = true;
-
-  block_file_manager_t mgr;
-  if (block_storage_init(&mgr, TEST_DATA_DIR) != ECHO_OK) {
-    passed = false;
-    goto done;
-  }
-
-  /* Size of non-existent file should be 0 */
-  uint64_t size = 999;
-  if (block_storage_get_file_size(&mgr, 0, &size) != ECHO_OK) {
-    passed = false;
-    goto done;
-  }
-  if (size != 0) {
-    passed = false;
-    goto done;
-  }
-
-  /* Write a block */
-  uint8_t block_data[100] = {0};
-  block_file_pos_t pos;
-  if (block_storage_write(&mgr, block_data, 100, &pos) != ECHO_OK) {
-    passed = false;
-    goto done;
-  }
-
-  /* File should now have size > 0 */
-  if (block_storage_get_file_size(&mgr, 0, &size) != ECHO_OK) {
-    passed = false;
-    goto done;
-  }
-  if (size == 0) {
-    passed = false;
-    goto done;
-  }
-  /* Size should include record header */
-  if (size < 100 + BLOCK_FILE_RECORD_HEADER_SIZE) {
-    passed = false;
-    goto done;
-  }
-
-done:
-  cleanup_test_dir();
-  test_case("Block storage get file size");
-  if (passed) {
-    test_pass();
-  } else {
-    test_fail("file size query failed");
+    test_fail("exists height check failed");
   }
 }
 
@@ -253,15 +184,15 @@ static void test_block_storage_get_total_size(void) {
   cleanup_test_dir();
   bool passed = true;
 
-  block_file_manager_t mgr;
-  if (block_storage_init(&mgr, TEST_DATA_DIR) != ECHO_OK) {
+  block_storage_t storage;
+  if (block_storage_create(&storage, TEST_DATA_DIR) != ECHO_OK) {
     passed = false;
     goto done;
   }
 
   /* Empty storage should have size 0 */
   uint64_t total = 999;
-  if (block_storage_get_total_size(&mgr, &total) != ECHO_OK) {
+  if (block_storage_get_total_size(&storage, &total) != ECHO_OK) {
     passed = false;
     goto done;
   }
@@ -270,31 +201,32 @@ static void test_block_storage_get_total_size(void) {
     goto done;
   }
 
-  /* Write some blocks */
+  /* Write some blocks at different heights */
   uint8_t block_data[100] = {0};
-  block_file_pos_t pos;
-  if (block_storage_write(&mgr, block_data, 100, &pos) != ECHO_OK) {
+  if (block_storage_write_height(&storage, 0, block_data, 100) != ECHO_OK) {
     passed = false;
     goto done;
   }
-  if (block_storage_write(&mgr, block_data, 100, &pos) != ECHO_OK) {
+  if (block_storage_write_height(&storage, 1, block_data, 100) != ECHO_OK) {
     passed = false;
     goto done;
   }
-  if (block_storage_write(&mgr, block_data, 100, &pos) != ECHO_OK) {
+  if (block_storage_write_height(&storage, 2, block_data, 100) != ECHO_OK) {
     passed = false;
     goto done;
   }
 
-  /* Total should be > 0 */
-  if (block_storage_get_total_size(&mgr, &total) != ECHO_OK) {
+  /* Total should be 300 bytes (100 bytes each, no header overhead) */
+  if (block_storage_get_total_size(&storage, &total) != ECHO_OK) {
     passed = false;
     goto done;
   }
-  if (total == 0) {
+  if (total != 300) {
     passed = false;
     goto done;
   }
+
+  block_storage_destroy(&storage);
 
 done:
   cleanup_test_dir();
@@ -307,98 +239,74 @@ done:
 }
 
 /*
- * Test: Block storage get current file.
+ * Test: Block storage prune by height.
  */
-static void test_block_storage_get_current_file(void) {
+static void test_block_storage_prune_height(void) {
   cleanup_test_dir();
   bool passed = true;
 
-  block_file_manager_t mgr;
-  if (block_storage_init(&mgr, TEST_DATA_DIR) != ECHO_OK) {
+  block_storage_t storage;
+  if (block_storage_create(&storage, TEST_DATA_DIR) != ECHO_OK) {
     passed = false;
     goto done;
   }
 
-  /* Initial file should be 0 */
-  if (block_storage_get_current_file(&mgr) != 0) {
-    passed = false;
-    goto done;
-  }
-
-done:
-  cleanup_test_dir();
-  test_case("Block storage get current file");
-  if (passed) {
-    test_pass();
-  } else {
-    test_fail("current file index incorrect");
-  }
-}
-
-/*
- * Test: Block storage delete file.
- */
-static void test_block_storage_delete_file(void) {
-  cleanup_test_dir();
-  bool passed = true;
-
-  block_file_manager_t mgr;
-  if (block_storage_init(&mgr, TEST_DATA_DIR) != ECHO_OK) {
-    passed = false;
-    goto done;
-  }
-
-  /* Write a block to create file 0 */
+  /* Write blocks at heights 0-4 */
   uint8_t block_data[100] = {0};
-  block_file_pos_t pos;
-  if (block_storage_write(&mgr, block_data, 100, &pos) != ECHO_OK) {
+  for (uint32_t i = 0; i < 5; i++) {
+    if (block_storage_write_height(&storage, i, block_data, 100) != ECHO_OK) {
+      passed = false;
+      goto done;
+    }
+  }
+
+  /* Verify all 5 blocks exist */
+  for (uint32_t i = 0; i < 5; i++) {
+    if (!block_storage_exists_height(&storage, i)) {
+      passed = false;
+      goto done;
+    }
+  }
+
+  /* Prune blocks 0-2 */
+  for (uint32_t i = 0; i < 3; i++) {
+    if (block_storage_prune_height(&storage, i) != ECHO_OK) {
+      passed = false;
+      goto done;
+    }
+  }
+
+  /* Verify blocks 0-2 no longer exist */
+  for (uint32_t i = 0; i < 3; i++) {
+    if (block_storage_exists_height(&storage, i)) {
+      passed = false;
+      goto done;
+    }
+  }
+
+  /* Verify blocks 3-4 still exist */
+  for (uint32_t i = 3; i < 5; i++) {
+    if (!block_storage_exists_height(&storage, i)) {
+      passed = false;
+      goto done;
+    }
+  }
+
+  /* Prune non-existent block should succeed (idempotent) */
+  if (block_storage_prune_height(&storage, 100) != ECHO_OK) {
     passed = false;
     goto done;
   }
 
-  /* Verify file exists */
-  bool exists = false;
-  if (block_storage_file_exists(&mgr, 0, &exists) != ECHO_OK) {
-    passed = false;
-    goto done;
-  }
-  if (exists != true) {
-    passed = false;
-    goto done;
-  }
-
-  /* Cannot delete current write file */
-  if (block_storage_delete_file(&mgr, 0) != ECHO_ERR_INVALID_PARAM) {
-    passed = false;
-    goto done;
-  }
-
-  /* Simulate having moved to file 1 by modifying manager */
-  mgr.current_file_index = 1;
-
-  /* Now we should be able to delete file 0 */
-  if (block_storage_delete_file(&mgr, 0) != ECHO_OK) {
-    passed = false;
-    goto done;
-  }
-
-  /* Verify file is gone */
-  if (block_storage_file_exists(&mgr, 0, &exists) != ECHO_OK) {
-    passed = false;
-    goto done;
-  }
-  if (exists != false) {
-    passed = false;
-    goto done;
-  }
+  block_storage_destroy(&storage);
 
 done:
   cleanup_test_dir();
-  test_case("Block storage delete file");
+  test_case("Block storage prune by height");
   if (passed) {
     test_pass();
   } else {
-    test_fail("delete file operation failed");
+    test_fail("prune by height failed");
   }
 }
 
@@ -570,89 +478,6 @@ done:
 }
 
 /*
- * Test: Block index database get file max height.
- */
-static void test_block_index_db_get_file_max_height(void) {
-  cleanup_test_dir();
-  mkdir(TEST_DATA_DIR, 0755);
-  bool passed = true;
-
-  char db_path[512];
-  snprintf(db_path, sizeof(db_path), "%s/blocks.db", TEST_DATA_DIR);
-
-  block_index_db_t db;
-  if (block_index_db_open(&db, db_path) != ECHO_OK) {
-    passed = false;
-    goto done;
-  }
-
-  /* Create blocks in different files:
-   * File 0: blocks 0-99 (simulating early tiny blocks)
-   * File 1: blocks 100-104 (modern blocks)
-   */
-  for (uint32_t i = 0; i < 105; i++) {
-    block_index_entry_t entry;
-    memset(&entry, 0, sizeof(entry));
-    entry.height = i;
-    entry.hash.bytes[0] = (uint8_t)(i & 0xff);
-    entry.hash.bytes[1] = (uint8_t)((i >> 8) & 0xff);
-    entry.status = BLOCK_STATUS_VALID_HEADER | BLOCK_STATUS_HAVE_DATA;
-    entry.data_file = (i < 100) ? 0 : 1; /* File 0 or 1 */
-    entry.data_pos = i * 1000;           /* Arbitrary position */
-
-    if (block_index_db_insert(&db, &entry) != ECHO_OK) {
-      passed = false;
-      block_index_db_close(&db);
-      goto done;
-    }
-  }
-
-  /* File 0 should have max height 99 */
-  uint32_t max_height = 0;
-  if (block_index_db_get_file_max_height(&db, 0, &max_height) != ECHO_OK) {
-    passed = false;
-    block_index_db_close(&db);
-    goto done;
-  }
-  if (max_height != 99) {
-    passed = false;
-    block_index_db_close(&db);
-    goto done;
-  }
-
-  /* File 1 should have max height 104 */
-  if (block_index_db_get_file_max_height(&db, 1, &max_height) != ECHO_OK) {
-    passed = false;
-    block_index_db_close(&db);
-    goto done;
-  }
-  if (max_height != 104) {
-    passed = false;
-    block_index_db_close(&db);
-    goto done;
-  }
-
-  /* File 2 should return NOT_FOUND (no blocks) */
-  if (block_index_db_get_file_max_height(&db, 2, &max_height) !=
-      ECHO_ERR_NOT_FOUND) {
-    passed = false;
-    block_index_db_close(&db);
-    goto done;
-  }
-
-  block_index_db_close(&db);
-
-done:
-  cleanup_test_dir();
-  test_case("Block index DB get file max height");
-  if (passed) {
-    test_pass();
-  } else {
-    test_fail("get file max height failed");
-  }
-}
-
-/*
  * Test: Block index database is_pruned check.
  */
 static void test_block_index_db_is_pruned(void) {
@@ -753,38 +578,23 @@ static void test_node_config_prune_target(void) {
  */
 static void test_pruning_null_params(void) {
   bool passed = true;
-  block_file_manager_t mgr;
-  bool exists;
   uint64_t size;
 
-  if (block_storage_file_exists(NULL, 0, &exists) != ECHO_ERR_NULL_PARAM) {
-    passed = false;
-    goto done;
-  }
-  if (block_storage_file_exists(&mgr, 0, NULL) != ECHO_ERR_NULL_PARAM) {
-    passed = false;
-    goto done;
-  }
-
-  if (block_storage_get_file_size(NULL, 0, &size) != ECHO_ERR_NULL_PARAM) {
-    passed = false;
-    goto done;
-  }
-  if (block_storage_get_file_size(&mgr, 0, NULL) != ECHO_ERR_NULL_PARAM) {
-    passed = false;
-    goto done;
-  }
-
+  /* block_storage_get_total_size null checks */
   if (block_storage_get_total_size(NULL, &size) != ECHO_ERR_NULL_PARAM) {
     passed = false;
     goto done;
   }
-  if (block_storage_get_total_size(&mgr, NULL) != ECHO_ERR_NULL_PARAM) {
+
+  block_storage_t storage;
+  memset(&storage, 0, sizeof(storage));
+  if (block_storage_get_total_size(&storage, NULL) != ECHO_ERR_NULL_PARAM) {
     passed = false;
     goto done;
   }
 
-  if (block_storage_delete_file(NULL, 0) != ECHO_ERR_NULL_PARAM) {
+  /* block_storage_prune_height null check */
+  if (block_storage_prune_height(NULL, 0) != ECHO_ERR_NULL_PARAM) {
     passed = false;
     goto done;
   }
@@ -799,6 +609,67 @@ done:
 }
 
 /*
+ * Test: Block storage scan heights for pruning.
+ */
+static void test_block_storage_scan_heights(void) {
+  cleanup_test_dir();
+  bool passed = true;
+
+  block_storage_t storage;
+  if (block_storage_create(&storage, TEST_DATA_DIR) != ECHO_OK) {
+    passed = false;
+    goto done;
+  }
+
+  /* Write blocks at heights 0, 5, 10 (sparse) */
+  uint8_t block_data[100] = {0};
+  if (block_storage_write_height(&storage, 0, block_data, 100) != ECHO_OK) {
+    passed = false;
+    goto done;
+  }
+  if (block_storage_write_height(&storage, 5, block_data, 100) != ECHO_OK) {
+    passed = false;
+    goto done;
+  }
+  if (block_storage_write_height(&storage, 10, block_data, 100) != ECHO_OK) {
+    passed = false;
+    goto done;
+  }
+
+  /* Scan heights */
+  uint32_t *heights = NULL;
+  size_t count = 0;
+  if (block_storage_scan_heights(&storage, &heights, &count) != ECHO_OK) {
+    passed = false;
+    goto done;
+  }
+
+  /* Should have 3 heights in ascending order */
+  if (count != 3) {
+    passed = false;
+    free(heights);
+    goto done;
+  }
+  if (heights[0] != 0 || heights[1] != 5 || heights[2] != 10) {
+    passed = false;
+    free(heights);
+    goto done;
+  }
+
+  free(heights);
+  block_storage_destroy(&storage);
+
+done:
+  cleanup_test_dir();
+  test_case("Block storage scan heights");
+  if (passed) {
+    test_pass();
+  } else {
+    test_fail("scan heights failed");
+  }
+}
+
+/*
  * Main test runner.
  */
 int main(void) {
@@ -806,14 +677,12 @@ int main(void) {
 
   test_pruned_flag_value();
   test_prune_target_min();
-  test_block_storage_file_exists();
-  test_block_storage_get_file_size();
+  test_block_storage_exists_height();
   test_block_storage_get_total_size();
-  test_block_storage_get_current_file();
-  test_block_storage_delete_file();
+  test_block_storage_prune_height();
+  test_block_storage_scan_heights();
   test_block_index_db_mark_pruned();
   test_block_index_db_get_pruned_height();
-  test_block_index_db_get_file_max_height();
   test_block_index_db_is_pruned();
   test_node_config_prune_target();
   test_pruning_null_params();
