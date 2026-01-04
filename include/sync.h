@@ -70,35 +70,43 @@ typedef struct chase_dispatcher chase_dispatcher_t;
  */
 
 /**
- * Sync mode - Decoupled IBD architecture
+ * Sync mode - Sequential Batch IBD Architecture
  *
- * The key insight: downloads and validation are DECOUPLED.
- * Blocks are downloaded out of order and stored to disk.
- * Validation runs independently on consecutive ranges.
+ * The key insight: stop doing everything at once. Sequential phases are
+ * simpler and fast enough. Each phase completes before the next begins.
  *
  * State machine flow:
- *   IDLE -> HEADERS -> DOWNLOADING <-> THROTTLED
- *                          |              |
- *                          v              v
- *                      VALIDATING -> FLUSHING -> PRUNING -> DOWNLOADING
- *                                                              |
- *                                                              v
- *                                                            DONE
+ *
+ *   Pruned nodes (cycle until synced):
+ *   HEADERS -> DOWNLOAD -> DRAIN -> VALIDATE -> FLUSH -> PRUNE --+
+ *                 ^                                               |
+ *                 +-----------------------------------------------+
+ *
+ *   Archival nodes (linear to completion):
+ *   HEADERS -> DOWNLOAD -> DRAIN -> VALIDATE -> FLUSH -> DONE
+ *                 ^                               |
+ *                 +-------------------------------+ (periodic flush)
+ *
+ * HEADERS mode is unchanged - downloads and validates header chain.
+ * The batch cycle begins after headers sync completes.
  */
 typedef enum {
-  SYNC_MODE_IDLE,        /* Not syncing */
-  SYNC_MODE_HEADERS,     /* Downloading headers */
-  SYNC_MODE_DOWNLOADING, /* Downloading blocks to disk (no validation) */
-  SYNC_MODE_THROTTLED,   /* Downloads paused, waiting for validation */
-  SYNC_MODE_VALIDATING,  /* Validating consecutive block chunk */
-  SYNC_MODE_FLUSHING,    /* Flushing UTXO batch to database */
-  SYNC_MODE_PRUNING,     /* Pruning validated blocks from disk */
-  SYNC_MODE_DONE,        /* Sync complete, in steady state */
+  SYNC_MODE_IDLE,     /* Not syncing */
+  SYNC_MODE_HEADERS,  /* Downloading headers (existing, unchanged) */
+  SYNC_MODE_DOWNLOAD, /* Downloading blocks to disk up to prune target */
+  SYNC_MODE_DRAIN,    /* Waiting for in-flight requests to complete */
+  SYNC_MODE_VALIDATE, /* Validating consecutive block range */
+  SYNC_MODE_FLUSH,    /* Persisting UTXO changes atomically */
+  SYNC_MODE_PRUNE,    /* Deleting old block files (pruned nodes only) */
+  SYNC_MODE_DONE,     /* IBD complete, normal operation */
 
   /* Legacy aliases for backwards compatibility during transition.
-   * TODO: Remove these once Phase 2-4 refactoring is complete. */
-  SYNC_MODE_BLOCKS = SYNC_MODE_DOWNLOADING, /* Deprecated: use DOWNLOADING */
-  SYNC_MODE_STALLED = SYNC_MODE_THROTTLED   /* Deprecated: use THROTTLED */
+   * TODO: Remove these once all callers are updated. */
+  SYNC_MODE_BLOCKS = SYNC_MODE_DOWNLOAD,      /* Deprecated: use DOWNLOAD */
+  SYNC_MODE_DOWNLOADING = SYNC_MODE_DOWNLOAD, /* Deprecated: use DOWNLOAD */
+  SYNC_MODE_VALIDATING = SYNC_MODE_VALIDATE,  /* Deprecated: use VALIDATE */
+  SYNC_MODE_FLUSHING = SYNC_MODE_FLUSH,       /* Deprecated: use FLUSH */
+  SYNC_MODE_PRUNING = SYNC_MODE_PRUNE         /* Deprecated: use PRUNE */
 } sync_mode_t;
 
 /**

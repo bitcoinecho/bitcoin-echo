@@ -675,7 +675,7 @@ echo_result_t sync_start(sync_manager_t *mgr) {
     return ECHO_ERR_NULL_PARAM;
   }
 
-  if (mgr->mode != SYNC_MODE_IDLE && mgr->mode != SYNC_MODE_STALLED) {
+  if (mgr->mode != SYNC_MODE_IDLE) {
     return ECHO_ERR_INVALID_STATE;
   }
 
@@ -1160,10 +1160,12 @@ void sync_process_timeouts(sync_manager_t *mgr) {
 
   uint64_t now = plat_time_ms();
 
-  /* Check for stalled sync */
+  /* Check for stalled sync - log warning but don't change mode.
+   * In the batch architecture, stalls are handled by phase transitions. */
   if (mgr->mode != SYNC_MODE_IDLE && mgr->mode != SYNC_MODE_DONE) {
     if (now - mgr->last_progress_time > SYNC_STALE_TIP_THRESHOLD_MS) {
-      mgr->mode = SYNC_MODE_STALLED;
+      log_warn(LOG_COMP_SYNC, "Sync stalled: no progress for %llu seconds",
+               (unsigned long long)(SYNC_STALE_TIP_THRESHOLD_MS / 1000));
     }
   }
 
@@ -1678,68 +1680,106 @@ void sync_tick(sync_manager_t *mgr) {
       }
     }
 
+    /*
+     * DOWNLOAD → DRAIN transition check.
+     *
+     * Transition to DRAIN when:
+     * - No more blocks to queue (pending == 0)
+     * - Still have in-flight requests to complete (inflight > 0)
+     *
+     * If both pending and inflight are 0, we skip DRAIN and check
+     * if we should transition to DONE or continue the batch cycle.
+     *
+     * TODO (Phase 3): Add storage-based transition for pruned nodes:
+     *   if (storage_used >= prune_target) → DRAIN
+     */
+    pending = download_mgr_pending_count(mgr->download_mgr);
+    inflight = download_mgr_inflight_count(mgr->download_mgr);
+
+    if (pending == 0 && inflight > 0) {
+      /* All work queued, waiting for in-flight to complete */
+      log_info(LOG_COMP_SYNC,
+               "DOWNLOAD complete, transitioning to DRAIN (inflight=%zu)",
+               inflight);
+      mgr->mode = SYNC_MODE_DRAIN;
+    } else if (pending == 0 && inflight == 0) {
+      /* All work complete - check if we're fully synced */
+      uint32_t tip_height = chainstate_get_height(mgr->chainstate);
+      if (!mgr->best_header || tip_height >= mgr->best_header->height) {
+        log_info(LOG_COMP_SYNC,
+                 "Sync complete: validated=%u, best_header=%u",
+                 tip_height,
+                 mgr->best_header ? mgr->best_header->height : 0);
+        mgr->mode = SYNC_MODE_DONE;
+      }
+      /* Otherwise, stay in DOWNLOAD - more headers may arrive */
+    }
+
     break;
   }
 
-  case SYNC_MODE_THROTTLED:
+  case SYNC_MODE_DRAIN:
     /*
-     * THROTTLED: Downloads paused, waiting for validation to complete.
+     * DRAIN: Let in-flight requests complete before validation.
      *
-     * In the decoupled architecture, we enter this state when storage
-     * reaches the prune headroom limit (2x prune target). We stop
-     * queuing new downloads and wait for validation to free space.
+     * Stop sending new getdata requests and wait for peers to deliver
+     * outstanding batches. Timeout stalled peers after 30 seconds.
      *
-     * TODO (Phase 2): Implement throttle logic:
-     *   - Monitor validation progress
-     *   - Transition to VALIDATING when consecutive range available
+     * Transition to VALIDATE when batches_in_flight == 0.
+     */
+    {
+      size_t inflight = download_mgr_inflight_count(mgr->download_mgr);
+      if (inflight == 0) {
+        log_info(LOG_COMP_SYNC, "DRAIN complete, transitioning to VALIDATE");
+        mgr->mode = SYNC_MODE_VALIDATE;
+      }
+    }
+    break;
+
+  case SYNC_MODE_VALIDATE:
+    /*
+     * VALIDATE: Validate consecutive blocks from validated_tip.
+     *
+     * Find consecutive range: validated_tip+1 to first gap (or highest stored).
+     * Validate sequentially (maintains UTXO ordering).
+     * Track UTXO changes in memory (batched for efficiency).
+     *
+     * Transition to FLUSH when range is validated.
+     *
+     * TODO (Phase 3): Implement validation chunk logic.
      */
     break;
 
-  case SYNC_MODE_VALIDATING:
+  case SYNC_MODE_FLUSH:
     /*
-     * VALIDATING: Processing a consecutive chunk of downloaded blocks.
+     * FLUSH: Persist UTXO changes atomically.
      *
-     * In the decoupled architecture, validation runs on consecutive
-     * ranges of blocks, not individual blocks as they arrive. This
-     * eliminates head-of-line blocking from slow peers.
+     * Single SQLite transaction for entire validation batch.
+     * All-or-nothing: crash recovery is clean.
+     * Clear in-memory UTXO batch after commit.
      *
-     * TODO (Phase 3): Implement validation chunk logic:
-     *   - Find consecutive range using block_tracker
-     *   - Validate blocks in range
-     *   - Track UTXO changes in memory (utxo_batch_t)
-     *   - Transition to FLUSHING when chunk complete
+     * Transitions:
+     *   - For pruned: FLUSH -> PRUNE
+     *   - For archival (more blocks): FLUSH -> DOWNLOAD
+     *   - For archival (synced): FLUSH -> DONE
+     *
+     * TODO (Phase 3): Implement flush logic.
      */
     break;
 
-  case SYNC_MODE_FLUSHING:
+  case SYNC_MODE_PRUNE:
     /*
-     * FLUSHING: Persisting UTXO batch to database.
+     * PRUNE: Delete validated blocks to reclaim space.
      *
-     * After validating a chunk, we flush all UTXO changes in a single
-     * atomic transaction. This is more efficient than per-block flushes.
+     * Delete blocks older than validated_tip - 550 (reorg safety margin).
+     * File-per-block makes this trivial: just unlink().
+     * No database updates needed for block positions.
      *
-     * TODO (Phase 3): Implement flush logic:
-     *   - Apply all pending UTXO deletes
-     *   - Apply all pending UTXO adds
-     *   - Update validated tip height
-     *   - Commit transaction
-     *   - For pruned: transition to PRUNING
-     *   - For archival: transition to DOWNLOADING or DONE
-     */
-    break;
-
-  case SYNC_MODE_PRUNING:
-    /*
-     * PRUNING: Deleting old block files to free disk space.
+     * Transitions:
+     *   - More blocks to sync: PRUNE -> DOWNLOAD
+     *   - Fully synced: PRUNE -> DONE
      *
-     * After flushing UTXO changes, pruned nodes delete the validated
-     * blocks from disk to stay within the prune target.
-     *
-     * TODO (Phase 3): Implement prune logic:
-     *   - Calculate blocks to prune
-     *   - Delete old blk*.dat files
-     *   - Update block index (mark as pruned)
-     *   - Transition to DOWNLOADING to continue
+     * TODO (Phase 3): Implement prune logic.
      */
     break;
 
@@ -1822,20 +1862,18 @@ const char *sync_mode_string(sync_mode_t mode) {
     return "IDLE";
   case SYNC_MODE_HEADERS:
     return "HEADERS";
-  case SYNC_MODE_DOWNLOADING:
-    /* Note: SYNC_MODE_BLOCKS is an alias for DOWNLOADING.
-     * Keep returning "BLOCKS" for GUI backwards compatibility. */
-    return "BLOCKS";
-  case SYNC_MODE_THROTTLED:
-    /* Note: SYNC_MODE_STALLED is an alias for THROTTLED.
-     * Keep returning "STALLED" for GUI backwards compatibility. */
-    return "STALLED";
-  case SYNC_MODE_VALIDATING:
-    return "VALIDATING";
-  case SYNC_MODE_FLUSHING:
-    return "FLUSHING";
-  case SYNC_MODE_PRUNING:
-    return "PRUNING";
+  case SYNC_MODE_DOWNLOAD:
+    /* Note: SYNC_MODE_BLOCKS and SYNC_MODE_DOWNLOADING are aliases.
+     * Return "DOWNLOAD" for new batch architecture. */
+    return "DOWNLOAD";
+  case SYNC_MODE_DRAIN:
+    return "DRAIN";
+  case SYNC_MODE_VALIDATE:
+    return "VALIDATE";
+  case SYNC_MODE_FLUSH:
+    return "FLUSH";
+  case SYNC_MODE_PRUNE:
+    return "PRUNE";
   case SYNC_MODE_DONE:
     return "DONE";
   default:
