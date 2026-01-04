@@ -102,6 +102,7 @@ run_test "test/unit/test_log" "Logging System tests"
 run_test "test/unit/test_pruning" "Pruning tests"
 run_test "test/unit/test_mining" "Mining Module tests"
 run_test "test/unit/test_integration" "Integration tests"
+run_test "test/unit/test_batch_ibd" "Batch IBD tests"
 
 # Read final counts
 read total_suites passed_suites failed_suites total_tests passed_tests failed_tests < "$COUNTS_FILE"

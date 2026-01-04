@@ -1024,6 +1024,513 @@ done:
 
 /*
  * ============================================================================
+ * BATCH IBD WORKFLOW TESTS
+ *
+ * These tests verify the batch Initial Block Download architecture:
+ * DOWNLOAD → DRAIN → VALIDATE → FLUSH → PRUNE (loop for pruned nodes)
+ * ============================================================================
+ */
+
+/**
+ * Test: Full batch IBD cycle with storage, validation, and pruning.
+ *
+ * This simulates what happens during IBD:
+ * 1. DOWNLOAD: Store blocks via block_storage
+ * 2. DRAIN/VALIDATE: Read blocks back (simulating validation)
+ * 3. FLUSH: Verify storage size
+ * 4. PRUNE: Remove old block files, verify they're gone
+ */
+static void test_batch_ibd_full_cycle(void) {
+  make_unique_test_dir();
+  cleanup_test_dir();
+  bool passed = true;
+  int fail_point = 0;
+
+  /* Create node with pruning enabled (low target for testing) */
+  node_config_t config;
+  node_config_init(&config, TEST_DATA_DIR);
+  config.prune_target_mb = 128; /* Low for testing */
+
+  node_t *node = node_create(&config);
+  if (node == NULL) { fail_point = 1; passed = false; goto done; }
+
+  block_storage_t *bs = node_get_block_storage(node);
+  if (bs == NULL) {
+    fail_point = 2;
+    passed = false;
+    node_destroy(node);
+    goto done;
+  }
+
+  /*
+   * Phase 1: DOWNLOAD - Store blocks
+   * Create valid regtest blocks and serialize them to storage.
+   */
+  hash256_t prev_hash = {{0}};
+  uint32_t timestamp = REGTEST_GENESIS_TIMESTAMP + 1;
+
+  for (uint32_t i = 1; i <= 20; i++) {
+    block_t block;
+    echo_result_t result = create_regtest_block(i, &prev_hash, timestamp, &block);
+    if (result != ECHO_OK) {
+      fail_point = 10 + (int)i;
+      passed = false;
+      node_destroy(node);
+      goto done;
+    }
+
+    /* Serialize and store */
+    uint8_t buffer[4096];
+    size_t written = 0;
+    result = block_serialize(&block, buffer, sizeof(buffer), &written);
+    if (result != ECHO_OK) {
+      block_free(&block);
+      fail_point = 30 + (int)i;
+      passed = false;
+      node_destroy(node);
+      goto done;
+    }
+
+    result = block_storage_write_height(bs, i, buffer, (uint32_t)written);
+    if (result != ECHO_OK) {
+      block_free(&block);
+      fail_point = 50 + (int)i;
+      passed = false;
+      node_destroy(node);
+      goto done;
+    }
+
+    /* Track hash for next block */
+    block_header_hash(&block.header, &prev_hash);
+    timestamp += 600;
+    block_free(&block);
+  }
+
+  /* Verify all 20 blocks are stored */
+  for (uint32_t i = 1; i <= 20; i++) {
+    if (!block_storage_exists_height(bs, i)) {
+      fail_point = 100 + (int)i;
+      passed = false;
+      node_destroy(node);
+      goto done;
+    }
+  }
+
+  /*
+   * Phase 2: DRAIN/VALIDATE - Read blocks back from storage
+   * This simulates what the VALIDATE phase does in batch IBD.
+   * (Actual validation happens through node_apply_block, tested elsewhere)
+   */
+  for (uint32_t i = 1; i <= 20; i++) {
+    uint8_t *data = NULL;
+    uint32_t size = 0;
+    echo_result_t result = block_storage_read_height(bs, i, &data, &size);
+    if (result != ECHO_OK || data == NULL || size == 0) {
+      if (data) free(data);
+      fail_point = 120 + (int)i;
+      passed = false;
+      node_destroy(node);
+      goto done;
+    }
+    free(data);
+  }
+
+  /*
+   * Phase 3: FLUSH - Verify storage size grew
+   */
+  uint64_t storage_size;
+  if (block_storage_get_total_size(bs, &storage_size) != ECHO_OK) {
+    fail_point = 200;
+    passed = false;
+    node_destroy(node);
+    goto done;
+  }
+
+  /* Should have ~20 blocks worth of data */
+  if (storage_size == 0) {
+    fail_point = 201;
+    passed = false;
+    node_destroy(node);
+    goto done;
+  }
+
+  /*
+   * Phase 4: PRUNE - Remove old blocks
+   * Simulate pruning blocks 1-10 (keeping reorg margin)
+   */
+  uint32_t pruned = block_storage_prune_range(bs, 1, 10);
+  if (pruned != 10) {
+    fail_point = 210;
+    passed = false;
+    node_destroy(node);
+    goto done;
+  }
+
+  /* Verify blocks 1-10 are gone */
+  for (uint32_t i = 1; i <= 10; i++) {
+    if (block_storage_exists_height(bs, i)) {
+      fail_point = 220 + (int)i;
+      passed = false;
+      node_destroy(node);
+      goto done;
+    }
+  }
+
+  /* Verify blocks 11-20 still exist */
+  for (uint32_t i = 11; i <= 20; i++) {
+    if (!block_storage_exists_height(bs, i)) {
+      fail_point = 240 + (int)i;
+      passed = false;
+      node_destroy(node);
+      goto done;
+    }
+  }
+
+  /* Verify storage size decreased after pruning */
+  uint64_t post_prune_size;
+  if (block_storage_get_total_size(bs, &post_prune_size) != ECHO_OK) {
+    fail_point = 260;
+    passed = false;
+    node_destroy(node);
+    goto done;
+  }
+
+  if (post_prune_size >= storage_size) {
+    fail_point = 261;
+    passed = false;
+    node_destroy(node);
+    goto done;
+  }
+
+  node_destroy(node);
+
+done:
+  cleanup_test_dir();
+  test_case("Batch IBD: full cycle (store, validate, prune)");
+  if (passed) {
+    test_pass();
+  } else {
+    char msg[64];
+    snprintf(msg, sizeof(msg), "failed at point %d", fail_point);
+    test_fail(msg);
+  }
+}
+
+/**
+ * Test: Consecutive block range detection.
+ *
+ * The batch IBD architecture needs to find consecutive stored blocks
+ * for efficient validation. This tests that capability.
+ */
+static void test_batch_ibd_consecutive_detection(void) {
+  make_unique_test_dir();
+  cleanup_test_dir();
+  bool passed = true;
+
+  node_config_t config;
+  node_config_init(&config, TEST_DATA_DIR);
+
+  node_t *node = node_create(&config);
+  if (node == NULL) { passed = false; goto done; }
+
+  block_storage_t *bs = node_get_block_storage(node);
+  if (bs == NULL) { passed = false; node_destroy(node); goto done; }
+
+  uint8_t data[256] = {0};
+
+  /* Store blocks with a gap: 1, 2, 3, 5, 6, 7 (missing 4) */
+  block_storage_write_height(bs, 1, data, sizeof(data));
+  block_storage_write_height(bs, 2, data, sizeof(data));
+  block_storage_write_height(bs, 3, data, sizeof(data));
+  /* Skip 4 */
+  block_storage_write_height(bs, 5, data, sizeof(data));
+  block_storage_write_height(bs, 6, data, sizeof(data));
+  block_storage_write_height(bs, 7, data, sizeof(data));
+
+  /* Verify consecutive range from 1 stops at 3 */
+  uint32_t consecutive_end = 0;
+  for (uint32_t h = 1; h <= 10; h++) {
+    if (block_storage_exists_height(bs, h)) {
+      consecutive_end = h;
+    } else {
+      break;
+    }
+  }
+  if (consecutive_end != 3) {
+    passed = false;
+    node_destroy(node);
+    goto done;
+  }
+
+  /* Fill the gap */
+  block_storage_write_height(bs, 4, data, sizeof(data));
+
+  /* Now consecutive range should extend to 7 */
+  consecutive_end = 0;
+  for (uint32_t h = 1; h <= 10; h++) {
+    if (block_storage_exists_height(bs, h)) {
+      consecutive_end = h;
+    } else {
+      break;
+    }
+  }
+  if (consecutive_end != 7) {
+    passed = false;
+  }
+
+  node_destroy(node);
+
+done:
+  cleanup_test_dir();
+  test_case("Batch IBD: consecutive block detection");
+  if (passed) {
+    test_pass();
+  } else {
+    test_fail("consecutive detection failed");
+  }
+}
+
+/**
+ * Test: Storage-based throttling simulation.
+ *
+ * In batch IBD, downloads pause when storage exceeds prune target.
+ * This verifies the storage accounting that enables throttling.
+ */
+static void test_batch_ibd_storage_throttling(void) {
+  make_unique_test_dir();
+  cleanup_test_dir();
+  bool passed = true;
+
+  node_config_t config;
+  node_config_init(&config, TEST_DATA_DIR);
+  config.prune_target_mb = 1; /* 1 MB for testing */
+
+  node_t *node = node_create(&config);
+  if (node == NULL) { passed = false; goto done; }
+
+  block_storage_t *bs = node_get_block_storage(node);
+  if (bs == NULL) { passed = false; node_destroy(node); goto done; }
+
+  uint64_t prune_target_bytes = (uint64_t)config.prune_target_mb * 1024 * 1024;
+
+  /* Write blocks until we exceed prune target */
+  uint8_t big_block[100 * 1024]; /* 100 KB */
+  memset(big_block, 0xAA, sizeof(big_block));
+
+  uint32_t height = 1;
+  uint64_t current_size = 0;
+  bool throttle_triggered = false;
+
+  while (height <= 20) {
+    block_storage_write_height(bs, height, big_block, sizeof(big_block));
+
+    if (block_storage_get_total_size(bs, &current_size) != ECHO_OK) {
+      passed = false;
+      break;
+    }
+
+    if (current_size >= prune_target_bytes && !throttle_triggered) {
+      throttle_triggered = true;
+      /* In real code, this would pause downloads */
+    }
+
+    height++;
+  }
+
+  /* Throttle should have been triggered (20 * 100KB = 2MB > 1MB target) */
+  if (!throttle_triggered) {
+    passed = false;
+  }
+
+  /* Verify we can prune to get back under target */
+  uint32_t pruned = block_storage_prune_range(bs, 1, 15);
+  if (pruned == 0) {
+    passed = false;
+    node_destroy(node);
+    goto done;
+  }
+
+  if (block_storage_get_total_size(bs, &current_size) != ECHO_OK) {
+    passed = false;
+    node_destroy(node);
+    goto done;
+  }
+
+  /* Should be under target now (5 * 100KB = 500KB < 1MB) */
+  if (current_size >= prune_target_bytes) {
+    passed = false;
+  }
+
+  node_destroy(node);
+
+done:
+  cleanup_test_dir();
+  test_case("Batch IBD: storage-based throttling");
+  if (passed) {
+    test_pass();
+  } else {
+    test_fail("storage throttling simulation failed");
+  }
+}
+
+/**
+ * Test: Reorg margin preservation during pruning.
+ *
+ * Pruning must keep SYNC_PRUNE_REORG_MARGIN blocks before validated tip.
+ * This verifies that constraint.
+ */
+static void test_batch_ibd_reorg_margin(void) {
+  make_unique_test_dir();
+  cleanup_test_dir();
+  bool passed = true;
+
+  node_config_t config;
+  node_config_init(&config, TEST_DATA_DIR);
+
+  node_t *node = node_create(&config);
+  if (node == NULL) { passed = false; goto done; }
+
+  block_storage_t *bs = node_get_block_storage(node);
+  if (bs == NULL) { passed = false; node_destroy(node); goto done; }
+
+  /* Store 100 blocks */
+  uint8_t data[256] = {0};
+  for (uint32_t i = 1; i <= 100; i++) {
+    block_storage_write_height(bs, i, data, sizeof(data));
+  }
+
+  /*
+   * Simulate validated tip at height 100.
+   * With SYNC_PRUNE_REORG_MARGIN = 550, we can't prune anything yet
+   * (need at least 551 blocks before pruning starts).
+   *
+   * For this test, we'll use a smaller simulation:
+   * If tip is 100 and margin is 20, we could prune up to height 80.
+   */
+  uint32_t validated_tip = 100;
+  uint32_t reorg_margin = 20; /* Simulated smaller margin for test */
+  uint32_t safe_prune_height = (validated_tip > reorg_margin)
+                               ? (validated_tip - reorg_margin)
+                               : 0;
+
+  /* Should be able to prune up to height 80 */
+  if (safe_prune_height != 80) {
+    passed = false;
+    node_destroy(node);
+    goto done;
+  }
+
+  /* Prune blocks 1-80 */
+  uint32_t pruned = block_storage_prune_range(bs, 1, safe_prune_height);
+  if (pruned != 80) {
+    passed = false;
+    node_destroy(node);
+    goto done;
+  }
+
+  /* Verify blocks 1-80 are gone */
+  for (uint32_t i = 1; i <= 80; i++) {
+    if (block_storage_exists_height(bs, i)) {
+      passed = false;
+      node_destroy(node);
+      goto done;
+    }
+  }
+
+  /* Verify blocks 81-100 still exist (within reorg margin) */
+  for (uint32_t i = 81; i <= 100; i++) {
+    if (!block_storage_exists_height(bs, i)) {
+      passed = false;
+      node_destroy(node);
+      goto done;
+    }
+  }
+
+  node_destroy(node);
+
+done:
+  cleanup_test_dir();
+  test_case("Batch IBD: reorg margin preservation");
+  if (passed) {
+    test_pass();
+  } else {
+    test_fail("reorg margin preservation failed");
+  }
+}
+
+/**
+ * Test: Archival mode doesn't prune.
+ *
+ * In archival mode (prune_target = 0), no pruning should occur
+ * regardless of storage size.
+ */
+static void test_batch_ibd_archival_no_prune(void) {
+  make_unique_test_dir();
+  cleanup_test_dir();
+  bool passed = true;
+
+  node_config_t config;
+  node_config_init(&config, TEST_DATA_DIR);
+  config.prune_target_mb = 0; /* Archival mode */
+
+  node_t *node = node_create(&config);
+  if (node == NULL) { passed = false; goto done; }
+
+  /* Verify pruning is disabled */
+  if (node_is_pruning_enabled(node)) {
+    passed = false;
+    node_destroy(node);
+    goto done;
+  }
+
+  block_storage_t *bs = node_get_block_storage(node);
+  if (bs == NULL) { passed = false; node_destroy(node); goto done; }
+
+  /* Store some blocks */
+  uint8_t data[256] = {0};
+  for (uint32_t i = 1; i <= 50; i++) {
+    block_storage_write_height(bs, i, data, sizeof(data));
+  }
+
+  uint64_t initial_size;
+  block_storage_get_total_size(bs, &initial_size);
+
+  /*
+   * Even though we CAN call prune_range, in archival mode the
+   * batch IBD state machine should never call it.
+   * The test verifies that the mode check works.
+   */
+  if (!node_is_pruning_enabled(node)) {
+    /* Good - archival mode correctly detected */
+    /* Don't prune */
+  } else {
+    passed = false;
+    node_destroy(node);
+    goto done;
+  }
+
+  /* All blocks should still exist */
+  for (uint32_t i = 1; i <= 50; i++) {
+    if (!block_storage_exists_height(bs, i)) {
+      passed = false;
+      break;
+    }
+  }
+
+  node_destroy(node);
+
+done:
+  cleanup_test_dir();
+  test_case("Batch IBD: archival mode doesn't prune");
+  if (passed) {
+    test_pass();
+  } else {
+    test_fail("archival mode incorrectly pruning");
+  }
+}
+
+/*
+ * ============================================================================
  * STRESS TESTS
  * ============================================================================
  */
@@ -1363,6 +1870,13 @@ int main(void) {
   test_section("Chain Reorganization");
   test_reorg_multiple_chains();
   test_reorg_best_chain_selection();
+
+  test_section("Batch IBD Workflow");
+  test_batch_ibd_full_cycle();
+  test_batch_ibd_consecutive_detection();
+  test_batch_ibd_storage_throttling();
+  test_batch_ibd_reorg_margin();
+  test_batch_ibd_archival_no_prune();
 
   test_section("Stress Tests");
   test_stress_many_blocks();

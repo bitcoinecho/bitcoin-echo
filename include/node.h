@@ -45,9 +45,10 @@
 
 /**
  * Minimum pruning target in MB.
- * Must keep at least 550 blocks (~550 MB) for reorg safety.
+ * Lower bound to ensure meaningful pruning behavior.
+ * Reorg safety is enforced separately via SYNC_PRUNE_REORG_MARGIN (550 blocks).
  */
-#define PRUNE_TARGET_MIN_MB 550
+#define PRUNE_TARGET_MIN_MB 128
 
 /**
  * Node configuration.

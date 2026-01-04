@@ -129,7 +129,7 @@ echo.exe
 ```
 
 **Notes:**
-- `--prune` minimum is 550 MB (required for reorg safety)
+- `--prune` minimum is 128 MB (reorg safety margin is block count, not MB)
 - `--observe` and `--prune` are mutually exclusive (observer doesn't store blocks)
 - `--testnet` and `--regtest` require the binary to be compiled with the matching network flag
 
