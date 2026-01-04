@@ -3999,13 +3999,20 @@ uint32_t node_prune_blocks(node_t *node, uint32_t target_height) {
     return 0;
   }
 
-  /* Get current chain height */
+  /* Get current validated chain height.
+   * Note: consensus_get_height() returns UINT32_MAX when not initialized,
+   * which we treat as 0 (no validated blocks yet). */
   uint32_t chain_height = 0;
   if (node->consensus != NULL) {
-    chain_height = consensus_get_height(node->consensus);
+    uint32_t h = consensus_get_height(node->consensus);
+    if (h != UINT32_MAX) {
+      chain_height = h;
+    }
   }
 
-  /* Maintain safety margin: keep at least 550 blocks for reorg safety */
+  /* Maintain safety margin: keep at least 550 blocks for reorg safety.
+   * When chain_height is 0, we keep ALL blocks (min_keep_height = 0,
+   * target_height gets capped to 0, no pruning happens). */
   uint32_t min_keep_height = 0;
   if (chain_height > 550) {
     min_keep_height = chain_height - 550;

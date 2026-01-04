@@ -1551,24 +1551,46 @@ void sync_tick(sync_manager_t *mgr) {
     /*
      * DOWNLOAD → DRAIN transition check.
      *
-     * Transition to DRAIN when:
-     * - No more blocks to queue (pending == 0)
+     * Transition to DRAIN when ALL of these are true:
+     * - All blocks queued (queued_tip >= best_header->height), OR
+     *   storage limit reached (for pruned nodes)
+     * - Download manager queue empty (pending == 0)
      * - Still have in-flight requests to complete (inflight > 0)
      *
      * If both pending and inflight are 0, we skip DRAIN and check
      * if we should transition to DONE or continue the batch cycle.
      *
-     * TODO (Phase 3): Add storage-based transition for pruned nodes:
-     *   if (storage_used >= prune_target) → DRAIN
+     * Storage-based throttling: queue_blocks_from_headers() stops queueing
+     * when storage >= prune_target, so we check that condition here too.
      */
     pending = download_mgr_pending_count(mgr->download_mgr);
     inflight = download_mgr_inflight_count(mgr->download_mgr);
 
-    if (pending == 0 && inflight > 0) {
-      /* All work queued, waiting for in-flight to complete */
+    /* Check if all blocks have been queued */
+    uint32_t best_height = mgr->best_header ? mgr->best_header->height : 0;
+    bool all_blocks_queued = (mgr->queued_tip >= best_height);
+
+    /* Check if storage limit reached (for pruned nodes) */
+    bool storage_limit_reached = false;
+    if (mgr->callbacks.get_storage_info) {
+      uint64_t storage_used = 0;
+      uint64_t prune_target = 0;
+      if (mgr->callbacks.get_storage_info(&storage_used, &prune_target,
+                                           mgr->callbacks.ctx) == ECHO_OK) {
+        if (prune_target > 0 && storage_used >= prune_target) {
+          storage_limit_reached = true;
+        }
+      }
+    }
+
+    /* Transition to DRAIN only when we have a reason to stop downloading */
+    if (pending == 0 && inflight > 0 &&
+        (all_blocks_queued || storage_limit_reached)) {
       log_info(LOG_COMP_SYNC,
-               "DOWNLOAD complete, transitioning to DRAIN (inflight=%zu)",
-               inflight);
+               "DOWNLOAD complete, transitioning to DRAIN (inflight=%zu, "
+               "queued_tip=%u, best=%u, storage_limit=%s)",
+               inflight, mgr->queued_tip, best_height,
+               storage_limit_reached ? "yes" : "no");
       mgr->mode = SYNC_MODE_DRAIN;
     } else if (pending == 0 && inflight == 0) {
       /* All work complete - check if we're fully synced */
@@ -1644,76 +1666,95 @@ void sync_tick(sync_manager_t *mgr) {
         mgr->blocks_validated_this_batch = 0;
       }
 
-      /* Validate blocks one at a time per tick (allows event loop to breathe) */
-      uint32_t height_to_validate = validated_tip + 1;
+      /*
+       * Validate ALL consecutive blocks in a tight loop.
+       * Early blocks validate in 0-3ms each. No time budget - just validate
+       * everything as fast as possible, then move to FLUSH.
+       */
+      if (!mgr->callbacks.load_block_at_height ||
+          !mgr->callbacks.validate_and_apply_block) {
+        log_warn(LOG_COMP_SYNC, "VALIDATE callbacks not set, skipping to FLUSH");
+        mgr->mode = SYNC_MODE_FLUSH;
+        break;
+      }
 
-      if (mgr->callbacks.load_block_at_height &&
-          mgr->callbacks.validate_and_apply_block) {
+      /* Check for periodic flush (archival nodes with limited RAM) */
+      uint64_t prune_target = 0;
+      if (mgr->callbacks.get_storage_info) {
+        uint64_t storage_used = 0;
+        mgr->callbacks.get_storage_info(&storage_used, &prune_target,
+                                        mgr->callbacks.ctx);
+      }
+      bool is_archival = (prune_target == 0);
 
+      uint64_t validate_start = plat_time_ms();
+      uint32_t blocks_validated = 0;
+
+      for (uint32_t h = validated_tip + 1; h <= consecutive_end; h++) {
+        /* Check archival flush interval */
+        if (is_archival && SYNC_ARCHIVAL_FLUSH_INTERVAL > 0 &&
+            mgr->blocks_validated_this_batch >= SYNC_ARCHIVAL_FLUSH_INTERVAL) {
+          log_info(LOG_COMP_SYNC,
+                   "VALIDATE: archival flush interval reached (%u blocks)",
+                   mgr->blocks_validated_this_batch);
+          break;
+        }
+
+        /* Check if we've reached the tip */
+        if (mgr->best_header && h > mgr->best_header->height) {
+          break;
+        }
+
+        /* Load block from storage */
         block_t block;
         memset(&block, 0, sizeof(block));
 
         echo_result_t result = mgr->callbacks.load_block_at_height(
-            height_to_validate, &block, NULL, mgr->callbacks.ctx);
+            h, &block, NULL, mgr->callbacks.ctx);
 
-        if (result == ECHO_OK) {
-          result = mgr->callbacks.validate_and_apply_block(&block,
-                                                           mgr->callbacks.ctx);
-          block_free(&block);
-
-          if (result == ECHO_OK) {
-            mgr->blocks_validated_this_batch++;
-            mgr->blocks_validated_total++;
-            mgr->last_progress_time = plat_time_ms();
-
-            /* Log progress periodically */
-            if (mgr->blocks_validated_this_batch % 1000 == 0) {
-              log_info(LOG_COMP_SYNC, "VALIDATE: %u blocks this batch (height %u)",
-                       mgr->blocks_validated_this_batch, height_to_validate);
-            }
-
-            /* Check for periodic flush (archival nodes with limited RAM) */
-            uint64_t prune_target = 0;
-            if (mgr->callbacks.get_storage_info) {
-              uint64_t storage_used = 0;
-              mgr->callbacks.get_storage_info(&storage_used, &prune_target,
-                                              mgr->callbacks.ctx);
-            }
-
-            bool is_archival = (prune_target == 0);
-            bool reached_flush_interval =
-                (SYNC_ARCHIVAL_FLUSH_INTERVAL > 0 &&
-                 mgr->blocks_validated_this_batch >= SYNC_ARCHIVAL_FLUSH_INTERVAL);
-
-            /* Check if we've reached the end of stored blocks or best header */
-            bool reached_end = (height_to_validate >= consecutive_end);
-            bool reached_tip = mgr->best_header &&
-                               (height_to_validate >= mgr->best_header->height);
-
-            if (reached_end || reached_tip || (is_archival && reached_flush_interval)) {
-              log_info(LOG_COMP_SYNC,
-                       "VALIDATE complete: %u blocks (height %u), transitioning to FLUSH",
-                       mgr->blocks_validated_this_batch, height_to_validate);
-              mgr->mode = SYNC_MODE_FLUSH;
-            }
-            /* Otherwise, continue validating in next tick */
-          } else {
-            log_error(LOG_COMP_SYNC, "Block validation failed at height %u",
-                      height_to_validate);
-            /* Validation failed - this is a serious error during IBD */
-            mgr->mode = SYNC_MODE_DONE; /* TODO: proper error handling */
-          }
-        } else {
-          /* Block not found - gap in storage, go to FLUSH with what we have */
+        if (result != ECHO_OK) {
           log_warn(LOG_COMP_SYNC, "Block at height %u not found, going to FLUSH",
-                   height_to_validate);
-          mgr->mode = SYNC_MODE_FLUSH;
+                   h);
+          break;
         }
-      } else {
-        /* Callbacks not set - skip validation (test mode?) */
-        log_warn(LOG_COMP_SYNC, "VALIDATE callbacks not set, skipping to FLUSH");
-        mgr->mode = SYNC_MODE_FLUSH;
+
+        /* Validate and apply */
+        result =
+            mgr->callbacks.validate_and_apply_block(&block, mgr->callbacks.ctx);
+        block_free(&block);
+
+        if (result != ECHO_OK) {
+          log_error(LOG_COMP_SYNC, "Block validation failed at height %u", h);
+          mgr->mode = SYNC_MODE_DONE; /* TODO: proper error handling */
+          break;
+        }
+
+        blocks_validated++;
+        mgr->blocks_validated_this_batch++;
+        mgr->blocks_validated_total++;
+
+        /* Log progress every 1000 blocks */
+        if (mgr->blocks_validated_this_batch % 1000 == 0) {
+          uint64_t elapsed = plat_time_ms() - validate_start;
+          double rate =
+              (elapsed > 0) ? (blocks_validated * 1000.0 / (double)elapsed) : 0;
+          log_info(LOG_COMP_SYNC,
+                   "VALIDATE: %u blocks (height %u, %.1f blocks/sec)",
+                   mgr->blocks_validated_this_batch, h, rate);
+        }
       }
+
+      /* Done validating this batch */
+      uint64_t elapsed = plat_time_ms() - validate_start;
+      double rate =
+          (elapsed > 0) ? (blocks_validated * 1000.0 / (double)elapsed) : 0;
+      log_info(LOG_COMP_SYNC,
+               "VALIDATE complete: %u blocks in %llu ms (%.1f blocks/sec), "
+               "transitioning to FLUSH",
+               blocks_validated, (unsigned long long)elapsed, rate);
+
+      mgr->last_progress_time = plat_time_ms();
+      mgr->mode = SYNC_MODE_FLUSH;
     }
     break;
 
