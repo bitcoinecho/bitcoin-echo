@@ -106,9 +106,6 @@ struct sync_manager {
   /* IBD profiling: Rate-limited progress logging (every 30s) */
   uint64_t last_progress_log_time;
 
-  /* Network latency baseline (kept for API compatibility, currently always 0) */
-  uint64_t network_median_latency_ms;
-
   /* Simple header sync: one peer at a time, probe occasionally for faster peers */
   bool have_header_peer;            /* True once we have an active header peer */
   size_t active_header_peer_idx;    /* Index of current header peer in peers[] */
@@ -1779,13 +1776,13 @@ void sync_get_metrics(sync_manager_t *mgr, sync_metrics_t *metrics) {
   }
 
   /* Initialize with defaults */
-  metrics->download_rate = 0.0f;
-  metrics->validation_rate = 0.0f;
-  metrics->pending_validation = 0;
+  metrics->download_rate_bps = 0.0f;
+  metrics->validation_rate_bps = 0.0f;
   metrics->eta_seconds = 0;
-  metrics->network_median_latency = 0;
   metrics->active_sync_peers = 0;
   metrics->mode_string = "idle";
+  metrics->storage_used_bytes = 0;
+  metrics->storage_prune_target = 0;
 
   if (!mgr) {
     return;
@@ -1800,7 +1797,7 @@ void sync_get_metrics(sync_manager_t *mgr, sync_metrics_t *metrics) {
 
   /* VALIDATION RATE: Blocks added to chain per second (strict order)
    * This is the rate we can advance the chainstate tip. */
-  metrics->validation_rate = calc_blocks_per_second(mgr);
+  metrics->validation_rate_bps = calc_blocks_per_second(mgr);
 
   /* DOWNLOAD RATE: Blocks received from network per second (any order)
    * This shows how fast we're getting data, regardless of ordering. */
@@ -1808,35 +1805,26 @@ void sync_get_metrics(sync_manager_t *mgr, sync_metrics_t *metrics) {
     uint64_t now = plat_time_ms();
     uint64_t elapsed_ms = now - mgr->block_sync_start_time;
     if (elapsed_ms > 0) {
-      metrics->download_rate =
+      metrics->download_rate_bps =
           (float)mgr->blocks_received_total * 1000.0f / (float)elapsed_ms;
     }
   }
 
-  /* PENDING VALIDATION: Downloaded blocks waiting for their turn.
-   * This is the gap between download and validation.
-   * High value = head-of-line blocking (we have blocks but can't use them).
-   * This is blocks_received_total minus blocks_validated. */
-  uint32_t validated_height = chainstate_get_height(mgr->chainstate);
-  uint32_t validated_this_session = 0;
-  if (validated_height > mgr->block_sync_start_height) {
-    validated_this_session = validated_height - mgr->block_sync_start_height;
-  }
-  if (mgr->blocks_received_total > validated_this_session) {
-    metrics->pending_validation =
-        mgr->blocks_received_total - validated_this_session;
-  }
-
   /* ETA in seconds (based on validation rate - the true sync bottleneck).
    * Downloads may race ahead, but validation determines actual sync progress. */
-  if (metrics->validation_rate > 0 &&
+  if (metrics->validation_rate_bps > 0 &&
       progress.best_header_height > progress.tip_height) {
     uint32_t remaining = progress.best_header_height - progress.tip_height;
-    metrics->eta_seconds = (uint64_t)(remaining / metrics->validation_rate);
+    metrics->eta_seconds =
+        (uint64_t)((float)remaining / metrics->validation_rate_bps);
   }
 
-  /* Network median latency from peer quality system */
-  metrics->network_median_latency = mgr->network_median_latency_ms;
+  /* Storage metrics from callback */
+  if (mgr->callbacks.get_storage_info) {
+    mgr->callbacks.get_storage_info(&metrics->storage_used_bytes,
+                                    &metrics->storage_prune_target,
+                                    mgr->callbacks.ctx);
+  }
 
   /* Count active sync peers (those with blocks received) */
   uint32_t active = 0;

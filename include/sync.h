@@ -609,21 +609,19 @@ uint64_t sync_estimate_remaining_time(const sync_progress_t *progress);
  * Contains derived performance metrics calculated from internal sync state.
  * These are the "source of truth" metrics the GUI should display.
  *
- * KEY INSIGHT: Download and validation rates are DIFFERENT:
- * - download_rate: Blocks received from network (any order)
- * - validation_rate: Blocks added to chain (strict order)
+ * Batch IBD architecture phases:
+ *   DOWNLOAD → DRAIN → VALIDATE → FLUSH → PRUNE (cycle)
  *
- * When validation_rate << download_rate, we have head-of-line blocking.
- * pending_validation shows the gap (blocks downloaded but waiting).
+ * Rate metrics use _bps suffix (blocks per second) for clarity.
  */
 typedef struct {
-  float download_rate;              /* Blocks downloaded per second */
-  float validation_rate;            /* Blocks validated per second */
-  uint32_t pending_validation;      /* Downloaded but not yet validated */
+  float download_rate_bps;          /* Blocks downloaded per second */
+  float validation_rate_bps;        /* Blocks validated per second */
   uint64_t eta_seconds;             /* Estimated time remaining */
-  uint64_t network_median_latency;  /* Network baseline latency (ms) */
   uint32_t active_sync_peers;       /* Peers actively contributing blocks */
   const char *mode_string;          /* Human-readable sync mode */
+  uint64_t storage_used_bytes;      /* Current block storage size */
+  uint64_t storage_prune_target;    /* Target storage size (0 = archival) */
 } sync_metrics_t;
 
 /**

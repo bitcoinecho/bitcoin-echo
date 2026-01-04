@@ -2552,20 +2552,22 @@ static echo_result_t rpc_pruneblockchain(node_t *node, const json_value_t *param
  * Returns detailed sync metrics including rate and ETA.
  * This is the "source of truth" for sync progress that the GUI should display.
  *
+ * Batch IBD phases: DOWNLOAD → DRAIN → VALIDATE → FLUSH → PRUNE (cycle)
+ *
  * Response:
  * {
- *   "mode": "BLOCKS",
+ *   "mode": "DOWNLOAD",
  *   "blocks_validated": 180000,
  *   "best_header_height": 875000,
  *   "tip_height": 180000,
  *   "blocks_pending": 695000,
  *   "blocks_in_flight": 512,
  *   "sync_percentage": 20.57,
- *   "download_rate": 120.5,
- *   "validation_rate": 48.5,
- *   "pending_validation": 5000,
+ *   "download_rate_bps": 120.5,
+ *   "validation_rate_bps": 48.5,
  *   "eta_seconds": 14320,
- *   "network_median_latency_ms": 450,
+ *   "storage_used_bytes": 536870912,
+ *   "storage_prune_target": 1073741824,
  *   "active_sync_peers": 6,
  *   "total_peers": 8,
  *   "initialblockdownload": true
@@ -2625,27 +2627,22 @@ static echo_result_t rpc_getsyncstatus(node_t *node, const json_value_t *params,
   json_builder_append(builder, ",\"sync_percentage\":");
   json_builder_number(builder, progress.sync_percentage);
 
-  /* Performance metrics from node (source of truth)
-   * KEY INSIGHT: download_rate and validation_rate are DIFFERENT:
-   * - download_rate: blocks arriving from network (any order)
-   * - validation_rate: blocks added to chain (strict order)
-   * When validation_rate << download_rate, we have head-of-line blocking.
-   */
-  json_builder_append(builder, ",\"download_rate\":");
-  json_builder_number(builder, metrics.download_rate);
+  /* Performance metrics (source of truth for GUI) */
+  json_builder_append(builder, ",\"download_rate_bps\":");
+  json_builder_number(builder, metrics.download_rate_bps);
 
-  json_builder_append(builder, ",\"validation_rate\":");
-  json_builder_number(builder, metrics.validation_rate);
-
-  json_builder_append(builder, ",\"pending_validation\":");
-  json_builder_uint(builder, metrics.pending_validation);
+  json_builder_append(builder, ",\"validation_rate_bps\":");
+  json_builder_number(builder, metrics.validation_rate_bps);
 
   json_builder_append(builder, ",\"eta_seconds\":");
   json_builder_uint(builder, metrics.eta_seconds);
 
-  /* Network baseline for diagnostics */
-  json_builder_append(builder, ",\"network_median_latency_ms\":");
-  json_builder_uint(builder, metrics.network_median_latency);
+  /* Storage metrics for batch IBD */
+  json_builder_append(builder, ",\"storage_used_bytes\":");
+  json_builder_uint(builder, metrics.storage_used_bytes);
+
+  json_builder_append(builder, ",\"storage_prune_target\":");
+  json_builder_uint(builder, metrics.storage_prune_target);
 
   /* Peer info */
   json_builder_append(builder, ",\"active_sync_peers\":");
