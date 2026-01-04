@@ -1742,6 +1742,31 @@ static void sync_cb_disconnect_peer(peer_t *peer, const char *reason,
 }
 
 /**
+ * Get block storage info for batch IBD throttling.
+ *
+ * Returns current storage size and prune target so sync manager can
+ * implement storage-based throttling (stop queueing when full).
+ */
+static echo_result_t sync_cb_get_storage_info(uint64_t *storage_used_bytes,
+                                               uint64_t *prune_target_bytes,
+                                               void *ctx) {
+  node_t *node = (node_t *)ctx;
+  if (node == NULL || storage_used_bytes == NULL ||
+      prune_target_bytes == NULL) {
+    return ECHO_ERR_NULL_PARAM;
+  }
+
+  /* Get current storage size */
+  *storage_used_bytes = node_get_block_storage_size(node);
+
+  /* Get prune target (0 = archival, no limit) */
+  uint64_t prune_mb = node_get_prune_target(node);
+  *prune_target_bytes = prune_mb * 1024 * 1024;
+
+  return ECHO_OK;
+}
+
+/**
  * Initialize sync manager with callbacks.
  */
 static echo_result_t node_init_sync(node_t *node) {
@@ -1772,6 +1797,7 @@ static echo_result_t node_init_sync(node_t *node) {
       .commit_header_batch = sync_cb_commit_header_batch,
       .flush_headers = NULL,
       .disconnect_peer = sync_cb_disconnect_peer,
+      .get_storage_info = sync_cb_get_storage_info,
       .ctx = node};
 
   /* Create sync manager */

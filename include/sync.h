@@ -334,6 +334,25 @@ typedef struct {
    */
   void (*disconnect_peer)(peer_t *peer, const char *reason, void *ctx);
 
+  /**
+   * Get block storage info for batch IBD throttling.
+   *
+   * Used by sync manager to implement storage-based throttling:
+   * stop queueing new blocks when storage_used >= prune_target.
+   *
+   * Parameters:
+   *   storage_used_bytes - Output: current block storage size in bytes
+   *   prune_target_bytes - Output: target storage size (0 = archival, no limit)
+   *   ctx                - User context
+   *
+   * Returns:
+   *   ECHO_OK on success
+   *
+   * Note: If prune_target_bytes is 0, node is archival and has no storage limit.
+   */
+  echo_result_t (*get_storage_info)(uint64_t *storage_used_bytes,
+                                    uint64_t *prune_target_bytes, void *ctx);
+
   /* Context pointer passed to all callbacks */
   void *ctx;
 } sync_callbacks_t;

@@ -130,6 +130,10 @@ struct sync_manager {
   /* Performance-based download manager for peer throughput tracking */
   download_mgr_t *download_mgr;
 
+  /* Sequential queueing state for batch IBD architecture.
+   * See IBD-BATCH-ARCHITECTURE.md for design rationale. */
+  uint32_t queued_tip; /* Highest height queued to download manager */
+
   /* Chase event dispatcher for chaser-based validation */
   chase_dispatcher_t *dispatcher;
 
@@ -708,6 +712,7 @@ echo_result_t sync_start(sync_manager_t *mgr) {
     mgr->mode = SYNC_MODE_BLOCKS;
     mgr->block_sync_start_time = now;
     mgr->block_sync_start_height = validated_height;
+    mgr->queued_tip = validated_height; /* Sequential queueing starts from validated tip */
   } else {
     log_info(LOG_COMP_SYNC, "Starting headers-first sync");
     mgr->mode = SYNC_MODE_HEADERS;
@@ -851,6 +856,7 @@ echo_result_t sync_handle_headers(sync_manager_t *mgr, peer_t *peer,
                  "Transitioning to BLOCKS mode (best_header=%u, validated=%u)",
                  mgr->best_header->height, tip_height);
         mgr->mode = SYNC_MODE_BLOCKS;
+        mgr->queued_tip = tip_height; /* Sequential queueing starts from validated tip */
         if (mgr->block_sync_start_time == 0) {
           mgr->block_sync_start_time = plat_time_ms();
           mgr->block_sync_start_height = tip_height;
@@ -987,6 +993,7 @@ echo_result_t sync_handle_headers(sync_manager_t *mgr, peer_t *peer,
         }
 
         mgr->mode = SYNC_MODE_BLOCKS;
+        mgr->queued_tip = tip_height; /* Sequential queueing starts from validated tip */
         if (mgr->block_sync_start_time == 0) {
           mgr->block_sync_start_time = plat_time_ms();
           mgr->block_sync_start_height = tip_height;
@@ -1258,6 +1265,14 @@ void sync_process_timeouts(sync_manager_t *mgr) {
 
 /**
  * Queue blocks for download from headers.
+ *
+ * Sequential queueing for batch IBD architecture:
+ * - Queues from queued_tip+1 (not validated_tip+1)
+ * - Advances queued_tip as blocks are queued
+ * - Stops when download_mgr is full or best_header reached
+ * - Stops when storage >= prune_target (triggers DOWNLOAD→DRAIN transition)
+ *
+ * See IBD-BATCH-ARCHITECTURE.md for design rationale.
  */
 static void queue_blocks_from_headers(sync_manager_t *mgr) {
   if (!mgr->best_header) {
@@ -1265,26 +1280,37 @@ static void queue_blocks_from_headers(sync_manager_t *mgr) {
     return;
   }
 
-  uint32_t tip_height = chainstate_get_height(mgr->chainstate);
+  /* Storage-based throttling: don't queue if we've hit the prune target.
+   * This triggers the DOWNLOAD→DRAIN transition for pruned nodes. */
+  if (mgr->callbacks.get_storage_info) {
+    uint64_t storage_used = 0;
+    uint64_t prune_target = 0;
+    if (mgr->callbacks.get_storage_info(&storage_used, &prune_target,
+                                         mgr->callbacks.ctx) == ECHO_OK) {
+      if (prune_target > 0 && storage_used >= prune_target) {
+        /* Storage limit reached - stop queueing, let DRAIN phase handle it */
+        log_info(LOG_COMP_SYNC,
+                 "queue_blocks: storage limit reached (%llu >= %llu bytes), "
+                 "stopping queue",
+                 (unsigned long long)storage_used,
+                 (unsigned long long)prune_target);
+        return;
+      }
+    }
+  }
 
-  /* Calculate target range: from validated tip to best header */
-  uint32_t start_height = tip_height + 1;
+  /* Sequential queueing: start from queued_tip, not validated_tip.
+   * This ensures we queue blocks in order and don't re-queue blocks
+   * that are already in the download manager. */
+  uint32_t start_height = mgr->queued_tip + 1;
   uint32_t end_height = mgr->best_header->height;
 
-  log_info(LOG_COMP_SYNC,
-           "queue_blocks: tip=%u, start=%u, end=%u, best=%u",
-           tip_height, start_height, end_height, mgr->best_header->height);
-
   if (start_height > end_height) {
-    /* Already fully synced */
-    log_info(LOG_COMP_SYNC, "queue_blocks: already synced (start > end)");
+    /* Already queued everything up to best_header */
     return;
   }
 
   /*
-   * Use direct height lookup via callback if available (much faster for
-   * large height gaps). Falls back to walking prev pointers if not.
-   *
    * Array sized to download_mgr's actual capacity (200 batches * 8 blocks).
    * The download_mgr enforces DOWNLOAD_MAX_BATCHES, so queuing more is wasteful.
    */
@@ -1294,104 +1320,57 @@ static void queue_blocks_from_headers(sync_manager_t *mgr) {
   size_t to_queue_count = 0;
   size_t batch_limit = QUEUE_BATCH_SIZE;
 
-  if (mgr->callbacks.get_block_hash_at_height) {
-    /* Fast path: query database by height directly */
-    uint32_t lookup_failures = 0;
-    for (uint32_t h = start_height;
-         h <= end_height && to_queue_count < batch_limit; h++) {
-      hash256_t hash;
-      echo_result_t cb_result = mgr->callbacks.get_block_hash_at_height(
-          h, &hash, mgr->callbacks.ctx);
-      if (cb_result != ECHO_OK) {
-        lookup_failures++;
-        /* Log first few failures to help debug */
-        if (lookup_failures <= 3) {
-          log_warn(LOG_COMP_SYNC,
-                   "queue_blocks: height %u hash lookup failed: %d",
-                   h, cb_result);
-        }
-        continue;
-      }
-      /* Check if we already have this block in download manager or storage */
-      bool in_queue = download_mgr_has_block(mgr->download_mgr, &hash);
-      if (!in_queue) {
-        block_t stored;
-        block_init(&stored);
-        bool in_storage = mgr->callbacks.get_block &&
-                          mgr->callbacks.get_block(&hash, &stored,
-                                                   mgr->callbacks.ctx) ==
-                              ECHO_OK;
-        /* Log first iteration to debug */
-        if (h == start_height) {
-          log_info(LOG_COMP_SYNC,
-                   "queue_blocks: first block h=%u in_storage=%s",
-                   h, in_storage ? "YES" : "NO");
-        }
-        if (!in_storage) {
-          to_queue[to_queue_count] = hash;
-          heights[to_queue_count] = h;
-          to_queue_count++;
-          if (h == start_height) {
-            log_info(LOG_COMP_SYNC, "queue_blocks: queuing height %u", h);
-          }
-        } else {
-          /* Block already in storage - notify chaser to validate it */
-          if (mgr->dispatcher != NULL) {
-            chase_notify_height(mgr->dispatcher, CHASE_CHECKED, h);
-          }
-        }
-        block_free(&stored);
-      } else if (h <= 5) {
-        log_info(LOG_COMP_SYNC, "queue_blocks: height %u already in queue", h);
-      }
-    }
-    log_info(LOG_COMP_SYNC,
-             "queue_blocks: fast path done - queued=%zu, failures=%u",
-             to_queue_count, lookup_failures);
-  } else {
-    /* Slow path: walk back from best_header (for very old code) */
-    block_index_t *idx = mgr->best_header;
+  /* Check how much room download_mgr has - don't over-queue */
+  size_t dm_pending = download_mgr_pending_count(mgr->download_mgr);
+  if (dm_pending >= batch_limit) {
+    /* Download manager is full, wait for it to drain */
+    return;
+  }
+  size_t available = batch_limit - dm_pending;
+  if (available < batch_limit) {
+    batch_limit = available;
+  }
 
-    /* First, walk back to reach our target range (skip higher blocks) */
-    while (idx && idx->height > end_height) {
-      idx = idx->prev;
+  if (!mgr->callbacks.get_block_hash_at_height) {
+    log_error(LOG_COMP_SYNC, "queue_blocks: no get_block_hash_at_height callback");
+    return;
+  }
+
+  /* Sequential queueing: queue from queued_tip+1 in order */
+  uint32_t lookup_failures = 0;
+  uint32_t highest_queued = mgr->queued_tip;
+
+  for (uint32_t h = start_height;
+       h <= end_height && to_queue_count < batch_limit; h++) {
+    hash256_t hash;
+    echo_result_t cb_result = mgr->callbacks.get_block_hash_at_height(
+        h, &hash, mgr->callbacks.ctx);
+    if (cb_result != ECHO_OK) {
+      lookup_failures++;
+      if (lookup_failures <= 3) {
+        log_warn(LOG_COMP_SYNC,
+                 "queue_blocks: height %u hash lookup failed: %d",
+                 h, cb_result);
+      }
+      /* Stop on first failure - can't have gaps in sequential queue */
+      break;
     }
 
-    /* Collect blocks to queue (walking backward, we'll reverse later) */
-    while (idx && idx->height >= start_height &&
-           to_queue_count < batch_limit) {
-      if (!download_mgr_has_block(mgr->download_mgr, &idx->hash)) {
-        block_t stored;
-        block_init(&stored);
-        if (!mgr->callbacks.get_block ||
-            mgr->callbacks.get_block(&idx->hash, &stored,
-                                      mgr->callbacks.ctx) != ECHO_OK) {
-          to_queue[to_queue_count] = idx->hash;
-          heights[to_queue_count] = idx->height;
-          to_queue_count++;
-        }
-        block_free(&stored);
-      }
-      idx = idx->prev;
-    }
-
-    /* Reverse the order (slow path collects in descending height order) */
-    for (size_t i = 0; i < to_queue_count / 2; i++) {
-      hash256_t tmp_hash = to_queue[i];
-      uint32_t tmp_height = heights[i];
-      to_queue[i] = to_queue[to_queue_count - 1 - i];
-      heights[i] = heights[to_queue_count - 1 - i];
-      to_queue[to_queue_count - 1 - i] = tmp_hash;
-      heights[to_queue_count - 1 - i] = tmp_height;
-    }
+    to_queue[to_queue_count] = hash;
+    heights[to_queue_count] = h;
+    to_queue_count++;
+    highest_queued = h;
   }
 
   if (to_queue_count > 0) {
     log_info(LOG_COMP_SYNC, "Queueing %zu blocks (heights %u-%u)",
              to_queue_count, heights[0], heights[to_queue_count - 1]);
 
-    /* Add to download manager (handles deduplication internally) */
+    /* Add to download manager */
     download_mgr_add_work(mgr->download_mgr, to_queue, heights, to_queue_count);
+
+    /* Update queued_tip to track what we've queued */
+    mgr->queued_tip = highest_queued;
   }
 }
 
@@ -1650,18 +1629,6 @@ void sync_tick(sync_manager_t *mgr) {
       if (mgr->dispatcher != NULL) {
         /* Fire BUMP to trigger chasers to check for work */
         chase_notify_height(mgr->dispatcher, CHASE_BUMP, 0);
-      }
-    }
-
-    /* Stall detection: Check if validation is stuck waiting for a slow peer.
-     * If so, steal their batch and give another peer a chance. */
-    {
-      uint32_t validated_height = chainstate_get_height(mgr->chainstate);
-      if (download_mgr_check_stall(mgr->download_mgr, validated_height)) {
-        /* Batch was stolen - bump chasers to retry validation */
-        if (mgr->dispatcher != NULL) {
-          chase_notify_height(mgr->dispatcher, CHASE_BUMP, 0);
-        }
       }
     }
 
