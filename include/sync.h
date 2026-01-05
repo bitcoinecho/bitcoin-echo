@@ -59,6 +59,13 @@
  * Set to 0 to disable periodic flush (single flush at end). */
 #define SYNC_ARCHIVAL_FLUSH_INTERVAL 10000
 
+/* Batch IBD: Time budget for VALIDATE phase (milliseconds).
+ * The VALIDATE loop yields back to the event loop after this time to allow
+ * RPC to respond and GUI to update. Validation continues on the next tick.
+ * 500ms balances GUI responsiveness with validation throughput.
+ * Too short (100ms) causes excessive yields when event loop is busy. */
+#define SYNC_VALIDATE_TIME_BUDGET_MS 500
+
 /* Batch IBD: Reorg safety margin for pruning.
  * We keep this many blocks after the validated tip to handle potential
  * chain reorganizations. Matches DELTA_REORG_DEPTH in chainstate.h. */
@@ -498,6 +505,10 @@ typedef struct {
   /* DRAIN phase progress (for GUI visualization) */
   uint32_t drain_target;    /* Target height to drain to (0 if not in DRAIN) */
   uint32_t drain_remaining; /* Blocks still needed (inflight + pending + gaps) */
+
+  /* VALIDATE phase progress (live from worker thread) */
+  uint32_t validate_current_height; /* Block currently being validated (0 if not in VALIDATE) */
+  uint32_t validate_target_height;  /* Target height for this validation batch */
 
   /* Chain info */
   uint32_t tip_height;         /* Current validated tip height */

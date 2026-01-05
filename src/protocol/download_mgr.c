@@ -37,6 +37,12 @@ typedef struct batch_node {
 } batch_node_t;
 
 /**
+ * Height bitmap for O(1) lookup of tracked heights.
+ * Replaces O(batches * batch_size) scan with O(1) bit check.
+ */
+#define HEIGHT_BITMAP_CAPACITY (1024 * 1024) /* Track up to 1M heights */
+
+/**
  * Download manager internal state.
  *
  * Cooperative model: Batch queue + peer performance tracking.
@@ -53,6 +59,13 @@ struct download_mgr {
   /* Height tracking */
   uint32_t lowest_pending_height;  /* Lowest height in queue/assigned */
   uint32_t highest_queued_height;  /* Highest height added */
+
+  /* Height bitmap for O(1) has_height lookup.
+   * Bit N is set if height (bitmap_base + N) is being tracked.
+   * Cleared when batch containing that height completes. */
+  uint8_t *height_bitmap;
+  uint32_t bitmap_base;      /* Height represented by bit 0 */
+  uint32_t bitmap_capacity;  /* Number of bits allocated */
 
   /* Peer performance tracking */
   peer_perf_t peers[DOWNLOAD_MAX_PEERS];
@@ -145,6 +158,129 @@ static batch_node_t *queue_pop_front(download_mgr_t *mgr) {
   mgr->queue_count--;
 
   return node;
+}
+
+/* ============================================================================
+ * Internal Helpers - Height Bitmap Operations
+ * ============================================================================
+ */
+
+/**
+ * Initialize height bitmap for tracking.
+ * Always starts from height 0 to handle any height range.
+ */
+static bool bitmap_init(download_mgr_t *mgr) {
+  if (mgr->height_bitmap != NULL) {
+    return true; /* Already initialized */
+  }
+
+  size_t bytes_needed = HEIGHT_BITMAP_CAPACITY / 8;
+  mgr->height_bitmap = calloc(1, bytes_needed);
+  if (mgr->height_bitmap == NULL) {
+    LOG_WARN("download_mgr: FAILED to allocate height bitmap (%zu bytes)", bytes_needed);
+    return false;
+  }
+
+  /* Always start from height 0 - we can track heights 0 to ~1M */
+  mgr->bitmap_base = 0;
+  mgr->bitmap_capacity = HEIGHT_BITMAP_CAPACITY;
+  LOG_INFO("download_mgr: initialized height bitmap (%zu KB)", bytes_needed / 1024);
+  return true;
+}
+
+/**
+ * Set bit for a height (mark as tracked).
+ */
+static void bitmap_set(download_mgr_t *mgr, uint32_t height) {
+  if (mgr->height_bitmap == NULL) {
+    return;
+  }
+
+  if (height < mgr->bitmap_base) {
+    return; /* Below range */
+  }
+
+  uint32_t offset = height - mgr->bitmap_base;
+  if (offset >= mgr->bitmap_capacity) {
+    return; /* Above range */
+  }
+
+  mgr->height_bitmap[offset / 8] |= (1 << (offset % 8));
+}
+
+/**
+ * Clear bit for a height (mark as no longer tracked).
+ */
+static void bitmap_clear(download_mgr_t *mgr, uint32_t height) {
+  if (mgr->height_bitmap == NULL) {
+    return;
+  }
+
+  if (height < mgr->bitmap_base) {
+    return;
+  }
+
+  uint32_t offset = height - mgr->bitmap_base;
+  if (offset >= mgr->bitmap_capacity) {
+    return;
+  }
+
+  mgr->height_bitmap[offset / 8] &= ~(1 << (offset % 8));
+}
+
+/**
+ * Check if height is tracked (O(1) lookup).
+ */
+static bool bitmap_has(const download_mgr_t *mgr, uint32_t height) {
+  static uint64_t call_count = 0;
+  static uint64_t null_bitmap = 0;
+  static uint64_t found_count = 0;
+
+  call_count++;
+
+  if (mgr->height_bitmap == NULL) {
+    null_bitmap++;
+    if (null_bitmap % 10000 == 1) {
+      LOG_WARN("bitmap_has: NULL bitmap! calls=%llu, null=%llu", (unsigned long long)call_count, (unsigned long long)null_bitmap);
+    }
+    return false;
+  }
+
+  if (height < mgr->bitmap_base) {
+    return false;
+  }
+
+  uint32_t offset = height - mgr->bitmap_base;
+  if (offset >= mgr->bitmap_capacity) {
+    return false;
+  }
+
+  bool found = (mgr->height_bitmap[offset / 8] & (1 << (offset % 8))) != 0;
+  if (found) {
+    found_count++;
+  }
+
+  /* Log stats periodically */
+  if (call_count % 100000 == 0) {
+    LOG_INFO("bitmap_has stats: calls=%llu, found=%llu (%.1f%%)",
+             (unsigned long long)call_count, (unsigned long long)found_count,
+             100.0 * (double)found_count / (double)call_count);
+  }
+
+  return found;
+}
+
+/**
+ * Clear all bits for heights in a batch.
+ * Called when batch is completed and being freed.
+ */
+static void bitmap_clear_batch(download_mgr_t *mgr, const work_batch_t *batch) {
+  if (batch == NULL) {
+    return;
+  }
+  for (size_t i = 0; i < batch->count; i++) {
+    bitmap_clear(mgr, batch->heights[i]);
+  }
 }
 
 /* ============================================================================
@@ -262,6 +398,9 @@ void download_mgr_destroy(download_mgr_t *mgr) {
     }
   }
 
+  /* Free height bitmap */
+  free(mgr->height_bitmap);
+
   free(mgr);
 }
 
@@ -333,6 +472,11 @@ size_t download_mgr_add_work(download_mgr_t *mgr, const hash256_t *hashes,
     return 0;
   }
 
+  /* Initialize height bitmap on first add (lazy init with first height as base) */
+  if (mgr->height_bitmap == NULL) {
+    bitmap_init(mgr);
+  }
+
   size_t added = 0;
   size_t i = 0;
 
@@ -352,6 +496,8 @@ size_t download_mgr_add_work(download_mgr_t *mgr, const hash256_t *hashes,
     while (batch_count < target_batch_size && i < count) {
       memcpy(&node->batch.hashes[batch_count], &hashes[i], sizeof(hash256_t));
       node->batch.heights[batch_count] = heights[i];
+      /* Mark height as tracked in bitmap for O(1) lookup */
+      bitmap_set(mgr, heights[i]);
       batch_count++;
       i++;
       added++;
@@ -410,6 +556,8 @@ bool download_mgr_peer_request_work(download_mgr_t *mgr, peer_t *peer) {
     uint32_t old_start = old_node->batch.heights[0];
     uint32_t old_end = old_start + (uint32_t)old_node->batch.count - 1;
     LOG_INFO("download_mgr: freeing completed batch [%u-%u]", old_start, old_end);
+    /* Clear bitmap bits for completed batch heights */
+    bitmap_clear_batch(mgr, &old_node->batch);
     batch_node_destroy(old_node);
     perf->batch = NULL;
   }
@@ -492,6 +640,8 @@ bool download_mgr_block_received(download_mgr_t *mgr, peer_t *peer,
         if (perf->batch->remaining > 0) {
           perf->batch->remaining--;
         }
+        /* Clear bitmap bit immediately so collect_gaps won't see this as tracked */
+        bitmap_clear(mgr, perf->batch->heights[i]);
         LOG_DEBUG("download_mgr: block received at index %zu, batch remaining=%zu",
                   i, perf->batch->remaining);
         return true;
@@ -526,6 +676,8 @@ bool download_mgr_block_received(download_mgr_t *mgr, peer_t *peer,
         if (other->batch->remaining > 0) {
           other->batch->remaining--;
         }
+        /* Clear bitmap bit immediately */
+        bitmap_clear(mgr, other->batch->heights[i]);
         LOG_DEBUG("download_mgr: DRAIN block received via redundant request, "
                   "owning batch remaining=%zu",
                   other->batch->remaining);
@@ -810,27 +962,8 @@ bool download_mgr_has_height(const download_mgr_t *mgr, uint32_t height) {
     return false;
   }
 
-  /* Check queued batches */
-  for (batch_node_t *node = mgr->queue_head; node != NULL; node = node->next) {
-    for (size_t i = 0; i < node->batch.count; i++) {
-      if (node->batch.heights[i] == height) {
-        return true;
-      }
-    }
-  }
-
-  /* Check assigned batches */
-  for (size_t i = 0; i < mgr->peer_count; i++) {
-    if (mgr->peers[i].batch != NULL) {
-      for (size_t j = 0; j < mgr->peers[i].batch->count; j++) {
-        if (mgr->peers[i].batch->heights[j] == height) {
-          return true;
-        }
-      }
-    }
-  }
-
-  return false;
+  /* O(1) bitmap lookup - no more O(n) scanning */
+  return bitmap_has(mgr, height);
 }
 
 bool download_mgr_get_peer_stats(const download_mgr_t *mgr, const peer_t *peer,
@@ -879,16 +1012,19 @@ void download_mgr_clear_pending(download_mgr_t *mgr) {
   }
 
   /* Pop and destroy all queued (pending) batches.
-   * Does NOT affect assigned batches - those will complete normally. */
+   * Does NOT affect assigned batches - those will complete normally.
+   * IMPORTANT: Must clear bitmap bits before destroying, otherwise
+   * collect_gaps will think these heights are still being tracked. */
   size_t cleared = 0;
   batch_node_t *node;
   while ((node = queue_pop_front(mgr)) != NULL) {
     cleared += node->batch.remaining;
+    bitmap_clear_batch(mgr, &node->batch);
     batch_node_destroy(node);
   }
 
   if (cleared > 0) {
-    log_debug(LOG_COMP_SYNC, "download_mgr: cleared %zu pending blocks", cleared);
+    log_info(LOG_COMP_SYNC, "download_mgr: cleared %zu pending blocks (bitmap updated)", cleared);
   }
 }
 
@@ -919,7 +1055,10 @@ size_t download_mgr_drain_accelerate(download_mgr_t *mgr, uint64_t stall_timeout
     return 0; /* No idle peers to help */
   }
 
-  /* Collect blocks from stalled/slow peers */
+  /* Collect ALL outstanding blocks from ALL peers with in-flight work.
+   * Aggressive strategy: every idle peer requests ALL outstanding blocks.
+   * First peer to deliver wins, duplicates are ignored.
+   * This maximizes parallelism during DRAIN's final blocks. */
   hash256_t blocks_to_request[DOWNLOAD_BATCH_SIZE * DOWNLOAD_MAX_PEERS];
   size_t blocks_count = 0;
 
@@ -932,13 +1071,16 @@ size_t download_mgr_drain_accelerate(download_mgr_t *mgr, uint64_t stall_timeout
       continue; /* Already complete */
     }
 
-    /* Check if peer is stalled (no delivery in stall_timeout_ms) */
-    uint64_t since_last = now - perf->last_delivery_time;
-    if (since_last < stall_timeout_ms) {
-      continue; /* Still delivering, not stalled */
+    /* For stall_timeout_ms > 0, only collect from stalled peers.
+     * For stall_timeout_ms == 0, collect from ALL peers (super aggressive). */
+    if (stall_timeout_ms > 0) {
+      uint64_t since_last = now - perf->last_delivery_time;
+      if (since_last < stall_timeout_ms) {
+        continue; /* Still delivering, not stalled */
+      }
     }
 
-    /* Collect unreceived blocks from this stalled peer's batch */
+    /* Collect unreceived blocks from this peer's batch */
     work_batch_t *batch = perf->batch;
     for (size_t j = 0; j < batch->count && blocks_count < sizeof(blocks_to_request)/sizeof(blocks_to_request[0]); j++) {
       if (!batch->received[j]) {
@@ -948,30 +1090,144 @@ size_t download_mgr_drain_accelerate(download_mgr_t *mgr, uint64_t stall_timeout
   }
 
   if (blocks_count == 0) {
-    return 0; /* No stalled blocks to request */
+    return 0; /* No blocks to request */
   }
 
-  /* Limit blocks per getdata to avoid overwhelming peers.
-   * Bitcoin Core uses similar limits. 64 is conservative. */
-  #define ACCELERATE_MAX_PER_PEER 64
-  size_t per_peer = (blocks_count < ACCELERATE_MAX_PER_PEER)
-                    ? blocks_count : ACCELERATE_MAX_PER_PEER;
+  /* Distribute outstanding blocks across idle peers with 3x redundancy.
+   * Each block goes to 3 different peers (or fewer if we don't have 3 idle).
+   * Limit 64 blocks per getdata (Bitcoin Core's limit).
+   *
+   * With 5000 blocks, 100 peers, 3x redundancy: each peer gets ~150 blocks.
+   * This provides fast gap-filling without overwhelming any single peer. */
+  #define ACCELERATE_BLOCKS_PER_GETDATA 64
+  #define ACCELERATE_REDUNDANCY 3
 
-  /* Distribute stalled blocks across idle peers (round-robin).
-   * Each peer gets up to 64 blocks, not the entire set. */
-  size_t offset = 0;
-  for (size_t i = 0; i < idle_count && offset < blocks_count; i++) {
-    size_t count = (blocks_count - offset < per_peer)
-                   ? (blocks_count - offset) : per_peer;
-    mgr->callbacks.send_getdata(idle_peers[i], blocks_to_request + offset, count,
-                                mgr->callbacks.ctx);
-    offset += count;
+  /* Calculate how many blocks each peer should get for even distribution */
+  size_t total_requests_needed = blocks_count * ACCELERATE_REDUNDANCY;
+  size_t blocks_per_peer = (total_requests_needed + idle_count - 1) / idle_count;
+  if (blocks_per_peer > blocks_count) {
+    blocks_per_peer = blocks_count; /* Can't give more than we have */
+  }
+
+  /* Assign blocks to peers in round-robin with redundancy.
+   * Peer 0 gets blocks [0, blocks_per_peer)
+   * Peer 1 gets blocks [offset, offset + blocks_per_peer) where offset staggers
+   * This ensures each block is requested by ~3 peers. */
+  for (size_t i = 0; i < idle_count; i++) {
+    /* Stagger starting point so different peers start at different blocks */
+    size_t start_offset = (i * blocks_count / idle_count) % blocks_count;
+    size_t blocks_assigned = 0;
+    size_t pos = start_offset;
+
+    /* Send up to blocks_per_peer blocks to this peer, chunked by 64 */
+    while (blocks_assigned < blocks_per_peer && blocks_assigned < blocks_count) {
+      size_t chunk_size = blocks_per_peer - blocks_assigned;
+      if (chunk_size > ACCELERATE_BLOCKS_PER_GETDATA) {
+        chunk_size = ACCELERATE_BLOCKS_PER_GETDATA;
+      }
+      /* Handle wrap-around */
+      if (pos + chunk_size > blocks_count) {
+        chunk_size = blocks_count - pos;
+      }
+      if (chunk_size > 0) {
+        mgr->callbacks.send_getdata(idle_peers[i], blocks_to_request + pos, chunk_size,
+                                    mgr->callbacks.ctx);
+        blocks_assigned += chunk_size;
+        pos = (pos + chunk_size) % blocks_count;
+      }
+    }
     requests_sent++;
   }
 
   if (requests_sent > 0) {
     LOG_INFO("download_mgr: DRAIN accelerate - requested %zu blocks from %zu idle peers",
              blocks_count, requests_sent);
+  }
+
+  return requests_sent;
+}
+
+size_t download_mgr_fill_gaps_staggered(download_mgr_t *mgr,
+                                         const hash256_t *gap_hashes,
+                                         size_t gap_count,
+                                         size_t max_peers_to_use) {
+  if (mgr == NULL || gap_hashes == NULL || gap_count == 0 ||
+      mgr->callbacks.send_getdata == NULL) {
+    return 0;
+  }
+
+  /*
+   * Staggered gap-filling strategy:
+   *
+   * Instead of waiting for stall timeouts, immediately request all gaps
+   * from multiple peers with staggered ordering. Each peer starts at a
+   * different position in the gap list, reducing contention and maximizing
+   * the chance that gaps are filled quickly.
+   *
+   * Example with 100 gaps and 4 peers:
+   *   Peer 0: gaps 0, 1, 2, ... 99 (starts at 0)
+   *   Peer 1: gaps 25, 26, ... 99, 0, 1, ... 24 (starts at 25)
+   *   Peer 2: gaps 50, 51, ... 99, 0, 1, ... 49 (starts at 50)
+   *   Peer 3: gaps 75, 76, ... 99, 0, 1, ... 74 (starts at 75)
+   *
+   * Redundancy is bounded: each gap is requested from all participating peers,
+   * but we limit max_peers_to_use to control bandwidth (e.g., 4-8 peers).
+   * First response wins; duplicates are discarded by existing logic.
+   */
+
+  /* Collect available peers (all tracked peers) */
+  peer_t *peers[DOWNLOAD_MAX_PEERS];
+  size_t peer_count = 0;
+
+  for (size_t i = 0; i < mgr->peer_count && peer_count < max_peers_to_use; i++) {
+    if (mgr->peers[i].peer != NULL) {
+      peers[peer_count++] = mgr->peers[i].peer;
+    }
+  }
+
+  if (peer_count == 0) {
+    return 0;
+  }
+
+  /* Limit to actual available peers */
+  if (peer_count > max_peers_to_use) {
+    peer_count = max_peers_to_use;
+  }
+
+  /* For each peer, send staggered gap requests */
+  size_t requests_sent = 0;
+
+  /* Limit per-peer request size to avoid overwhelming */
+  #define STAGGER_MAX_PER_REQUEST 128
+  size_t per_peer_count = gap_count;
+  if (per_peer_count > STAGGER_MAX_PER_REQUEST) {
+    per_peer_count = STAGGER_MAX_PER_REQUEST;
+  }
+
+  /* Temporary buffer for rotated gap list */
+  hash256_t rotated[STAGGER_MAX_PER_REQUEST];
+
+  for (size_t p = 0; p < peer_count; p++) {
+    /* Calculate starting position for this peer (staggered) */
+    size_t start_pos = (p * gap_count) / peer_count;
+
+    /* Build rotated list starting at start_pos */
+    for (size_t i = 0; i < per_peer_count; i++) {
+      size_t src_idx = (start_pos + i) % gap_count;
+      rotated[i] = gap_hashes[src_idx];
+    }
+
+    /* Send getdata with rotated list */
+    mgr->callbacks.send_getdata(peers[p], rotated, per_peer_count,
+                                mgr->callbacks.ctx);
+    requests_sent++;
+  }
+
+  if (requests_sent > 0) {
+    LOG_INFO("download_mgr: staggered gap-fill - %zu gaps to %zu peers "
+             "(%.1fx redundancy)",
+             gap_count, requests_sent,
+             (float)(requests_sent * per_peer_count) / (float)gap_count);
   }
 
   return requests_sent;

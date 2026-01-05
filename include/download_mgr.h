@@ -358,6 +358,33 @@ void download_mgr_clear_pending(download_mgr_t *mgr);
 size_t download_mgr_drain_accelerate(download_mgr_t *mgr, uint64_t stall_timeout_ms);
 
 /**
+ * DRAIN mode: Fill gaps with staggered redundant requests.
+ *
+ * Immediately requests all gaps from multiple peers with staggered ordering.
+ * Each peer starts at a different position in the gap list, reducing contention
+ * and maximizing parallel gap-filling.
+ *
+ * Example with 100 gaps and 4 peers:
+ *   Peer 0: starts at gap 0  (requests 0, 1, 2, ...)
+ *   Peer 1: starts at gap 25 (requests 25, 26, ... wraps to 0, 1, ...)
+ *   Peer 2: starts at gap 50 (requests 50, 51, ... wraps around)
+ *   Peer 3: starts at gap 75 (requests 75, 76, ... wraps around)
+ *
+ * Redundancy is bounded by max_peers_to_use. First response for each gap wins;
+ * duplicates are discarded by existing block receipt logic.
+ *
+ * @param mgr             Download manager
+ * @param gap_hashes      Array of block hashes to fill
+ * @param gap_count       Number of gaps
+ * @param max_peers_to_use Maximum peers to involve (controls redundancy, e.g. 4-8)
+ * @return Number of peers that received requests
+ */
+size_t download_mgr_fill_gaps_staggered(download_mgr_t *mgr,
+                                         const hash256_t *gap_hashes,
+                                         size_t gap_count,
+                                         size_t max_peers_to_use);
+
+/**
  * Get inflight count (blocks assigned but not received).
  * Maps to assigned batches * remaining blocks.
  */

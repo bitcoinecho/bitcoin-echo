@@ -2633,6 +2633,13 @@ static echo_result_t rpc_getsyncstatus(node_t *node, const json_value_t *params,
   json_builder_append(builder, ",\"drain_remaining\":");
   json_builder_uint(builder, progress.drain_remaining);
 
+  /* VALIDATE phase progress (live from worker thread) */
+  json_builder_append(builder, ",\"validate_current_height\":");
+  json_builder_uint(builder, progress.validate_current_height);
+
+  json_builder_append(builder, ",\"validate_target_height\":");
+  json_builder_uint(builder, progress.validate_target_height);
+
   /* Sync percentage */
   json_builder_append(builder, ",\"sync_percentage\":");
   json_builder_number(builder, progress.sync_percentage);

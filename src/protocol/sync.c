@@ -20,6 +20,8 @@
 #include "peer.h"
 #include "platform.h"
 #include "protocol.h"
+#include <pthread.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -144,6 +146,14 @@ struct sync_manager {
   uint64_t phase_drain_start_time;      /* When current DRAIN phase started */
   uint64_t phase_validate_start_time;   /* When current VALIDATE phase started */
   uint32_t phase_validate_start_height; /* Validated height at VALIDATE start */
+
+  /* Threaded validation - runs on separate thread so RPC stays responsive */
+  pthread_t validate_thread;            /* Worker thread handle */
+  _Atomic bool validate_thread_running; /* True while worker is active */
+  _Atomic bool validate_thread_done;    /* True when worker finished successfully */
+  _Atomic bool validate_thread_error;   /* True if worker hit an error */
+  _Atomic uint32_t validate_thread_height; /* Current height being validated (for RPC) */
+  uint32_t validate_target_height;      /* Target height for this validation batch */
 };
 
 /* ============================================================================
@@ -206,6 +216,110 @@ static float calc_blocks_per_second(struct sync_manager *mgr) {
   }
 
   return (float)validated_this_session / ((float)elapsed_ms / 1000.0f);
+}
+
+/* ============================================================================
+ * Threaded Validation Worker
+ * ============================================================================
+ */
+
+/**
+ * Context passed to validation worker thread.
+ * Contains everything needed to run validation without touching the main thread's state.
+ */
+typedef struct {
+  /* Callbacks for loading and validating blocks */
+  echo_result_t (*load_block_at_height)(uint32_t height, block_t *block,
+                                        hash256_t *hash, void *ctx);
+  echo_result_t (*validate_and_apply_block)(const block_t *block, void *ctx);
+  void *callback_ctx;
+
+  /* Validation range */
+  uint32_t start_height;  /* First block to validate (validated_tip + 1) */
+  uint32_t end_height;    /* Last block to validate (consecutive_end) */
+  uint32_t tip_height;    /* Best header height (stop if exceeded) */
+
+  /* Atomic progress counters (shared with main thread) */
+  _Atomic uint32_t *current_height;  /* Updated as each block is validated */
+  _Atomic bool *thread_done;         /* Set true when validation completes */
+  _Atomic bool *thread_error;        /* Set true if validation fails */
+  _Atomic bool *thread_running;      /* Set false when thread exits */
+} validate_worker_ctx_t;
+
+/**
+ * Validation worker thread function.
+ * Runs at full speed without yielding - the main thread queries atomic
+ * counters for progress updates.
+ */
+static void *validate_worker_thread(void *arg) {
+  validate_worker_ctx_t *ctx = (validate_worker_ctx_t *)arg;
+
+  log_info(LOG_COMP_SYNC, "VALIDATE worker: starting height %u to %u",
+           ctx->start_height, ctx->end_height);
+
+  uint64_t start_time = plat_time_ms();
+  uint32_t blocks_validated = 0;
+
+  for (uint32_t h = ctx->start_height; h <= ctx->end_height; h++) {
+    /* Check if we've exceeded the tip */
+    if (h > ctx->tip_height) {
+      break;
+    }
+
+    /* Load block from storage */
+    block_t block;
+    memset(&block, 0, sizeof(block));
+
+    echo_result_t result =
+        ctx->load_block_at_height(h, &block, NULL, ctx->callback_ctx);
+
+    if (result != ECHO_OK) {
+      log_warn(LOG_COMP_SYNC, "VALIDATE worker: block at height %u not found",
+               h);
+      break;  /* Not an error - just no more blocks to validate */
+    }
+
+    /* Validate and apply */
+    result = ctx->validate_and_apply_block(&block, ctx->callback_ctx);
+    block_free(&block);
+
+    if (result != ECHO_OK) {
+      log_error(LOG_COMP_SYNC, "VALIDATE worker: validation failed at height %u",
+                h);
+      atomic_store(ctx->thread_error, true);
+      atomic_store(ctx->thread_running, false);
+      free(ctx);
+      return NULL;
+    }
+
+    blocks_validated++;
+
+    /* Update progress counter for RPC queries */
+    atomic_store(ctx->current_height, h);
+
+    /* Log progress every 10000 blocks */
+    if (blocks_validated % 10000 == 0) {
+      uint64_t now = plat_time_ms();
+      double rate = (now > start_time)
+                        ? (blocks_validated * 1000.0 / (double)(now - start_time))
+                        : 0;
+      log_info(LOG_COMP_SYNC,
+               "VALIDATE worker: %u blocks (height %u, %.1f blocks/sec)",
+               blocks_validated, h, rate);
+    }
+  }
+
+  /* Done - report final stats */
+  uint64_t elapsed = plat_time_ms() - start_time;
+  double rate = (elapsed > 0) ? (blocks_validated * 1000.0 / (double)elapsed) : 0;
+  log_info(LOG_COMP_SYNC,
+           "VALIDATE worker: complete - %u blocks in %llu ms (%.1f blocks/sec)",
+           blocks_validated, (unsigned long long)elapsed, rate);
+
+  atomic_store(ctx->thread_done, true);
+  atomic_store(ctx->thread_running, false);
+  free(ctx);
+  return NULL;
 }
 
 /* ============================================================================
@@ -502,6 +616,13 @@ sync_manager_t *sync_create(chainstate_t *chainstate,
   mgr->probe_peer_idx = SIZE_MAX;
   mgr->probe_sent_time = 0;
 
+  /* Initialize threaded validation state */
+  atomic_init(&mgr->validate_thread_running, false);
+  atomic_init(&mgr->validate_thread_done, false);
+  atomic_init(&mgr->validate_thread_error, false);
+  atomic_init(&mgr->validate_thread_height, 0);
+  mgr->validate_target_height = 0;
+
   /* Initialize best header to current tip_index (which should be the best
    * header after restoration, not the validated tip) */
   mgr->best_header = chainstate_get_tip_index(chainstate);
@@ -518,6 +639,12 @@ sync_manager_t *sync_create(chainstate_t *chainstate,
 void sync_destroy(sync_manager_t *mgr) {
   if (!mgr) {
     return;
+  }
+
+  /* Wait for validation thread to complete if running */
+  if (atomic_load(&mgr->validate_thread_running)) {
+    log_info(LOG_COMP_SYNC, "sync_destroy: waiting for validation thread...");
+    pthread_join(mgr->validate_thread, NULL);
   }
 
   download_mgr_destroy(mgr->download_mgr);
@@ -1051,6 +1178,13 @@ echo_result_t sync_handle_block(sync_manager_t *mgr, peer_t *peer,
   }
   ps->last_delivery_time = now;
 
+  /* CRITICAL: Only process blocks during DOWNLOAD or DRAIN modes.
+   * During VALIDATE/FLUSH/PRUNE, we don't want new blocks - they waste storage
+   * and confuse progress tracking. Just ignore them. */
+  if (mgr->mode != SYNC_MODE_DOWNLOAD && mgr->mode != SYNC_MODE_DRAIN) {
+    return ECHO_OK; /* Silently ignore blocks during other phases */
+  }
+
   /* Notify download manager of block receipt for performance tracking.
    * Calculate approximate block size: header + tx count varint + txs.
    * This doesn't need to be exact - it's for relative peer comparison.
@@ -1076,8 +1210,10 @@ echo_result_t sync_handle_block(sync_manager_t *mgr, peer_t *peer,
                                 block_index->height);
 
     /* Check if peer is now idle (batch complete) and have them request more
-     * work immediately. If no work available, they wait. */
-    if (download_mgr_peer_is_idle(mgr->download_mgr, peer)) {
+     * work immediately. ONLY during DOWNLOAD or DRAIN modes - during
+     * VALIDATE/FLUSH/PRUNE we don't want new downloads. */
+    if ((mgr->mode == SYNC_MODE_DOWNLOAD || mgr->mode == SYNC_MODE_DRAIN) &&
+        download_mgr_peer_is_idle(mgr->download_mgr, peer)) {
       download_mgr_peer_request_work(mgr->download_mgr, peer);
     }
   }
@@ -1223,13 +1359,14 @@ static void queue_blocks_from_headers(sync_manager_t *mgr) {
     return;
   }
 
-  /* Storage-based throttling: don't queue if we've hit the prune target.
-   * This triggers the DOWNLOAD→DRAIN transition for pruned nodes.
+  /* Storage-based throttling: stop queueing at 80% of prune target.
+   * This leaves 20% headroom for in-flight blocks during DRAIN phase.
+   * Triggers DOWNLOAD→DRAIN transition for pruned nodes.
    *
    * EXCEPTION: Allow gap-filling when in DRAIN mode. DRAIN's job is to fill
    * gaps so we can validate and prune. Without filling gaps, we're stuck:
    * can't validate (gap), can't prune (nothing new validated), can't download
-   * (storage full). Allow one batch to break the cycle.
+   * (storage full). Allow gap-fill to break the cycle.
    */
   bool allow_gap_fill = false;
   if (mgr->callbacks.get_storage_info) {
@@ -1237,20 +1374,21 @@ static void queue_blocks_from_headers(sync_manager_t *mgr) {
     uint64_t prune_target = 0;
     if (mgr->callbacks.get_storage_info(&storage_used, &prune_target,
                                          mgr->callbacks.ctx) == ECHO_OK) {
-      if (prune_target > 0 && storage_used >= prune_target) {
+      /* Stop at 80% to leave headroom for DRAIN in-flight blocks */
+      uint64_t throttle_threshold = (prune_target * 80) / 100;
+      if (prune_target > 0 && storage_used >= throttle_threshold) {
         /* Storage limit reached - check for gap-filling exception */
         if (mgr->mode == SYNC_MODE_DRAIN) {
           /* In DRAIN mode - allow gap-fill to complete the batch */
           log_info(LOG_COMP_SYNC,
-                   "queue_blocks: storage full but DRAIN mode, allowing gap-fill");
+                   "queue_blocks: storage at %llu%% but DRAIN mode, allowing gap-fill",
+                   (unsigned long long)((storage_used * 100) / prune_target));
           allow_gap_fill = true;
         } else {
-          /* DOWNLOAD mode and truly full - stop queueing */
+          /* DOWNLOAD mode and approaching limit - stop queueing */
           log_info(LOG_COMP_SYNC,
-                   "queue_blocks: storage limit reached (%llu >= %llu bytes), "
-                   "stopping queue",
-                   (unsigned long long)storage_used,
-                   (unsigned long long)prune_target);
+                   "queue_blocks: storage at %llu%% of target, stopping queue",
+                   (unsigned long long)((storage_used * 100) / prune_target));
           return;
         }
       }
@@ -1350,8 +1488,14 @@ static void queue_blocks_from_headers(sync_manager_t *mgr) {
  *
  * Returns: Number of gap blocks queued
  */
-static size_t queue_gap_fill_blocks(sync_manager_t *mgr, uint32_t start_height,
-                                    uint32_t end_height) {
+/**
+ * Collect gaps in a height range (blocks not stored and not in-flight).
+ * Returns the number of gaps found. If hashes_out and heights_out are provided,
+ * fills them with the gap hashes and heights.
+ */
+static size_t collect_gaps(sync_manager_t *mgr, uint32_t start_height,
+                           uint32_t end_height, hash256_t *hashes_out,
+                           uint32_t *heights_out, size_t max_gaps) {
   if (!mgr || !mgr->callbacks.block_exists_at_height ||
       !mgr->callbacks.get_block_hash_at_height) {
     return 0;
@@ -1361,31 +1505,20 @@ static size_t queue_gap_fill_blocks(sync_manager_t *mgr, uint32_t start_height,
     return 0;
   }
 
-  /* Use same batch size as queue_blocks_from_headers */
-  #define GAP_FILL_BATCH_SIZE ((size_t)DOWNLOAD_MAX_BATCHES * DOWNLOAD_BATCH_SIZE)
-  hash256_t to_queue[GAP_FILL_BATCH_SIZE];
-  uint32_t heights[GAP_FILL_BATCH_SIZE];
   size_t gap_count = 0;
+  size_t stored_count = 0;
+  size_t tracked_count = 0;
 
-  /* Check download manager capacity */
-  size_t dm_pending = download_mgr_pending_count(mgr->download_mgr);
-  size_t dm_inflight = download_mgr_inflight_count(mgr->download_mgr);
-  size_t available = GAP_FILL_BATCH_SIZE;
-  if (dm_pending + dm_inflight >= GAP_FILL_BATCH_SIZE) {
-    /* Download manager is full */
-    return 0;
-  }
-  available = GAP_FILL_BATCH_SIZE - dm_pending - dm_inflight;
-
-  /* Scan the entire range and collect ALL missing blocks */
-  for (uint32_t h = start_height; h <= end_height && gap_count < available; h++) {
+  for (uint32_t h = start_height; h <= end_height && gap_count < max_gaps; h++) {
     /* Skip blocks that are already stored */
     if (mgr->callbacks.block_exists_at_height(h, mgr->callbacks.ctx)) {
+      stored_count++;
       continue;
     }
 
     /* Skip blocks already in download manager (pending or inflight) */
     if (download_mgr_has_height(mgr->download_mgr, h)) {
+      tracked_count++;
       continue;
     }
 
@@ -1393,14 +1526,48 @@ static size_t queue_gap_fill_blocks(sync_manager_t *mgr, uint32_t start_height,
     hash256_t hash;
     if (mgr->callbacks.get_block_hash_at_height(h, &hash, mgr->callbacks.ctx) !=
         ECHO_OK) {
-      log_warn(LOG_COMP_SYNC, "gap_fill: hash lookup failed for height %u", h);
       continue;
     }
 
-    to_queue[gap_count] = hash;
-    heights[gap_count] = h;
+    if (hashes_out && heights_out) {
+      hashes_out[gap_count] = hash;
+      heights_out[gap_count] = h;
+    }
     gap_count++;
   }
+
+  /* Debug: log scan results */
+  if (gap_count > 0 || (end_height - start_height) > 10000) {
+    log_info(LOG_COMP_SYNC,
+             "collect_gaps [%u-%u]: stored=%zu tracked=%zu gaps=%zu",
+             start_height, end_height, stored_count, tracked_count, gap_count);
+  }
+
+  return gap_count;
+}
+
+/**
+ * Queue gap-fill blocks using the traditional work queue approach.
+ * Used as fallback for large gap counts where staggered redundancy is too expensive.
+ */
+static size_t queue_gap_fill_blocks(sync_manager_t *mgr, uint32_t start_height,
+                                    uint32_t end_height) {
+  /* Use same batch size as queue_blocks_from_headers */
+  #define GAP_FILL_BATCH_SIZE ((size_t)DOWNLOAD_MAX_BATCHES * DOWNLOAD_BATCH_SIZE)
+  hash256_t to_queue[GAP_FILL_BATCH_SIZE];
+  uint32_t heights[GAP_FILL_BATCH_SIZE];
+
+  /* Check download manager capacity */
+  size_t dm_pending = download_mgr_pending_count(mgr->download_mgr);
+  size_t dm_inflight = download_mgr_inflight_count(mgr->download_mgr);
+  size_t available = GAP_FILL_BATCH_SIZE;
+  if (dm_pending + dm_inflight >= GAP_FILL_BATCH_SIZE) {
+    return 0;
+  }
+  available = GAP_FILL_BATCH_SIZE - dm_pending - dm_inflight;
+
+  size_t gap_count = collect_gaps(mgr, start_height, end_height,
+                                  to_queue, heights, available);
 
   if (gap_count > 0) {
     log_info(LOG_COMP_SYNC,
@@ -1696,14 +1863,16 @@ void sync_tick(sync_manager_t *mgr) {
     uint32_t best_height = mgr->best_header ? mgr->best_header->height : 0;
     bool all_blocks_queued = (mgr->queued_tip >= best_height);
 
-    /* Check if storage limit reached (for pruned nodes) */
+    /* Check if storage limit reached (for pruned nodes).
+     * Use 80% threshold to leave headroom for DRAIN in-flight blocks. */
     bool storage_limit_reached = false;
     if (mgr->callbacks.get_storage_info) {
       uint64_t storage_used = 0;
       uint64_t prune_target = 0;
       if (mgr->callbacks.get_storage_info(&storage_used, &prune_target,
                                            mgr->callbacks.ctx) == ECHO_OK) {
-        if (prune_target > 0 && storage_used >= prune_target) {
+        uint64_t throttle_threshold = (prune_target * 80) / 100;
+        if (prune_target > 0 && storage_used >= throttle_threshold) {
           storage_limit_reached = true;
         }
       }
@@ -1769,14 +1938,11 @@ void sync_tick(sync_manager_t *mgr) {
      *   5. Transition to VALIDATE when all blocks are consecutive
      */
     {
-      /* Grace period: wait for in-flight blocks to land before scanning gaps.
-       * When entering DRAIN, there are typically 2000-3000 blocks in flight.
-       * If we immediately scan for gaps, we'd find "gaps" that are just
-       * blocks mid-transit. Wait 3s to let those arrive naturally. */
-      #define DRAIN_GRACE_PERIOD_MS 3000
+      /* No grace period - immediately start aggressive gap-filling.
+       * The download manager already tracks which heights are in-flight,
+       * so collect_gaps won't re-request them. */
       uint64_t now = plat_time_ms();
-      uint64_t drain_elapsed = now - mgr->phase_drain_start_time;
-      bool in_grace_period = (drain_elapsed < DRAIN_GRACE_PERIOD_MS);
+      (void)now; /* Suppress unused warning */
 
       size_t inflight = download_mgr_inflight_count(mgr->download_mgr);
       size_t pending = download_mgr_pending_count(mgr->download_mgr);
@@ -1806,31 +1972,23 @@ void sync_tick(sync_manager_t *mgr) {
         mgr->mode = SYNC_MODE_VALIDATE;
         mgr->phase_validate_start_time = plat_time_ms();
         mgr->phase_validate_start_height = validated_tip;
-      } else if (in_grace_period) {
-        /* Still in grace period - just accelerate in-flight, don't scan gaps yet */
-        if (inflight > 0) {
-          download_mgr_drain_accelerate(mgr->download_mgr, 3000);
-        }
       } else {
-        /*
-         * Grace period over - aggressive parallel gap-filling.
+        /* Aggressive gap-filling - no grace period, immediate action.
          *
-         * 1. Queue ALL missing blocks in the range (not just one batch)
-         * 2. Have ALL idle peers grab work immediately
-         * 3. Make redundant requests for slow in-flight blocks
-         */
+         * 1. Queue any gaps as batches (download_mgr tracks what's in-flight)
+         * 2. Have idle peers pull work from queue
+         * 3. Accelerate in-flight blocks with 3x redundancy across peers */
 
-        /* Parallel gap-fill: scan entire range and queue all missing blocks */
-        size_t gaps_queued = queue_gap_fill_blocks(
+        /* Step 1: Queue all gaps as batches */
+        size_t queued_count = queue_gap_fill_blocks(
             mgr, validated_tip + 1, mgr->drain_target_height);
 
-        if (gaps_queued > 0) {
-          log_info(LOG_COMP_SYNC,
-                   "DRAIN: queued %zu gap blocks for parallel download",
-                   gaps_queued);
+        if (queued_count > 0) {
+          log_debug(LOG_COMP_SYNC,
+                    "DRAIN gap-fill: queued %zu blocks", queued_count);
         }
 
-        /* Enlist ALL idle peers to grab work immediately */
+        /* Step 2: Enlist idle peers to grab queued work */
         for (size_t i = 0; i < mgr->peer_count; i++) {
           peer_sync_state_t *ps = &mgr->peers[i];
           if (!ps->sync_candidate || !peer_is_ready(ps->peer)) {
@@ -1841,11 +1999,12 @@ void sync_tick(sync_manager_t *mgr) {
           }
         }
 
-        /* Accelerate: make redundant requests for stalled in-flight blocks.
-         * 1500ms stall timeout - if a peer hasn't delivered in 1.5s,
-         * have idle peers help with those specific blocks. */
+        /* Step 3: Aggressively accelerate ALL in-flight blocks.
+         * Use timeout=0 to have ALL idle peers request ALL outstanding blocks.
+         * First to deliver wins, duplicates ignored. With 100 peers there's
+         * no excuse for any delay - blast requests to everyone. */
         if (inflight > 0) {
-          download_mgr_drain_accelerate(mgr->download_mgr, 1500);
+          download_mgr_drain_accelerate(mgr->download_mgr, 0);
         }
       }
     }
@@ -1855,15 +2014,60 @@ void sync_tick(sync_manager_t *mgr) {
     /*
      * VALIDATE: Validate consecutive blocks from validated_tip.
      *
-     * Find consecutive range: validated_tip+1 to first gap (or highest stored).
-     * Validate sequentially (maintains UTXO ordering).
-     * UTXO changes are tracked by the consensus engine for subsequent flush.
+     * Runs validation on a separate worker thread so the main event loop
+     * (and RPC) stays responsive. The worker updates atomic counters that
+     * RPC can query for progress.
      *
-     * Transition to FLUSH when:
-     *   - All consecutive blocks validated
-     *   - Periodic flush interval reached (archival nodes, for memory bounds)
+     * State machine:
+     *   - Thread not running: spawn worker thread
+     *   - Thread running: just return (let event loop continue)
+     *   - Thread done: update stats and transition to FLUSH
+     *   - Thread error: transition to DONE (error state)
      */
     {
+      /* Check if worker thread is already running */
+      if (atomic_load(&mgr->validate_thread_running)) {
+        /* Thread is still working - let event loop continue for RPC */
+        mgr->last_progress_time = plat_time_ms();
+        break;
+      }
+
+      /* Check if worker finished with error */
+      if (atomic_load(&mgr->validate_thread_error)) {
+        log_error(LOG_COMP_SYNC, "VALIDATE worker failed - stopping sync");
+        atomic_store(&mgr->validate_thread_error, false);
+        mgr->mode = SYNC_MODE_DONE;
+        break;
+      }
+
+      /* Check if worker finished successfully */
+      if (atomic_load(&mgr->validate_thread_done)) {
+        /* Update stats from atomic counter */
+        uint32_t final_height = atomic_load(&mgr->validate_thread_height);
+        if (final_height > 0 && mgr->batch_validate_start > 0) {
+          mgr->blocks_validated_this_batch =
+              final_height - mgr->batch_validate_start + 1;
+          mgr->blocks_validated_total += mgr->blocks_validated_this_batch;
+        }
+
+        log_info(LOG_COMP_SYNC,
+                 "VALIDATE complete: validated to height %u, transitioning to FLUSH",
+                 final_height);
+
+        /* Reset thread state for next batch */
+        atomic_store(&mgr->validate_thread_done, false);
+        atomic_store(&mgr->validate_thread_height, 0);
+
+        /* Join the thread to clean up resources */
+        pthread_join(mgr->validate_thread, NULL);
+
+        mgr->last_progress_time = plat_time_ms();
+        mgr->mode = SYNC_MODE_FLUSH;
+        break;
+      }
+
+      /* No thread running - need to spawn one */
+
       /* Get current validated height */
       uint32_t validated_tip = 0;
       if (mgr->callbacks.get_validated_height) {
@@ -1885,17 +2089,7 @@ void sync_tick(sync_manager_t *mgr) {
         break;
       }
 
-      /* Initialize batch tracking on first entry */
-      if (mgr->batch_validate_start == 0) {
-        mgr->batch_validate_start = validated_tip + 1;
-        mgr->blocks_validated_this_batch = 0;
-      }
-
-      /*
-       * Validate ALL consecutive blocks in a tight loop.
-       * Early blocks validate in 0-3ms each. No time budget - just validate
-       * everything as fast as possible, then move to FLUSH.
-       */
+      /* Check callbacks are set */
       if (!mgr->callbacks.load_block_at_height ||
           !mgr->callbacks.validate_and_apply_block) {
         log_warn(LOG_COMP_SYNC, "VALIDATE callbacks not set, skipping to FLUSH");
@@ -1903,83 +2097,57 @@ void sync_tick(sync_manager_t *mgr) {
         break;
       }
 
-      /* Check for periodic flush (archival nodes with limited RAM) */
-      uint64_t prune_target = 0;
-      if (mgr->callbacks.get_storage_info) {
-        uint64_t storage_used = 0;
-        mgr->callbacks.get_storage_info(&storage_used, &prune_target,
-                                        mgr->callbacks.ctx);
-      }
-      bool is_archival = (prune_target == 0);
+      /* Initialize batch tracking */
+      mgr->batch_validate_start = validated_tip + 1;
+      mgr->blocks_validated_this_batch = 0;
+      mgr->validate_target_height = consecutive_end;
 
-      uint64_t validate_start = plat_time_ms();
-      uint32_t blocks_validated = 0;
-
-      for (uint32_t h = validated_tip + 1; h <= consecutive_end; h++) {
-        /* Check archival flush interval */
-        if (is_archival && SYNC_ARCHIVAL_FLUSH_INTERVAL > 0 &&
-            mgr->blocks_validated_this_batch >= SYNC_ARCHIVAL_FLUSH_INTERVAL) {
-          log_info(LOG_COMP_SYNC,
-                   "VALIDATE: archival flush interval reached (%u blocks)",
-                   mgr->blocks_validated_this_batch);
-          break;
-        }
-
-        /* Check if we've reached the tip */
-        if (mgr->best_header && h > mgr->best_header->height) {
-          break;
-        }
-
-        /* Load block from storage */
-        block_t block;
-        memset(&block, 0, sizeof(block));
-
-        echo_result_t result = mgr->callbacks.load_block_at_height(
-            h, &block, NULL, mgr->callbacks.ctx);
-
-        if (result != ECHO_OK) {
-          log_warn(LOG_COMP_SYNC, "Block at height %u not found, going to FLUSH",
-                   h);
-          break;
-        }
-
-        /* Validate and apply */
-        result =
-            mgr->callbacks.validate_and_apply_block(&block, mgr->callbacks.ctx);
-        block_free(&block);
-
-        if (result != ECHO_OK) {
-          log_error(LOG_COMP_SYNC, "Block validation failed at height %u", h);
-          mgr->mode = SYNC_MODE_DONE; /* TODO: proper error handling */
-          break;
-        }
-
-        blocks_validated++;
-        mgr->blocks_validated_this_batch++;
-        mgr->blocks_validated_total++;
-
-        /* Log progress every 1000 blocks */
-        if (mgr->blocks_validated_this_batch % 1000 == 0) {
-          uint64_t elapsed = plat_time_ms() - validate_start;
-          double rate =
-              (elapsed > 0) ? (blocks_validated * 1000.0 / (double)elapsed) : 0;
-          log_info(LOG_COMP_SYNC,
-                   "VALIDATE: %u blocks (height %u, %.1f blocks/sec)",
-                   mgr->blocks_validated_this_batch, h, rate);
-        }
+      /* Record phase start for rate calculations */
+      if (mgr->phase_validate_start_time == 0) {
+        mgr->phase_validate_start_time = plat_time_ms();
+        mgr->phase_validate_start_height = validated_tip;
       }
 
-      /* Done validating this batch */
-      uint64_t elapsed = plat_time_ms() - validate_start;
-      double rate =
-          (elapsed > 0) ? (blocks_validated * 1000.0 / (double)elapsed) : 0;
+      /* Create worker context */
+      validate_worker_ctx_t *ctx = malloc(sizeof(validate_worker_ctx_t));
+      if (!ctx) {
+        log_error(LOG_COMP_SYNC, "Failed to allocate validation worker context");
+        mgr->mode = SYNC_MODE_FLUSH;
+        break;
+      }
+
+      ctx->load_block_at_height = mgr->callbacks.load_block_at_height;
+      ctx->validate_and_apply_block = mgr->callbacks.validate_and_apply_block;
+      ctx->callback_ctx = mgr->callbacks.ctx;
+      ctx->start_height = validated_tip + 1;
+      ctx->end_height = consecutive_end;
+      ctx->tip_height = mgr->best_header ? mgr->best_header->height : UINT32_MAX;
+      ctx->current_height = &mgr->validate_thread_height;
+      ctx->thread_done = &mgr->validate_thread_done;
+      ctx->thread_error = &mgr->validate_thread_error;
+      ctx->thread_running = &mgr->validate_thread_running;
+
+      /* Reset atomic state */
+      atomic_store(&mgr->validate_thread_running, true);
+      atomic_store(&mgr->validate_thread_done, false);
+      atomic_store(&mgr->validate_thread_error, false);
+      atomic_store(&mgr->validate_thread_height, validated_tip);
+
+      /* Spawn worker thread */
+      int ret = pthread_create(&mgr->validate_thread, NULL,
+                               validate_worker_thread, ctx);
+      if (ret != 0) {
+        log_error(LOG_COMP_SYNC, "Failed to create validation worker thread: %d",
+                  ret);
+        atomic_store(&mgr->validate_thread_running, false);
+        free(ctx);
+        mgr->mode = SYNC_MODE_FLUSH;
+        break;
+      }
+
       log_info(LOG_COMP_SYNC,
-               "VALIDATE complete: %u blocks in %llu ms (%.1f blocks/sec), "
-               "transitioning to FLUSH",
-               blocks_validated, (unsigned long long)elapsed, rate);
-
-      mgr->last_progress_time = plat_time_ms();
-      mgr->mode = SYNC_MODE_FLUSH;
+               "VALIDATE: spawned worker thread for height %u to %u",
+               validated_tip + 1, consecutive_end);
     }
     break;
 
@@ -2059,8 +2227,13 @@ void sync_tick(sync_manager_t *mgr) {
      * File-per-block makes this trivial: just unlink().
      * No database updates needed for block positions.
      *
+     * IMPORTANT: Stay in PRUNE mode until storage is at/below target.
+     * Only then transition to DOWNLOAD. This prevents storage from
+     * growing unbounded when downloads outpace pruning.
+     *
      * Transitions:
-     *   - More blocks to sync: PRUNE -> DOWNLOAD
+     *   - Storage still above target: stay in PRUNE
+     *   - Storage at/below target + more blocks: PRUNE -> DOWNLOAD
      *   - Fully synced: PRUNE -> DONE
      */
     {
@@ -2077,14 +2250,23 @@ void sync_tick(sync_manager_t *mgr) {
       }
 
       /* Prune block files */
+      uint32_t pruned = 0;
       if (prune_up_to > 0 && mgr->callbacks.prune_block_files) {
-        uint32_t pruned = mgr->callbacks.prune_block_files(prune_up_to,
-                                                           mgr->callbacks.ctx);
+        pruned = mgr->callbacks.prune_block_files(prune_up_to,
+                                                  mgr->callbacks.ctx);
         if (pruned > 0) {
           log_info(LOG_COMP_SYNC,
                    "PRUNE complete: deleted %u blocks up to height %u",
                    pruned, prune_up_to);
         }
+      }
+
+      /* Check if storage is still above prune target */
+      uint64_t storage_used = 0;
+      uint64_t prune_target = 0;
+      if (mgr->callbacks.get_storage_info) {
+        mgr->callbacks.get_storage_info(&storage_used, &prune_target,
+                                        mgr->callbacks.ctx);
       }
 
       /* Determine next state */
@@ -2094,8 +2276,24 @@ void sync_tick(sync_manager_t *mgr) {
       if (is_synced) {
         log_info(LOG_COMP_SYNC, "IBD complete at height %u", validated_tip);
         mgr->mode = SYNC_MODE_DONE;
+      } else if (prune_target > 0 && storage_used > prune_target && pruned > 0) {
+        /* Storage still above target AND we made progress pruning.
+         * Stay in PRUNE mode and continue pruning on next tick. */
+        log_debug(LOG_COMP_SYNC,
+                  "PRUNE: storage %lluMB > target %lluMB, continuing prune",
+                  (unsigned long long)(storage_used / (UINT64_C(1024) * 1024)),
+                  (unsigned long long)(prune_target / (UINT64_C(1024) * 1024)));
       } else {
-        /* More blocks to download */
+        /* Either storage is at/below target, OR we can't prune more
+         * (pruned == 0 means we need more validation to advance prune_up_to).
+         * Resume downloading to make progress. */
+        if (prune_target > 0 && storage_used > prune_target) {
+          log_debug(LOG_COMP_SYNC,
+                    "PRUNE: storage %lluMB > target %lluMB but can't prune more, "
+                    "resuming download to advance validation",
+                    (unsigned long long)(storage_used / (UINT64_C(1024) * 1024)),
+                    (unsigned long long)(prune_target / (UINT64_C(1024) * 1024)));
+        }
         mgr->mode = SYNC_MODE_DOWNLOAD;
         /* Reset per-phase timing for GUI rate display */
         mgr->phase_download_start_time = plat_time_ms();
@@ -2165,26 +2363,35 @@ void sync_get_progress(const sync_manager_t *mgr, sync_progress_t *progress) {
   /* DRAIN phase progress for GUI visualization */
   if (mgr->mode == SYNC_MODE_DRAIN) {
     progress->drain_target = mgr->drain_target_height;
-    /* Calculate remaining: inflight + pending + disk gaps */
-    uint32_t validated_tip = progress->tip_height;
-    if (mgr->callbacks.get_validated_height) {
-      validated_tip = mgr->callbacks.get_validated_height(mgr->callbacks.ctx);
-    }
-    /* Total blocks needed = drain_target - validated_tip */
-    uint32_t total_needed = 0;
-    if (mgr->drain_target_height > validated_tip) {
-      total_needed = mgr->drain_target_height - validated_tip;
-    }
-    /* Remaining = inflight + pending (gaps are included in these counts) */
-    progress->drain_remaining =
+    /* Remaining = inflight + pending, but cap to max possible gaps.
+     * Inflight might include blocks above drain_target from batches
+     * assigned before DRAIN transition. */
+    uint32_t raw_remaining =
         (uint32_t)(progress->blocks_in_flight + progress->blocks_pending);
-    /* If remaining is 0 but we're still in DRAIN, count disk gaps */
-    if (progress->drain_remaining == 0 && total_needed > 0) {
-      progress->drain_remaining = total_needed;
-    }
+    uint32_t max_possible_gaps = (mgr->drain_target_height > progress->tip_height)
+        ? (mgr->drain_target_height - progress->tip_height)
+        : 0;
+    progress->drain_remaining = (raw_remaining < max_possible_gaps)
+        ? raw_remaining : max_possible_gaps;
   } else {
     progress->drain_target = 0;
     progress->drain_remaining = 0;
+  }
+
+  /* VALIDATE phase progress from worker thread (live atomic counter) */
+  if (mgr->mode == SYNC_MODE_VALIDATE &&
+      atomic_load(&mgr->validate_thread_running)) {
+    /* Read live progress from worker thread */
+    progress->validate_current_height =
+        atomic_load(&mgr->validate_thread_height);
+    progress->validate_target_height = mgr->validate_target_height;
+  } else if (mgr->mode == SYNC_MODE_VALIDATE) {
+    /* Thread not yet started or just finished */
+    progress->validate_current_height = progress->tip_height;
+    progress->validate_target_height = mgr->validate_target_height;
+  } else {
+    progress->validate_current_height = 0;
+    progress->validate_target_height = 0;
   }
 }
 
