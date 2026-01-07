@@ -49,8 +49,9 @@ struct download_mgr {
   size_t queue_count;       /* Number of batches in queue */
 
   /* Height tracking */
-  uint32_t lowest_pending_height;  /* Lowest height in queue/assigned */
-  uint32_t highest_queued_height;  /* Highest height added */
+  uint32_t lowest_pending_height;   /* Lowest height in queue/assigned */
+  uint32_t highest_queued_height;   /* Highest height added */
+  uint32_t highest_received_height; /* Highest block received (download frontier) */
 
   /* Peer performance tracking */
   peer_perf_t peers[DOWNLOAD_MAX_PEERS];
@@ -541,6 +542,13 @@ bool download_mgr_block_received(download_mgr_t *mgr, peer_t *peer,
       if (perf->batch->remaining > 0) {
         perf->batch->remaining--;
       }
+
+      /* Track download frontier for gap detection */
+      uint32_t block_height = perf->batch->heights[i];
+      if (block_height > mgr->highest_received_height) {
+        mgr->highest_received_height = block_height;
+      }
+
       LOG_DEBUG("download_mgr: block received at index %zu, batch remaining=%zu",
                 i, perf->batch->remaining);
       return true;
@@ -749,85 +757,167 @@ bool download_mgr_check_stall(download_mgr_t *mgr, uint32_t validated_height) {
            (unsigned long long)since_last_delivery,
            blocker_is_active ? "ACTIVE (racing)" : "STALLED (stealing)");
 
-  if (blocker_is_active) {
-    /* Blocker is actively delivering - use block race strategy.
-     * Create a STICKY batch with ALL remaining blocks. Sticky means every idle
-     * peer will get a clone of this batch until the blocking block is delivered.
-     * This maximizes parallelism on the critical path. */
+  /* Check if we already have a sticky batch for this height */
+  if (mgr->queue_head != NULL && mgr->queue_head->batch.sticky &&
+      mgr->queue_head->batch.sticky_height == next_height) {
+    LOG_DEBUG("download_mgr: sticky batch for height %u already exists",
+              next_height);
+    mgr->last_progress_time = now;
+    return false;
+  }
 
-    /* Check if we already have a sticky batch for this height */
-    if (mgr->queue_head != NULL && mgr->queue_head->batch.sticky &&
-        mgr->queue_head->batch.sticky_height == next_height) {
-      LOG_DEBUG("download_mgr: sticky batch for height %u already exists",
-                next_height);
-      /* Reset stall timer but don't create duplicate */
-      mgr->last_progress_time = now;
-      return false;
+  /* Build a sticky batch with:
+   *   1. The blocking block (next_height) - MUST be first
+   *   2. Remaining blocks from blocker's batch
+   *   3. Additional gap blocks from lagging peers
+   *
+   * Sticky batches are 2x normal size to maximize gap-filling opportunity.
+   * Gap blocks are unreceived blocks that are:
+   *   - Ahead of validated_height (validation will need them)
+   *   - Significantly behind highest_received_height (other peers raced past)
+   *
+   * This proactively races blocks that would cause future stalls. */
+
+#define STICKY_BATCH_SIZE DOWNLOAD_BATCH_SIZE_MAX  /* Same as normal batch */
+
+  typedef struct {
+    hash256_t hash;
+    uint32_t height;
+  } gap_block_t;
+
+  gap_block_t candidates[(size_t)STICKY_BATCH_SIZE * 2]; /* Extra space for sorting */
+  size_t candidate_count = 0;
+
+  /* Always add the blocking block first */
+  memcpy(&candidates[0].hash, &blocker_node->batch.hashes[block_idx], sizeof(hash256_t));
+  candidates[0].height = next_height;
+  candidate_count = 1;
+
+  /* Add remaining blocks from blocker's batch */
+  for (size_t i = block_idx + 1; i < blocker_node->batch.count && candidate_count < (size_t)STICKY_BATCH_SIZE * 2; i++) {
+    if (!blocker_node->batch.received[i]) {
+      memcpy(&candidates[candidate_count].hash, &blocker_node->batch.hashes[i], sizeof(hash256_t));
+      candidates[candidate_count].height = blocker_node->batch.heights[i];
+      candidate_count++;
     }
+  }
 
-    size_t remaining_count = blocker_node->batch.count - block_idx;
-    batch_node_t *race_batch = batch_node_create();
-    if (race_batch != NULL) {
-      for (size_t i = 0; i < remaining_count; i++) {
-        size_t src_idx = block_idx + i;
-        memcpy(&race_batch->batch.hashes[i], &blocker_node->batch.hashes[src_idx],
-               sizeof(hash256_t));
-        race_batch->batch.heights[i] = blocker_node->batch.heights[src_idx];
-        race_batch->batch.received[i] = false;
+  /* Scan other peers for gap blocks (behind frontier, ahead of validation).
+   * Gap threshold: blocks significantly behind highest_received_height. */
+#define GAP_THRESHOLD_BLOCKS 64
+
+  if (mgr->highest_received_height > GAP_THRESHOLD_BLOCKS) {
+    uint32_t gap_ceiling = mgr->highest_received_height - GAP_THRESHOLD_BLOCKS;
+
+    for (size_t p = 0; p < mgr->peer_count && candidate_count < (size_t)STICKY_BATCH_SIZE * 2; p++) {
+      peer_perf_t *perf = &mgr->peers[p];
+      if (perf->peer == NULL || perf->batch == NULL || perf->batch->remaining == 0) {
+        continue;
       }
-      race_batch->batch.count = remaining_count;
-      race_batch->batch.remaining = remaining_count;
-      race_batch->batch.assigned_time = 0;
-      race_batch->batch.sticky = true;
-      race_batch->batch.sticky_height = next_height;
-
-      queue_push_front(mgr, race_batch);
-      LOG_INFO("download_mgr: queued STICKY race batch [%u-%u] (%zu blocks) - "
-               "every idle peer will race for block %u",
-               next_height, blocker_end, remaining_count, next_height);
-    }
-    /* Don't steal - let them race */
-  } else {
-    /* Blocker hasn't delivered recently, but we still don't steal.
-     * Create a sticky batch for racing - the blocker keeps their work
-     * and might still deliver. If they're truly stalled (0 B/s for 20+
-     * seconds), check_performance() will disconnect them and their
-     * batch returns to the queue automatically.
-     *
-     * Cooperative model: Add redundancy, never punish.
-     */
-
-    /* Check if we already have a sticky batch for this height */
-    if (mgr->queue_head != NULL && mgr->queue_head->batch.sticky &&
-        mgr->queue_head->batch.sticky_height == next_height) {
-      LOG_DEBUG("download_mgr: sticky batch for height %u already exists",
-                next_height);
-      mgr->last_progress_time = now;
-      return false;
-    }
-
-    size_t remaining_count = blocker_node->batch.count - block_idx;
-    batch_node_t *race_batch = batch_node_create();
-    if (race_batch != NULL) {
-      for (size_t i = 0; i < remaining_count; i++) {
-        size_t src_idx = block_idx + i;
-        memcpy(&race_batch->batch.hashes[i], &blocker_node->batch.hashes[src_idx],
-               sizeof(hash256_t));
-        race_batch->batch.heights[i] = blocker_node->batch.heights[src_idx];
-        race_batch->batch.received[i] = false;
+      /* Skip the blocker (already added) */
+      if (perf->batch == blocker->batch) {
+        continue;
       }
-      race_batch->batch.count = remaining_count;
-      race_batch->batch.remaining = remaining_count;
-      race_batch->batch.assigned_time = 0;
-      race_batch->batch.sticky = true;
-      race_batch->batch.sticky_height = next_height;
+      /* Skip sticky batches (already racing) */
+      if (perf->batch->sticky) {
+        continue;
+      }
 
-      queue_push_front(mgr, race_batch);
-      mgr->stall_backoff_count++; /* Track for adaptive timeout */
-      LOG_INFO("download_mgr: queued STICKY race batch [%u-%u] (%zu blocks) - "
-               "blocker inactive but keeps their work",
-               next_height, blocker_end, remaining_count);
+      uint32_t batch_lowest = perf->batch->heights[0];
+
+      /* Skip if batch is validated or being validated */
+      if (batch_lowest <= validated_height) {
+        continue;
+      }
+      /* Skip if batch is close to frontier (not a gap) */
+      if (batch_lowest >= gap_ceiling) {
+        continue;
+      }
+
+      /* Collect unreceived blocks from this lagging batch */
+      for (size_t j = 0; j < perf->batch->count && candidate_count < (size_t)STICKY_BATCH_SIZE * 2; j++) {
+        if (!perf->batch->received[j]) {
+          uint32_t h = perf->batch->heights[j];
+          /* Only include if ahead of validation and behind frontier */
+          if (h > validated_height && h < gap_ceiling) {
+            memcpy(&candidates[candidate_count].hash, &perf->batch->hashes[j], sizeof(hash256_t));
+            candidates[candidate_count].height = h;
+            candidate_count++;
+          }
+        }
+      }
     }
+  }
+
+  /* Sort by height (lowest first, but blocking block stays first) */
+  for (size_t i = 1; i < candidate_count - 1; i++) {
+    for (size_t j = i + 1; j < candidate_count; j++) {
+      if (candidates[j].height < candidates[i].height) {
+        gap_block_t tmp = candidates[i];
+        candidates[i] = candidates[j];
+        candidates[j] = tmp;
+      }
+    }
+  }
+
+  /* Remove duplicates (same height) */
+  size_t unique_count = 1; /* Keep first (blocking block) */
+  for (size_t i = 1; i < candidate_count; i++) {
+    bool is_dup = false;
+    for (size_t j = 0; j < unique_count; j++) {
+      if (candidates[j].height == candidates[i].height) {
+        is_dup = true;
+        break;
+      }
+    }
+    if (!is_dup) {
+      if (unique_count != i) {
+        candidates[unique_count] = candidates[i];
+      }
+      unique_count++;
+    }
+  }
+
+  /* Take up to STICKY_BATCH_SIZE blocks (2x normal) */
+  size_t fill_count = unique_count;
+  if (fill_count > (size_t)STICKY_BATCH_SIZE) {
+    fill_count = (size_t)STICKY_BATCH_SIZE;
+  }
+
+  /* Create the sticky batch */
+  batch_node_t *race_batch = batch_node_create();
+  if (race_batch != NULL) {
+    for (size_t i = 0; i < fill_count; i++) {
+      memcpy(&race_batch->batch.hashes[i], &candidates[i].hash, sizeof(hash256_t));
+      race_batch->batch.heights[i] = candidates[i].height;
+      race_batch->batch.received[i] = false;
+    }
+    race_batch->batch.count = fill_count;
+    race_batch->batch.remaining = fill_count;
+    race_batch->batch.assigned_time = 0;
+    race_batch->batch.sticky = true;
+    race_batch->batch.sticky_height = next_height;
+
+    queue_push_front(mgr, race_batch);
+
+    if (!blocker_is_active) {
+      mgr->stall_backoff_count++;
+    }
+
+    /* Count how many are gap blocks vs blocker blocks */
+    size_t gap_count = 0;
+    for (size_t i = 0; i < fill_count; i++) {
+      if (race_batch->batch.heights[i] > blocker_end) {
+        gap_count++;
+      }
+    }
+
+    LOG_INFO("download_mgr: queued STICKY batch [%u...%u] (%zu blocks, %zu gap fills) - "
+             "blocker %s, frontier at %u",
+             candidates[0].height, candidates[fill_count - 1].height,
+             fill_count, gap_count,
+             blocker_is_active ? "active" : "inactive",
+             mgr->highest_received_height);
   }
 
   /* Reset stall timer so we don't immediately trigger again */
