@@ -562,8 +562,14 @@ void discovery_mark_address_free(peer_addr_manager_t *manager,
     } else {
       /* Mark as unreachable on failure - this removes the +500000 reachable
        * bonus and applies the heavy -50000/attempt penalty, preventing
-       * immediate reconnection to misbehaving peers */
+       * immediate reconnection to misbehaving peers.
+       *
+       * Also update last_try and increment attempts to enforce a fresh
+       * cooldown period. Without this, a peer connected for 2+ minutes
+       * would pass the cooldown check immediately after disconnect. */
       entry->reachable = ECHO_FALSE;
+      entry->last_try = plat_time_ms();
+      entry->attempts++;
     }
   }
 }

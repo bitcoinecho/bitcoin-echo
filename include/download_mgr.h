@@ -45,13 +45,20 @@
  */
 #define DOWNLOAD_PERF_WINDOW_MS 10000
 
+/* Minimum download rate to avoid eviction (3 KB/s).
+ * Peers below this threshold after the grace period are disconnected.
+ * NOTE: Early blocks are tiny (< 1KB), so threshold is conservative.
+ */
+#define DOWNLOAD_MIN_RATE_BYTES_PER_SEC 3072
+
+/* Grace period before enforcing minimum rate (10 seconds).
+ * New peers get this much time to start delivering before being judged.
+ */
+#define DOWNLOAD_SLOW_GRACE_PERIOD_MS 10000
+
 /* Minimum peers to keep in the sync pool.
- * We won't disconnect stalled peers if it would drop us below this count.
+ * We won't disconnect stalled/slow peers if it would drop us below this count.
  * This ensures we always have some peers to work with during recovery.
- *
- * Note: Speed-based peer eviction (DOWNLOAD_ALLOWED_DEVIATION, etc.) was
- * removed on 2025-12-31. See download_mgr.c for rationale. We now only
- * disconnect truly stalled peers (0 B/s), not "slow" peers.
  */
 #define DOWNLOAD_MIN_PEERS_TO_KEEP 3
 

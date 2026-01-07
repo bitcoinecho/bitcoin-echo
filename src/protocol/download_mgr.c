@@ -953,33 +953,63 @@ size_t download_mgr_check_performance(download_mgr_t *mgr) {
     dropped++;
   }
 
-  /* Speed-based eviction removed (2025-12-31).
+  /* Phase 4: Disconnect slow peers (below absolute minimum rate).
    *
-   * Previously we calculated mean/stddev and kicked peers below a deviation
-   * threshold. This was counterproductive because:
+   * Unlike the old stddev-based eviction (removed 2025-12-31), this uses an
+   * absolute minimum threshold. Peers below 3 KB/s after the grace period
+   * are disconnected. This avoids the problem where similar-speed peers
+   * triggered eviction at 99% of average.
    *
-   * 1. Our download manager already handles slow peers gracefully - it gives
-   *    them smaller batches, steals work if they stall, and races critical
-   *    batches. Slow peers still contribute blocks.
-   *
-   * 2. When peers have similar speeds (low stddev), the threshold approaches
-   *    the mean, causing peers at 99% of average to be evicted. We observed
-   *    peers kicked for being 0.2% below threshold!
-   *
-   * 3. More slow peers beats fewer fast peers for parallelism:
-   *    80 peers × 50% speed = 4000 throughput units
-   *    5 peers × 100% speed = 500 throughput units
-   *
-   * 4. Active peers discovered during IBD are scarce and valuable. We should
-   *    only disconnect truly stalled (0 B/s) or malicious peers, which is
-   *    handled by Phase 3 above and protocol error detection.
-   *
-   * The stalled peer detection (Phase 3) remains - peers delivering 0 bytes
-   * over an extended period are genuinely stuck and should be replaced.
+   * 3 KB/s is very conservative - even a slow peer should manage this.
+   * Peers below this threshold are likely on congested/poor connections
+   * and replacing them with fresh peers should improve throughput.
    */
+  for (size_t i = 0; i < rate_count; i++) {
+    if (reporters - dropped <= DOWNLOAD_MIN_PEERS_TO_KEEP) {
+      LOG_DEBUG("download_mgr: keeping slow peer to maintain minimum");
+      break;
+    }
+
+    peer_perf_t *perf = peers_with_rates[i];
+
+    /* Check if peer is past the grace period */
+    if (perf->first_work_time == 0) {
+      continue; /* Never assigned work, skip */
+    }
+    uint64_t time_since_first_work = now - perf->first_work_time;
+    if (time_since_first_work < DOWNLOAD_SLOW_GRACE_PERIOD_MS) {
+      continue; /* Still in grace period */
+    }
+
+    /* Check if peer is below minimum rate */
+    if (perf->bytes_per_second >= (float)DOWNLOAD_MIN_RATE_BYTES_PER_SEC) {
+      continue; /* Fast enough, keep */
+    }
+
+    batch_node_t *node = (batch_node_t *)(void *)perf->batch;
+    uint32_t batch_start = node->batch.heights[0];
+    uint32_t batch_end = batch_start + (uint32_t)node->batch.count - 1;
+
+    LOG_INFO("download_mgr: peer too slow (%.1f KB/s < %.1f KB/s minimum), "
+             "returning batch [%u-%u] to queue",
+             perf->bytes_per_second / 1024.0f,
+             (float)DOWNLOAD_MIN_RATE_BYTES_PER_SEC / 1024.0f,
+             batch_start, batch_end);
+
+    node->batch.assigned_time = 0;
+    queue_push_front(mgr, node);
+    perf->batch = NULL;
+
+    if (mgr->callbacks.disconnect_peer != NULL) {
+      mgr->callbacks.disconnect_peer(perf->peer, "too slow",
+                                     mgr->callbacks.ctx);
+    }
+    dropped++;
+  }
 
   if (dropped > 0) {
-    LOG_INFO("download_mgr: performance check dropped %zu stalled peers", dropped);
+    LOG_INFO("download_mgr: performance check dropped %zu slow/stalled peers",
+             dropped);
   }
 
   return dropped;
