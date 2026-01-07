@@ -149,6 +149,30 @@ static void queue_push_front(download_mgr_t *mgr, batch_node_t *node) {
 }
 
 /**
+ * Add batch to front of queue, but after any sticky batch.
+ * Sticky batches contain blocking blocks needed for validation progress,
+ * so returned work from evicted peers should not displace them.
+ */
+static void queue_push_after_sticky(download_mgr_t *mgr, batch_node_t *node) {
+  /* If head is sticky, insert after it */
+  if (mgr->queue_head != NULL && mgr->queue_head->batch.sticky) {
+    node->prev = mgr->queue_head;
+    node->next = mgr->queue_head->next;
+    if (mgr->queue_head->next != NULL) {
+      mgr->queue_head->next->prev = node;
+    } else {
+      mgr->queue_tail = node;
+    }
+    mgr->queue_head->next = node;
+    mgr->queue_count++;
+    return;
+  }
+
+  /* No sticky batch at front - standard push front */
+  queue_push_front(mgr, node);
+}
+
+/**
  * Remove batch from queue (for assignment to peer).
  * Returns the removed node (caller takes ownership).
  */
@@ -333,8 +357,8 @@ void download_mgr_remove_peer(download_mgr_t *mgr, peer_t *peer) {
     batch_node_t *node = (batch_node_t *)(void *)perf->batch;
     uint32_t batch_start = node->batch.heights[0];
     uint32_t batch_end = batch_start + (uint32_t)node->batch.count - 1;
-    node->batch.assigned_time = 0; /* Mark as unassigned */
-    queue_push_front(mgr, node);   /* Return to front of queue */
+    node->batch.assigned_time = 0;        /* Mark as unassigned */
+    queue_push_after_sticky(mgr, node);   /* Return to front, after any sticky */
     perf->batch = NULL;
     LOG_INFO("download_mgr: returned batch [%u-%u] to queue from removed peer",
              batch_start, batch_end);
@@ -1033,7 +1057,7 @@ size_t download_mgr_check_performance(download_mgr_t *mgr) {
              (unsigned long long)since_last_delivery, batch_start, batch_end);
 
     node->batch.assigned_time = 0;
-    queue_push_front(mgr, node);
+    queue_push_after_sticky(mgr, node);
     perf->batch = NULL;
 
     if (mgr->callbacks.disconnect_peer != NULL) {
@@ -1087,7 +1111,7 @@ size_t download_mgr_check_performance(download_mgr_t *mgr) {
              batch_start, batch_end);
 
     node->batch.assigned_time = 0;
-    queue_push_front(mgr, node);
+    queue_push_after_sticky(mgr, node);
     perf->batch = NULL;
 
     if (mgr->callbacks.disconnect_peer != NULL) {
