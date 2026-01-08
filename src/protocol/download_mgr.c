@@ -802,7 +802,7 @@ bool download_mgr_check_stall(download_mgr_t *mgr, uint32_t validated_height) {
    *
    * This proactively races blocks that would cause future stalls. */
 
-#define STICKY_BATCH_SIZE DOWNLOAD_BATCH_SIZE_MAX  /* Same as normal batch */
+#define STICKY_BATCH_SIZE DOWNLOAD_BATCH_SIZE_MAX  /* 2x normal: blocker + next gaps */
 
   typedef struct {
     hash256_t hash;
@@ -880,8 +880,10 @@ bool download_mgr_check_stall(download_mgr_t *mgr, uint32_t validated_height) {
     }
   }
 
-  /* Walk through batches in height order, adding missing blocks from
-   * the first incomplete batch we find (the next gap). */
+  /* Walk incomplete batches in HEIGHT ORDER, filling up to 128 blocks.
+   * We want blocks that are either in the blocker's batch OR upcoming gaps
+   * that risk becoming blockers. By processing in height order, we always
+   * grab the soonest gaps first - block 111111 before 123456. */
   for (size_t b = 0; b < incomplete_count && candidate_count < (size_t)STICKY_BATCH_SIZE * 2; b++) {
     work_batch_t *batch = incomplete_batches[b].batch;
 
