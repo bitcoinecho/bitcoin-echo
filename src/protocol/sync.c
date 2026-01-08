@@ -1315,10 +1315,10 @@ static void queue_blocks_from_headers(sync_manager_t *mgr) {
   /*
    * Use reusable arrays from sync_manager (allocated once at creation).
    * Batch query makes this much faster - single SQL query instead of thousands.
-   * Rate-limit to 4096 blocks per tick to keep responsiveness for very large gaps.
+   * Rate-limit to 512 blocks per tick to keep responsiveness (<100ms per query).
    */
   #define QUEUE_BATCH_SIZE ((size_t)DOWNLOAD_MAX_BATCHES * DOWNLOAD_BATCH_SIZE)
-  #define QUEUE_PER_TICK_LIMIT 4096  /* Rate limit: 4096 blocks per tick (was 1024) */
+  #define QUEUE_PER_TICK_LIMIT 512  /* Rate limit: 512 blocks per tick for <100ms queries */
   hash256_t *to_queue = mgr->queue_work_hashes;
   uint32_t *heights = mgr->queue_work_heights;
   size_t to_queue_count = 0;

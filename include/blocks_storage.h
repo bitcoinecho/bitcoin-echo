@@ -45,6 +45,7 @@ typedef struct {
   uint32_t current_file_offset; /* Current offset in current file */
   void *current_file;           /* Current write file handle (FILE*) */
   uint32_t blocks_since_flush;  /* Blocks written since last flush */
+  uint64_t cached_total_size;   /* Cached total disk usage (updated incrementally) */
 } block_file_manager_t;
 
 /*

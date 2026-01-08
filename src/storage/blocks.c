@@ -118,9 +118,30 @@ echo_result_t block_storage_init(block_file_manager_t *mgr,
   /* Initialize batching state */
   mgr->current_file = NULL;
   mgr->blocks_since_flush = 0;
+  mgr->cached_total_size = 0;  /* Will be calculated after scan */
 
   /* Scan existing files to find current position */
-  return scan_block_files(mgr);
+  echo_result_t result = scan_block_files(mgr);
+  if (result != ECHO_OK) {
+    return result;
+  }
+
+  /* Calculate initial disk usage cache (only if resuming with existing files) */
+  if (mgr->current_file_index > 0) {
+    char path[512];
+    for (uint32_t file_index = 0; file_index <= mgr->current_file_index; file_index++) {
+      block_storage_get_path(mgr, file_index, path);
+      if (!plat_file_exists(path)) {
+        continue; /* File was pruned */
+      }
+      uint64_t file_size = 0;
+      if (block_storage_get_file_size(mgr, file_index, &file_size) == ECHO_OK) {
+        mgr->cached_total_size += file_size;
+      }
+    }
+  }
+
+  return ECHO_OK;
 }
 
 /*
@@ -210,6 +231,9 @@ echo_result_t block_storage_write(block_file_manager_t *mgr,
   /* Update current position */
   mgr->current_file_offset += record_size;
   mgr->blocks_since_flush++;
+
+  /* Update cached disk usage */
+  mgr->cached_total_size += record_size;
 
   /* Periodic flush for durability (every 100 blocks) */
   if (mgr->blocks_since_flush >= BLOCK_STORAGE_FLUSH_INTERVAL) {
@@ -342,9 +366,18 @@ echo_result_t block_storage_delete_file(block_file_manager_t *mgr,
     return ECHO_ERR_NOT_FOUND;
   }
 
+  /* Get file size before deletion (for cache update) */
+  uint64_t file_size = 0;
+  block_storage_get_file_size(mgr, file_index, &file_size);
+
   /* Delete the file */
   if (remove(path) != 0) {
     return ECHO_ERR_PLATFORM_IO;
+  }
+
+  /* Update cached total size */
+  if (mgr->cached_total_size >= file_size) {
+    mgr->cached_total_size -= file_size;
   }
 
   return ECHO_OK;
@@ -418,7 +451,7 @@ echo_result_t block_storage_get_file_size(const block_file_manager_t *mgr,
 
 /*
  * Get total disk usage of all block files.
- * Handles gaps from pruning (e.g., blk00000 deleted but blk00001+ exist).
+ * Returns the cached value that is maintained incrementally.
  */
 echo_result_t block_storage_get_total_size(const block_file_manager_t *mgr,
                                            uint64_t *total_size) {
@@ -426,29 +459,7 @@ echo_result_t block_storage_get_total_size(const block_file_manager_t *mgr,
     return ECHO_ERR_NULL_PARAM;
   }
 
-  uint64_t total = 0;
-  char path[512];
-
-  /* Iterate from 0 to current file, summing existing files */
-  for (uint32_t file_index = 0; file_index <= mgr->current_file_index;
-       file_index++) {
-    block_storage_get_path(mgr, file_index, path);
-
-    if (!plat_file_exists(path)) {
-      continue; /* File was pruned, skip it */
-    }
-
-    uint64_t file_size = 0;
-    echo_result_t result =
-        block_storage_get_file_size(mgr, file_index, &file_size);
-    if (result != ECHO_OK) {
-      continue; /* Skip files we can't read */
-    }
-
-    total += file_size;
-  }
-
-  *total_size = total;
+  *total_size = mgr->cached_total_size;
   return ECHO_OK;
 }
 
