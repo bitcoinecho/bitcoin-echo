@@ -1123,10 +1123,9 @@ echo_result_t sync_handle_block(sync_manager_t *mgr, peer_t *peer,
     download_mgr_block_complete(mgr->download_mgr, &block_hash,
                                 block_index->height);
 
-    /* Notify chaser pipeline that block is ready for validation */
-    if (mgr->dispatcher != NULL) {
-      chase_notify_height(mgr->dispatcher, CHASE_CHECKED, block_index->height);
-    }
+    /* NOTE: CHASE_CHECKED is fired by the storage thread after async write
+     * completes, not here. This ensures the block is on disk before we try
+     * to validate it. */
 
     /* Check if peer is now idle (batch complete) and have them request more
      * work immediately. If no work available, they wait. */

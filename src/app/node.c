@@ -126,6 +126,30 @@ struct node {
   volatile uint32_t last_prune_files_deleted; /* Files deleted in last prune */
   volatile uint64_t last_prune_bytes_freed;   /* Bytes freed in last prune */
 
+  /* Block storage thread (async disk writes to avoid blocking main loop) */
+  pthread_t storage_thread;
+  pthread_mutex_t storage_mutex;
+  pthread_cond_t storage_cond;
+  volatile bool storage_thread_running;
+  volatile bool storage_thread_shutdown;
+
+  /* Storage queue (linked list of blocks to write) */
+  struct storage_queue_entry *storage_queue_head;
+  struct storage_queue_entry *storage_queue_tail;
+  volatile size_t storage_queue_size;
+
+  /* Storage metrics */
+  volatile uint64_t storage_blocks_queued;
+  volatile uint64_t storage_blocks_written;
+
+};
+
+/* Entry in the block storage queue */
+struct storage_queue_entry {
+  uint8_t *block_data;        /* Serialized block (owned, must free) */
+  uint32_t block_size;        /* Size of serialized data */
+  hash256_t block_hash;       /* Block hash for index lookup */
+  struct storage_queue_entry *next;
 };
 
 /*
@@ -146,6 +170,7 @@ static echo_result_t node_init_chase(node_t *node);
 static void node_cleanup(node_t *node);
 static echo_result_t node_cleanup_orphan_block_files(node_t *node);
 static void *prune_thread_fn(void *arg);
+static void *storage_thread_fn(void *arg);
 
 /* Sync manager callbacks */
 static echo_result_t sync_cb_get_block(const hash256_t *hash, block_t *block_out,
@@ -386,6 +411,17 @@ node_t *node_create(const node_config_t *config) {
       node->prune_thread_running = false;
       node->prune_thread_shutdown = false;
     }
+
+    /* Step 7: Initialize storage thread primitives (full node only) */
+    pthread_mutex_init(&node->storage_mutex, NULL);
+    pthread_cond_init(&node->storage_cond, NULL);
+    node->storage_thread_running = false;
+    node->storage_thread_shutdown = false;
+    node->storage_queue_head = NULL;
+    node->storage_queue_tail = NULL;
+    node->storage_queue_size = 0;
+    node->storage_blocks_queued = 0;
+    node->storage_blocks_written = 0;
 
   }
 
@@ -1415,9 +1451,14 @@ static echo_result_t sync_cb_get_block(const hash256_t *hash, block_t *block_out
  * Store block data.
  *
  * Called by sync manager to persist a block after download.
- * Stores the block to disk immediately so out-of-order blocks don't need
- * to be re-downloaded. Records the file position in the database and
- * in-memory block index for later retrieval.
+ * Queues the block for async storage by the storage thread. This returns
+ * immediately without blocking. The storage thread handles:
+ *   - Writing to disk
+ *   - Updating database
+ *   - Updating in-memory index
+ *   - Firing CHASE_CHECKED when complete
+ *
+ * If storage thread not running, falls back to synchronous write.
  */
 echo_result_t node_store_block(node_t *node, const block_t *block) {
   if (node == NULL || block == NULL) {
@@ -1441,7 +1482,8 @@ echo_result_t node_store_block(node_t *node, const block_t *block) {
   size_t block_size = block_serialize_size(block);
   uint8_t *block_data = malloc(block_size);
   if (block_data == NULL) {
-    log_error(LOG_COMP_STORE, "Failed to allocate %zu bytes for block", block_size);
+    log_error(LOG_COMP_STORE, "Failed to allocate %zu bytes for block",
+              block_size);
     return ECHO_ERR_OUT_OF_MEMORY;
   }
 
@@ -1453,10 +1495,41 @@ echo_result_t node_store_block(node_t *node, const block_t *block) {
     return result;
   }
 
-  /* Write to block storage */
+  /* If storage thread is running, queue for async write */
+  if (node->storage_thread_running) {
+    struct storage_queue_entry *entry = malloc(sizeof(*entry));
+    if (entry == NULL) {
+      free(block_data);
+      log_error(LOG_COMP_STORE, "Failed to allocate storage queue entry");
+      return ECHO_ERR_OUT_OF_MEMORY;
+    }
+
+    entry->block_data = block_data;
+    entry->block_size = (uint32_t)written;
+    memcpy(&entry->block_hash, &block_hash, sizeof(hash256_t));
+    entry->next = NULL;
+
+    pthread_mutex_lock(&node->storage_mutex);
+    if (node->storage_queue_tail) {
+      node->storage_queue_tail->next = entry;
+    } else {
+      node->storage_queue_head = entry;
+    }
+    node->storage_queue_tail = entry;
+    node->storage_queue_size++;
+    node->storage_blocks_queued++;
+    pthread_cond_signal(&node->storage_cond);
+    pthread_mutex_unlock(&node->storage_mutex);
+
+    log_debug(LOG_COMP_STORE, "Block queued for async storage (queue=%zu)",
+              node->storage_queue_size);
+    return ECHO_OK;
+  }
+
+  /* Fallback: synchronous write if storage thread not running */
   block_file_pos_t pos;
-  result = block_storage_write(&node->block_storage, block_data,
-                               (uint32_t)written, &pos);
+  result =
+      block_storage_write(&node->block_storage, block_data, (uint32_t)written, &pos);
   free(block_data);
 
   if (result != ECHO_OK) {
@@ -1482,15 +1555,12 @@ echo_result_t node_store_block(node_t *node, const block_t *block) {
     if (block_index != NULL) {
       block_index->data_file = pos.file_index;
       block_index->data_pos = pos.file_offset;
-      log_info(LOG_COMP_STORE, "Block stored: height=%u, file=%u, offset=%u",
+      log_info(LOG_COMP_STORE, "Block stored sync: height=%u, file=%u, offset=%u",
                block_index->height, pos.file_index, pos.file_offset);
     } else {
       log_warn(LOG_COMP_STORE, "Block stored but no block_index found");
     }
   }
-
-  log_debug(LOG_COMP_STORE, "Block stored at file %u offset %u (height lookup pending)",
-            pos.file_index, pos.file_offset);
 
   return ECHO_OK;
 }
@@ -1877,6 +1947,17 @@ echo_result_t node_start(node_t *node) {
     }
   }
 
+  /* Start storage thread for async block writes */
+  if (node->block_storage_init) {
+    int ret = pthread_create(&node->storage_thread, NULL, storage_thread_fn, node);
+    if (ret != 0) {
+      log_warn(LOG_COMP_STORE, "Failed to start storage thread: %d", ret);
+    } else {
+      node->storage_thread_running = true;
+      log_info(LOG_COMP_STORE, "Storage thread started");
+    }
+  }
+
   node->state = NODE_STATE_RUNNING;
   return ECHO_OK;
 }
@@ -1921,6 +2002,22 @@ echo_result_t node_stop(node_t *node) {
     pthread_join(node->prune_thread, NULL);
     node->prune_thread_running = false;
     log_info(LOG_COMP_STORE, "Pruning thread stopped");
+  }
+
+  /* Step 0.5: Stop storage thread (let it finish pending writes) */
+  if (node->storage_thread_running) {
+    log_info(LOG_COMP_STORE, "Stopping storage thread (%zu blocks pending)...",
+             node->storage_queue_size);
+    pthread_mutex_lock(&node->storage_mutex);
+    node->storage_thread_shutdown = true;
+    pthread_cond_signal(&node->storage_cond);
+    pthread_mutex_unlock(&node->storage_mutex);
+
+    pthread_join(node->storage_thread, NULL);
+    node->storage_thread_running = false;
+    log_info(LOG_COMP_STORE, "Storage thread stopped (queued=%llu, written=%llu)",
+             (unsigned long long)node->storage_blocks_queued,
+             (unsigned long long)node->storage_blocks_written);
   }
 
   /* Step 1: Flush UTXO set during IBD mode (temporarily disabled) */
@@ -2058,6 +2155,16 @@ static void node_cleanup(node_t *node) {
   if (node_is_pruning_enabled(node)) {
     pthread_mutex_destroy(&node->prune_mutex);
     pthread_cond_destroy(&node->prune_cond);
+  }
+
+  /* Destroy storage thread primitives and free any remaining queue entries */
+  pthread_mutex_destroy(&node->storage_mutex);
+  pthread_cond_destroy(&node->storage_cond);
+  while (node->storage_queue_head != NULL) {
+    struct storage_queue_entry *entry = node->storage_queue_head;
+    node->storage_queue_head = entry->next;
+    free(entry->block_data);
+    free(entry);
   }
 
   /* Free listening socket if allocated */
@@ -4219,6 +4326,98 @@ static void *prune_thread_fn(void *arg) {
   pthread_mutex_unlock(&node->prune_mutex);
 
   log_info(LOG_COMP_STORE, "Pruning thread exiting");
+  return NULL;
+}
+
+/*
+ * Storage thread entry point.
+ * Processes queued blocks and writes them to disk asynchronously.
+ */
+static void *storage_thread_fn(void *arg) {
+  node_t *node = (node_t *)arg;
+
+  log_info(LOG_COMP_STORE, "Storage thread started");
+
+  pthread_mutex_lock(&node->storage_mutex);
+
+  while (!node->storage_thread_shutdown || node->storage_queue_head != NULL) {
+    /* Wait for work or shutdown signal */
+    while (node->storage_queue_head == NULL && !node->storage_thread_shutdown) {
+      pthread_cond_wait(&node->storage_cond, &node->storage_mutex);
+    }
+
+    /* Process all queued blocks before checking shutdown */
+    while (node->storage_queue_head != NULL) {
+      /* Dequeue entry */
+      struct storage_queue_entry *entry = node->storage_queue_head;
+      node->storage_queue_head = entry->next;
+      if (node->storage_queue_head == NULL) {
+        node->storage_queue_tail = NULL;
+      }
+      node->storage_queue_size--;
+      pthread_mutex_unlock(&node->storage_mutex);
+
+      /* Write to disk (outside mutex) */
+      block_file_pos_t pos;
+      echo_result_t result = block_storage_write(&node->block_storage,
+                                                  entry->block_data,
+                                                  entry->block_size, &pos);
+
+      if (result == ECHO_OK) {
+        /* Update block index database with file position */
+        if (node->block_index_db_open) {
+          echo_result_t db_result = block_index_db_update_data_pos(
+              &node->block_index_db, &entry->block_hash, pos.file_index,
+              pos.file_offset);
+          if (db_result != ECHO_OK && db_result != ECHO_ERR_NOT_FOUND) {
+            log_warn(LOG_COMP_STORE, "Failed to update block index DB: %d",
+                     db_result);
+          }
+        }
+
+        /* Update in-memory block index */
+        chainstate_t *chainstate = consensus_get_chainstate(node->consensus);
+        if (chainstate != NULL) {
+          block_index_map_t *index_map =
+              chainstate_get_block_index_map(chainstate);
+          block_index_t *block_index =
+              block_index_map_lookup(index_map, &entry->block_hash);
+          if (block_index != NULL) {
+            block_index->data_file = pos.file_index;
+            block_index->data_pos = pos.file_offset;
+
+            /* Fire CHASE_CHECKED now that block is stored */
+            if (node->dispatcher != NULL) {
+              chase_notify_height(node->dispatcher, CHASE_CHECKED,
+                                  block_index->height);
+            }
+
+            log_debug(LOG_COMP_STORE,
+                      "Block stored async: height=%u, file=%u, offset=%u",
+                      block_index->height, pos.file_index, pos.file_offset);
+          } else {
+            log_warn(LOG_COMP_STORE,
+                     "Block stored but no block_index found for hash");
+          }
+        }
+
+        node->storage_blocks_written++;
+      } else {
+        log_error(LOG_COMP_STORE, "Failed to write block to storage: %d",
+                  result);
+      }
+
+      /* Free entry */
+      free(entry->block_data);
+      free(entry);
+
+      pthread_mutex_lock(&node->storage_mutex);
+    }
+  }
+
+  pthread_mutex_unlock(&node->storage_mutex);
+
+  log_info(LOG_COMP_STORE, "Storage thread exiting");
   return NULL;
 }
 
