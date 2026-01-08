@@ -1923,7 +1923,8 @@ echo_result_t node_stop(node_t *node) {
     log_info(LOG_COMP_STORE, "Pruning thread stopped");
   }
 
-  /* Step 1: Flush UTXO set during IBD mode */
+  /* Step 1: Flush UTXO set during IBD mode (temporarily disabled) */
+#if 0
   if (node->ibd_mode && node->consensus != NULL) {
     log_info(LOG_COMP_MAIN, "Flushing UTXO set to database...");
     echo_result_t flush_result = node_flush_utxo_shutdown(node);
@@ -1932,6 +1933,7 @@ echo_result_t node_stop(node_t *node) {
       /* Continue shutdown even if flush fails */
     }
   }
+#endif
 
   /* Step 2: Persist validated tip */
   if (node->block_index_db_open && node->consensus != NULL) {
