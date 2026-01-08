@@ -28,14 +28,14 @@
  * ============================================================================
  */
 
-/* Batch size: 8 blocks per peer. */
-#define DOWNLOAD_BATCH_SIZE 8
+/* Batch size: 64 blocks per peer. */
+#define DOWNLOAD_BATCH_SIZE 64
 
 /* Maximum batch size (for array allocation) */
-#define DOWNLOAD_BATCH_SIZE_MAX 8
+#define DOWNLOAD_BATCH_SIZE_MAX 64
 
 /* Maximum batches in the queue. */
-#define DOWNLOAD_MAX_BATCHES 200
+#define DOWNLOAD_MAX_BATCHES 128
 
 /* Maximum peers to track (matches sync manager's outbound peer limit). */
 #define DOWNLOAD_MAX_PEERS ECHO_MAX_OUTBOUND_PEERS

@@ -1283,7 +1283,7 @@ static void queue_blocks_from_headers(sync_manager_t *mgr) {
    * Use direct height lookup via callback if available (much faster for
    * large height gaps). Falls back to walking prev pointers if not.
    *
-   * Array sized to download_mgr's actual capacity (200 batches * 8 blocks).
+   * Array sized to download_mgr's actual capacity (128 batches * 64 blocks).
    * The download_mgr enforces DOWNLOAD_MAX_BATCHES, so queuing more is wasteful.
    */
   #define QUEUE_BATCH_SIZE ((size_t)DOWNLOAD_MAX_BATCHES * DOWNLOAD_BATCH_SIZE)
