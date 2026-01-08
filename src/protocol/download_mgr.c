@@ -826,49 +826,70 @@ bool download_mgr_check_stall(download_mgr_t *mgr, uint32_t validated_height) {
     }
   }
 
-  /* Scan other peers for gap blocks (behind frontier, ahead of validation).
-   * Gap threshold: blocks significantly behind highest_received_height. */
-#define GAP_THRESHOLD_BLOCKS 64
+  /* Scan for NEXT consecutive gap after the blocker's batch.
+   *
+   * Walk batches in HEIGHT ORDER to find the first incomplete batch after
+   * the blocker. This is the next gap that will block validation once we
+   * get past the current blocker. Prioritizing this over scattered gaps
+   * ensures we're always racing the blocks that matter most.
+   */
 
-  if (mgr->highest_received_height > GAP_THRESHOLD_BLOCKS) {
-    uint32_t gap_ceiling = mgr->highest_received_height - GAP_THRESHOLD_BLOCKS;
+  /* Collect incomplete batches that are AFTER the blocker's batch */
+  typedef struct {
+    work_batch_t *batch;
+    uint32_t lowest_height;
+  } batch_ref_t;
 
-    for (size_t p = 0; p < mgr->peer_count && candidate_count < (size_t)STICKY_BATCH_SIZE * 2; p++) {
-      peer_perf_t *perf = &mgr->peers[p];
-      if (perf->peer == NULL || perf->batch == NULL || perf->batch->remaining == 0) {
-        continue;
-      }
-      /* Skip the blocker (already added) */
-      if (perf->batch == blocker->batch) {
-        continue;
-      }
-      /* Skip sticky batches (already racing) */
-      if (perf->batch->sticky) {
-        continue;
-      }
+  batch_ref_t incomplete_batches[DOWNLOAD_MAX_PEERS];
+  size_t incomplete_count = 0;
 
-      uint32_t batch_lowest = perf->batch->heights[0];
+  for (size_t p = 0; p < mgr->peer_count; p++) {
+    peer_perf_t *perf = &mgr->peers[p];
+    if (perf->peer == NULL || perf->batch == NULL || perf->batch->remaining == 0) {
+      continue;
+    }
+    /* Skip the blocker (already added its blocks) */
+    if (perf->batch == blocker->batch) {
+      continue;
+    }
+    /* Skip sticky batches (already racing) */
+    if (perf->batch->sticky) {
+      continue;
+    }
 
-      /* Skip if batch is validated or being validated */
-      if (batch_lowest <= validated_height) {
-        continue;
-      }
-      /* Skip if batch is close to frontier (not a gap) */
-      if (batch_lowest >= gap_ceiling) {
-        continue;
-      }
+    uint32_t batch_lowest = perf->batch->heights[0];
 
-      /* Collect unreceived blocks from this lagging batch */
-      for (size_t j = 0; j < perf->batch->count && candidate_count < (size_t)STICKY_BATCH_SIZE * 2; j++) {
-        if (!perf->batch->received[j]) {
-          uint32_t h = perf->batch->heights[j];
-          /* Only include if ahead of validation and behind frontier */
-          if (h > validated_height && h < gap_ceiling) {
-            memcpy(&candidates[candidate_count].hash, &perf->batch->hashes[j], sizeof(hash256_t));
-            candidates[candidate_count].height = h;
-            candidate_count++;
-          }
-        }
+    /* Only include batches that start AFTER the blocker's batch ends */
+    if (batch_lowest <= blocker_end) {
+      continue;
+    }
+
+    incomplete_batches[incomplete_count].batch = perf->batch;
+    incomplete_batches[incomplete_count].lowest_height = batch_lowest;
+    incomplete_count++;
+  }
+
+  /* Sort by lowest height (find the NEXT gap, not random gaps) */
+  for (size_t i = 0; i < incomplete_count; i++) {
+    for (size_t j = i + 1; j < incomplete_count; j++) {
+      if (incomplete_batches[j].lowest_height < incomplete_batches[i].lowest_height) {
+        batch_ref_t tmp = incomplete_batches[i];
+        incomplete_batches[i] = incomplete_batches[j];
+        incomplete_batches[j] = tmp;
+      }
+    }
+  }
+
+  /* Walk through batches in height order, adding missing blocks from
+   * the first incomplete batch we find (the next gap). */
+  for (size_t b = 0; b < incomplete_count && candidate_count < (size_t)STICKY_BATCH_SIZE * 2; b++) {
+    work_batch_t *batch = incomplete_batches[b].batch;
+
+    for (size_t j = 0; j < batch->count && candidate_count < (size_t)STICKY_BATCH_SIZE * 2; j++) {
+      if (!batch->received[j]) {
+        memcpy(&candidates[candidate_count].hash, &batch->hashes[j], sizeof(hash256_t));
+        candidates[candidate_count].height = batch->heights[j];
+        candidate_count++;
       }
     }
   }
