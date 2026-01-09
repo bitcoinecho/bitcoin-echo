@@ -150,6 +150,27 @@ echo_result_t block_index_db_begin(block_index_db_t *bdb);
  */
 echo_result_t block_index_db_commit(block_index_db_t *bdb);
 
+/**
+ * Checkpoint the WAL to prevent unbounded growth during IBD.
+ *
+ * This function forces a WAL checkpoint by:
+ * 1. Acquiring the mutex (blocking all other database operations)
+ * 2. Resetting all prepared statements (releasing any read locks)
+ * 3. Running TRUNCATE checkpoint (guaranteed to succeed)
+ *
+ * Parameters:
+ *   bdb - Block index database handle
+ *
+ * Returns:
+ *   ECHO_OK on success, error code on failure
+ *
+ * Notes:
+ *   - Call every ~10,000 blocks during IBD to keep WAL bounded
+ *   - Causes brief pause in validation (milliseconds)
+ *   - Safe to call at any time; no-op if WAL is already small
+ */
+echo_result_t block_index_db_checkpoint(block_index_db_t *bdb);
+
 /* ========================================================================
  * Block Index Operations
  * ======================================================================== */

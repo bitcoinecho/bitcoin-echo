@@ -14,9 +14,17 @@
 #include <string.h>
 
 #include "block.h"
+#include "block_index_db.h"
 #include "chainstate.h"
 #include "log.h"
 #include "node.h"
+
+/*
+ * WAL checkpoint interval during IBD.
+ * Checkpoint every N blocks to prevent SQLite WAL from growing unbounded.
+ * Without this, WAL grows to GB and reads slow to a crawl.
+ */
+#define CHECKPOINT_INTERVAL 10000
 
 /* Forward declarations */
 static int confirm_start(chaser_t *self);
@@ -298,6 +306,23 @@ static bool confirm_handle_event(chaser_t *self, chase_event_t event,
 
                 chaser_set_position(self, next_height);
                 confirmed = next_height;
+
+                /*
+                 * Checkpoint WAL periodically to prevent unbounded growth.
+                 * During IBD, SQLite WAL grows because auto-checkpoint uses
+                 * PASSIVE mode which fails when readers are present. By
+                 * checkpointing inside the confirmation loop (with mutex
+                 * held by block_index_db_checkpoint), we guarantee no readers.
+                 */
+                if (confirmed % CHECKPOINT_INTERVAL == 0) {
+                    block_index_db_t *bdb = node_get_block_index_db(node);
+                    if (bdb) {
+                        block_index_db_checkpoint(bdb);
+                        log_info(LOG_COMP_SYNC,
+                                 "chaser_confirm: WAL checkpoint at height %u",
+                                 confirmed);
+                    }
+                }
             }
         }
         break;

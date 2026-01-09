@@ -8,6 +8,7 @@
  */
 
 #include "block_index_db.h"
+#include "../../lib/sqlite/sqlite3.h"
 #include "block.h"
 #include "chainstate.h"
 #include "serialize.h"
@@ -1485,5 +1486,62 @@ echo_result_t block_index_db_get_referenced_files(block_index_db_t *bdb,
 
   *files_out = files;
   *count_out = i;
+  return ECHO_OK;
+}
+
+
+/* ========================================================================
+ * WAL Checkpoint
+ * ======================================================================== */
+
+echo_result_t block_index_db_checkpoint(block_index_db_t *bdb) {
+  if (!bdb) {
+    return ECHO_ERR_NULL_PARAM;
+  }
+
+  pthread_mutex_lock(&bdb->mutex);
+
+  /*
+   * Reset ALL prepared statements to release any read locks.
+   * SQLite prepared statements can hold implicit read transactions
+   * even after stepping completes. Resetting guarantees no readers.
+   */
+  if (bdb->lookup_hash_stmt.stmt) {
+    sqlite3_reset(bdb->lookup_hash_stmt.stmt);
+  }
+  if (bdb->lookup_height_stmt.stmt) {
+    sqlite3_reset(bdb->lookup_height_stmt.stmt);
+  }
+  if (bdb->insert_stmt.stmt) {
+    sqlite3_reset(bdb->insert_stmt.stmt);
+  }
+  if (bdb->update_status_stmt.stmt) {
+    sqlite3_reset(bdb->update_status_stmt.stmt);
+  }
+  if (bdb->update_data_pos_stmt.stmt) {
+    sqlite3_reset(bdb->update_data_pos_stmt.stmt);
+  }
+  if (bdb->best_chain_stmt.stmt) {
+    sqlite3_reset(bdb->best_chain_stmt.stmt);
+  }
+
+  /*
+   * TRUNCATE checkpoint: waits for readers (none now), checkpoints all
+   * frames to main DB, then truncates WAL to zero bytes.
+   *
+   * This is guaranteed to succeed because:
+   * 1. We hold the mutex (no other threads can start operations)
+   * 2. We reset all statements (no lingering read transactions)
+   */
+  int rc = sqlite3_wal_checkpoint_v2(bdb->db.handle, NULL,
+                                     SQLITE_CHECKPOINT_TRUNCATE, NULL, NULL);
+
+  pthread_mutex_unlock(&bdb->mutex);
+
+  if (rc != SQLITE_OK) {
+    /* Log but don't fail - checkpoint failure isn't fatal */
+    return ECHO_ERR_DB;
+  }
+
   return ECHO_OK;
 }
