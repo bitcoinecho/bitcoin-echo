@@ -672,7 +672,7 @@ bool download_mgr_check_stall(download_mgr_t *mgr, uint32_t validated_height) {
    * Timeout resets when validation makes progress.
    */
 #define STALL_EPOCH_BLOCKS 210000    /* Blocks per halving epoch */
-#define STALL_MS_PER_EPOCH 500       /* 0.5 seconds per epoch */
+#define STALL_MS_PER_EPOCH 1000      /* 1 second per epoch (was 500ms, too aggressive for larger blocks) */
 #define STALL_MAX_TIMEOUT_MS 64000   /* 64 second max (matches Bitcoin Core) */
 
   uint32_t epoch = validated_height / STALL_EPOCH_BLOCKS;
@@ -767,27 +767,52 @@ bool download_mgr_check_stall(download_mgr_t *mgr, uint32_t validated_height) {
     return false;
   }
 
-  /* Free ALL stale batches (ones we've already validated past) in one go,
-   * then re-find the blocker. This avoids spending multiple seconds freeing
-   * stale batches one at a time. */
-  while (next_height > blocker_end) {
-    LOG_INFO("download_mgr: stalled at %u but lowest batch [%u-%u] is stale "
-             "(we already validated past it) - freeing",
-             validated_height, blocker_height, blocker_end);
+  /* Free ALL stale batches (ones we've already validated past) in one pass.
+   * Previous O(n*m) implementation called find_peer_with_lowest_batch() in a
+   * loop, causing 10-30+ second freezes with many stale batches and peers.
+   * This O(n) version collects all stale batches first, then frees them. */
+  if (next_height > blocker_end) {
+    /* Collect all peers with stale batches in a single pass */
+    size_t stale_indices[DOWNLOAD_MAX_PEERS];
+    size_t stale_count = 0;
 
-    batch_node_t *stale = (batch_node_t *)(void *)blocker->batch;
-    batch_node_destroy(stale);
-    blocker->batch = NULL;
-
-    /* Find next lowest batch */
-    blocker = find_peer_with_lowest_batch(mgr);
-    if (blocker == NULL) {
-      /* No more peers with work */
-      mgr->last_progress_time = now;
-      return false;
+    for (size_t i = 0; i < mgr->peer_count; i++) {
+      peer_perf_t *perf = &mgr->peers[i];
+      if (perf->peer == NULL || perf->batch == NULL ||
+          perf->batch->remaining == 0) {
+        continue;
+      }
+      uint32_t batch_start = perf->batch->heights[0];
+      uint32_t batch_end = batch_start + (uint32_t)perf->batch->count - 1;
+      if (next_height > batch_end) {
+        /* This batch is stale - we've already validated past it */
+        stale_indices[stale_count++] = i;
+      }
     }
-    blocker_height = blocker->batch->heights[0];
-    blocker_end = blocker_height + (uint32_t)blocker->batch->count - 1;
+
+    /* Free all stale batches */
+    if (stale_count > 0) {
+      LOG_INFO("download_mgr: freeing %zu stale batches in one pass "
+               "(validated_height=%u, next_height=%u)",
+               stale_count, validated_height, next_height);
+
+      for (size_t s = 0; s < stale_count; s++) {
+        peer_perf_t *perf = &mgr->peers[stale_indices[s]];
+        batch_node_t *stale = (batch_node_t *)(void *)perf->batch;
+        batch_node_destroy(stale);
+        perf->batch = NULL;
+      }
+
+      /* Now find the new lowest batch (single call, not in a loop) */
+      blocker = find_peer_with_lowest_batch(mgr);
+      if (blocker == NULL) {
+        /* No more peers with work */
+        mgr->last_progress_time = now;
+        return false;
+      }
+      blocker_height = blocker->batch->heights[0];
+      blocker_end = blocker_height + (uint32_t)blocker->batch->count - 1;
+    }
   }
 
   /* After freeing stale batches, re-check if blocker is ahead of what we need */
