@@ -642,7 +642,7 @@ echo_result_t chainstate_apply_block_with_txids(chainstate_t *state,
         }
       }
 
-      /* Add to UTXO set */
+      /* Add to UTXO set - use insert_owned to transfer ownership (no clone) */
       utxo_entry_t *entry =
           utxo_entry_create(&outpoint, output->value, output->script_pubkey,
                             output->script_pubkey_len, new_height, is_coinbase);
@@ -652,13 +652,14 @@ echo_result_t chainstate_apply_block_with_txids(chainstate_t *state,
         return ECHO_ERR_NOMEM;
       }
 
-      result = utxo_set_insert(state->utxo_set, entry);
-      utxo_entry_destroy(entry);
-
-      if (result != ECHO_OK && result != ECHO_ERR_EXISTS) {
+      /* Transfer ownership to UTXO set - skips clone and duplicate check */
+      result = utxo_set_insert_owned(state->utxo_set, entry);
+      if (result != ECHO_OK) {
+        utxo_entry_destroy(entry); /* Only destroy on failure (ownership not transferred) */
         block_delta_destroy(delta);
         return result;
       }
+      /* entry now owned by utxo_set - do not destroy */
     }
   }
 

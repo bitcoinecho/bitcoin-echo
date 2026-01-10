@@ -368,6 +368,44 @@ echo_result_t utxo_set_insert(utxo_set_t *set, const utxo_entry_t *entry) {
   return ECHO_OK;
 }
 
+echo_result_t utxo_set_insert_owned(utxo_set_t *set, utxo_entry_t *entry) {
+  ECHO_ASSERT(set != NULL);
+  ECHO_ASSERT(entry != NULL);
+
+  /*
+   * IBD optimization: Takes ownership of entry instead of cloning.
+   * Skips duplicate check - caller guarantees uniqueness (e.g., fresh block outputs).
+   * This eliminates 2 mallocs per UTXO (clone + script copy) and 1 hash lookup.
+   */
+
+  /* Check if we need to resize */
+  if (set->count * LOAD_FACTOR_DEN >= set->capacity * LOAD_FACTOR_NUM) {
+    echo_result_t result = utxo_set_resize(set, set->capacity * 2);
+    if (result != ECHO_OK) {
+      return result;
+    }
+  }
+
+  /* Create bucket */
+  utxo_bucket_t *bucket = malloc(sizeof(utxo_bucket_t));
+  if (bucket == NULL) {
+    return ECHO_ERR_NOMEM;
+  }
+
+  /* Take ownership - no clone */
+  bucket->entry = entry;
+
+  /* Insert at head of chain */
+  uint32_t hash = hash_outpoint(&entry->outpoint);
+  size_t index = hash & (set->capacity - 1);
+
+  bucket->next = set->buckets[index];
+  set->buckets[index] = bucket;
+  set->count++;
+
+  return ECHO_OK;
+}
+
 echo_result_t utxo_set_remove(utxo_set_t *set, const outpoint_t *outpoint) {
   ECHO_ASSERT(set != NULL);
   ECHO_ASSERT(outpoint != NULL);

@@ -194,6 +194,17 @@ bool utxo_set_exists(const utxo_set_t *set, const outpoint_t *outpoint);
 echo_result_t utxo_set_insert(utxo_set_t *set, const utxo_entry_t *entry);
 
 /**
+ * Insert a UTXO into the set, taking ownership of the entry
+ * IBD optimization: skips duplicate check and cloning for ~60% fewer mallocs.
+ * Caller transfers ownership; entry will be freed when removed from set.
+ * @param set The UTXO set
+ * @param entry The entry to insert (ownership transferred to set)
+ * @return ECHO_OK on success, ECHO_ERR_NOMEM if bucket allocation fails
+ * @warning Caller must guarantee outpoint uniqueness (no duplicate check!)
+ */
+echo_result_t utxo_set_insert_owned(utxo_set_t *set, utxo_entry_t *entry);
+
+/**
  * Remove a UTXO from the set
  * @param set The UTXO set
  * @param outpoint The outpoint to remove
