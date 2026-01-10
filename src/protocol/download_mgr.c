@@ -394,12 +394,9 @@ size_t download_mgr_add_work(download_mgr_t *mgr, const hash256_t *hashes,
       break;
     }
 
-    /* Determine batch size based on starting height */
-    size_t target_batch_size = get_batch_size_for_height(heights[i]);
-
-    /* Fill the batch with up to target_batch_size blocks */
+    /* Fill the batch with up to DOWNLOAD_BATCH_SIZE blocks */
     size_t batch_count = 0;
-    while (batch_count < target_batch_size && i < count) {
+    while (batch_count < DOWNLOAD_BATCH_SIZE && i < count) {
       memcpy(&node->batch.hashes[batch_count], &hashes[i], sizeof(hash256_t));
       node->batch.heights[batch_count] = heights[i];
       batch_count++;
@@ -720,10 +717,44 @@ bool download_mgr_check_stall(download_mgr_t *mgr, uint32_t validated_height) {
     }
 
     if (queue_lowest <= next_height) {
-      /* Found the needed block in the queue - just waiting for idle peer */
-      LOG_DEBUG("download_mgr: stalled at %u, need %u, in queue (lowest=%u) "
-                "- waiting for idle peer",
-                validated_height, next_height, queue_lowest);
+      /* Found the needed block in the queue but not being worked on.
+       * Don't wait for "idle peer" - move this batch to the front so the
+       * next peer to finish gets it immediately. */
+      for (batch_node_t *qnode = mgr->queue_head; qnode != NULL; qnode = qnode->next) {
+        uint32_t qstart = qnode->batch.heights[0];
+        uint32_t qend = qstart + (uint32_t)qnode->batch.count - 1;
+        if (next_height >= qstart && next_height <= qend) {
+          /* Found the batch containing our needed block */
+          if (qnode != mgr->queue_head) {
+            /* Remove from current position */
+            if (qnode->prev) qnode->prev->next = qnode->next;
+            if (qnode->next) qnode->next->prev = qnode->prev;
+            if (qnode == mgr->queue_tail) mgr->queue_tail = qnode->prev;
+            /* Insert at front (after any sticky batch) */
+            if (mgr->queue_head && mgr->queue_head->batch.sticky) {
+              /* Insert after sticky */
+              batch_node_t *sticky = mgr->queue_head;
+              qnode->next = sticky->next;
+              qnode->prev = sticky;
+              if (sticky->next) sticky->next->prev = qnode;
+              sticky->next = qnode;
+              if (mgr->queue_tail == sticky) mgr->queue_tail = qnode;
+            } else {
+              /* Insert at head */
+              qnode->next = mgr->queue_head;
+              qnode->prev = NULL;
+              if (mgr->queue_head) mgr->queue_head->prev = qnode;
+              mgr->queue_head = qnode;
+              if (mgr->queue_tail == NULL) mgr->queue_tail = qnode;
+            }
+            LOG_INFO("download_mgr: moved queued batch [%u-%u] to front "
+                     "(contains needed block %u)",
+                     qstart, qend, next_height);
+          }
+          break;
+        }
+      }
+      mgr->last_progress_time = now;
       return false;
     }
 

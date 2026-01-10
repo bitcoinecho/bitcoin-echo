@@ -36,7 +36,7 @@
 #define DOWNLOAD_BATCH_SIZE_MAX 128
 
 /* Maximum batches in the queue. */
-#define DOWNLOAD_MAX_BATCHES 128
+#define DOWNLOAD_MAX_BATCHES 1024
 
 /* Maximum peers to track (matches sync manager's outbound peer limit). */
 #define DOWNLOAD_MAX_PEERS ECHO_MAX_OUTBOUND_PEERS

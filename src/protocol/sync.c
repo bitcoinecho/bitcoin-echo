@@ -1694,7 +1694,8 @@ void sync_tick(sync_manager_t *mgr) {
     size_t pending = download_mgr_pending_count(mgr->download_mgr);
     size_t inflight = download_mgr_inflight_count(mgr->download_mgr);
     size_t total_queued = pending + inflight;
-    if (total_queued < 8192) {
+    size_t queue_capacity = (size_t)DOWNLOAD_MAX_BATCHES * DOWNLOAD_BATCH_SIZE;
+    if (total_queued < queue_capacity / 2) {
       /* Below 50% capacity - queue more work */
       queue_blocks_from_headers(mgr);
     }
