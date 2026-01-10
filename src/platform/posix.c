@@ -317,7 +317,9 @@ int plat_socket_connect_async(plat_socket_t *sock, const char *host,
   for (rp = result; rp != NULL && !connected; rp = rp->ai_next) {
     ret = connect(sock->fd, rp->ai_addr, rp->ai_addrlen);
     if (ret == 0) {
-      /* Immediate connection (rare, localhost) */
+      /* Immediate connection (rare, localhost) - log this unusual case */
+      fprintf(stderr, "[DEBUG] connect() returned 0 immediately for %s:%u\n",
+              host, port);
       connected = 1;
     } else if (errno == EINPROGRESS) {
       /* Connection in progress - this is the expected case */

@@ -89,6 +89,8 @@ echo_result_t peer_connect(peer_t *peer, const char *address, uint16_t port,
     /* Connection in progress - stay in CONNECTING state */
     peer->state = PEER_STATE_CONNECTING;
     peer->connect_time = plat_time_ms(); /* Track when connect started */
+    log_info(LOG_COMP_NET, "peer_connect: ASYNC to %s:%u (state=CONNECTING)",
+             address, port);
     return ECHO_SUCCESS; /* Caller must poll with peer_check_connect() */
   } else if (result == PLAT_OK) {
     /* Immediate connection (rare, localhost) */
@@ -96,6 +98,8 @@ echo_result_t peer_connect(peer_t *peer, const char *address, uint16_t port,
     peer->connect_time = plat_time_ms();
     peer->last_recv = peer->connect_time;
     peer->last_send = peer->connect_time;
+    log_info(LOG_COMP_NET, "peer_connect: IMMEDIATE to %s:%u (state=CONNECTED)",
+             address, port);
     return ECHO_OK;
   } else {
     /* Connection failed immediately */

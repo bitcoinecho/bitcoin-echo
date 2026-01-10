@@ -2921,8 +2921,10 @@ echo_result_t node_process_peers(node_t *node) {
   for (size_t i = 0; i < NODE_MAX_PEERS; i++) {
     peer_t *peer = &node->peers[i];
     if (peer->state == PEER_STATE_CONNECTING) {
-      echo_result_t result = peer_check_connect(peer);
-      if (result == ECHO_OK) {
+      (void)peer_check_connect(peer);
+      /* Check state after call - peer_check_connect sets CONNECTED on success.
+       * We can't use return value because ECHO_OK == ECHO_SUCCESS (both 0). */
+      if (peer->state == PEER_STATE_CONNECTED) {
         /* Connection completed! Send version to start handshake */
         log_info(LOG_COMP_NET, "Async connect completed to %s:%u",
                  peer->address, peer->port);
@@ -2933,10 +2935,10 @@ echo_result_t node_process_peers(node_t *node) {
         }
         uint64_t services = node_is_pruning_enabled(node) ? 0 : 1;
         peer_send_version(peer, services, (int32_t)our_height, true);
-      } else if (result != ECHO_SUCCESS) {
+      } else if (peer->state == PEER_STATE_DISCONNECTED) {
         /* Connection failed - release address back to pool */
-        log_debug(LOG_COMP_NET, "Async connect failed to %s:%u: %d",
-                  peer->address, peer->port, result);
+        log_info(LOG_COMP_NET, "Async connect failed to %s:%u",
+                 peer->address, peer->port);
         net_addr_t peer_addr;
         if (discovery_parse_address(peer->address, peer->port, &peer_addr) ==
             ECHO_OK) {
@@ -2945,7 +2947,7 @@ echo_result_t node_process_peers(node_t *node) {
         }
         /* peer_check_connect already cleaned up the peer struct */
       }
-      /* result == ECHO_SUCCESS means still connecting, check next time */
+      /* If still CONNECTING, check again next iteration */
     }
   }
 
@@ -3257,6 +3259,30 @@ echo_result_t node_maintenance(node_t *node) {
         snprintf(ip_str, sizeof(ip_str), "%d.%d.%d.%d", addr.ip[12],
                  addr.ip[13], addr.ip[14], addr.ip[15]);
 
+        /* Defensive check: ensure no other peer is already connecting/connected
+         * to this address. This should never happen if in_use marking works
+         * correctly, but helps diagnose if duplicate connections occur. */
+        bool duplicate_addr = false;
+        for (size_t j = 0; j < NODE_MAX_PEERS; j++) {
+          peer_t *other = &node->peers[j];
+          if (other->state != PEER_STATE_DISCONNECTED &&
+              other->port == addr.port &&
+              strcmp(other->address, ip_str) == 0) {
+            log_warn(LOG_COMP_NET,
+                     "BUG: Duplicate address %s:%u (peer %zu in state %d)",
+                     ip_str, addr.port, j, other->state);
+            duplicate_addr = true;
+            break;
+          }
+        }
+
+        if (duplicate_addr) {
+          /* Release address and skip - don't create duplicate connection */
+          discovery_mark_address_free(&node->addr_manager, &addr, ECHO_FALSE);
+          found_slot = false;
+          break;
+        }
+
         log_info(LOG_COMP_NET, "Attempting outbound connection to %s:%u",
                  ip_str, addr.port);
 
@@ -3266,20 +3292,26 @@ echo_result_t node_maintenance(node_t *node) {
         uint64_t nonce = generate_nonce();
         echo_result_t result = peer_connect(peer, ip_str, addr.port, nonce);
         if (result == ECHO_OK) {
-          /* Immediate connection (rare) - send version now */
-          log_info(LOG_COMP_NET, "Connected to peer %s:%u", ip_str, addr.port);
+          /* peer_connect succeeded - check peer state to determine if
+           * connection was immediate or async. ECHO_OK and ECHO_SUCCESS
+           * are both 0, so we must check state instead of return value. */
+          if (peer->state == PEER_STATE_CONNECTED) {
+            /* Immediate connection (rare, localhost) - send version now */
+            log_info(LOG_COMP_NET, "Connected to peer %s:%u (immediate)",
+                     ip_str, addr.port);
 
-          uint32_t our_height = 0;
-          if (node->consensus != NULL) {
-            our_height = consensus_get_height(node->consensus);
+            uint32_t our_height = 0;
+            if (node->consensus != NULL) {
+              our_height = consensus_get_height(node->consensus);
+            }
+            uint64_t services = node_is_pruning_enabled(node) ? 0 : 1;
+            peer_send_version(peer, services, (int32_t)our_height, true);
+          } else {
+            /* Async connection started - peer is in CONNECTING state.
+             * node_process_peers will check completion and send version. */
+            log_debug(LOG_COMP_NET, "Async connect started to %s:%u",
+                      ip_str, addr.port);
           }
-          uint64_t services = node_is_pruning_enabled(node) ? 0 : 1;
-          peer_send_version(peer, services, (int32_t)our_height, true);
-        } else if (result == ECHO_SUCCESS) {
-          /* Async connection started - peer is in CONNECTING state.
-           * node_process_peers will check completion and send version. */
-          log_debug(LOG_COMP_NET, "Async connect started to %s:%u",
-                    ip_str, addr.port);
         } else {
           log_warn(LOG_COMP_NET, "Failed to connect to %s:%u: error %d",
                    ip_str, addr.port, result);
