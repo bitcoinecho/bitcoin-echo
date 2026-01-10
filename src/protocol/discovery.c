@@ -474,6 +474,7 @@ echo_result_t discovery_select_outbound_address(peer_addr_manager_t *manager,
    * - Previous success
    * - Freshness
    */
+  size_t best_index = 0;
   for (size_t i = 0; i < manager->count; i++) {
     peer_addr_entry_t *entry = &manager->addresses[i];
 
@@ -528,6 +529,7 @@ echo_result_t discovery_select_outbound_address(peer_addr_manager_t *manager,
     if (best == NULL || score > best_score) {
       best = entry;
       best_score = score;
+      best_index = i;
     }
   }
 
@@ -540,10 +542,11 @@ echo_result_t discovery_select_outbound_address(peer_addr_manager_t *manager,
 
   *out_addr = best->addr;
   log_info(LOG_COMP_NET,
-           "Selected address: %d.%d.%d.%d:%u (score=%llu, attempts=%u)",
-           best->addr.ip[12], best->addr.ip[13], best->addr.ip[14],
+           "Selected address[%zu]: %d.%d.%d.%d:%u (score=%llu, attempts=%u, "
+           "in_use=%d)",
+           best_index, best->addr.ip[12], best->addr.ip[13], best->addr.ip[14],
            best->addr.ip[15], best->addr.port, (unsigned long long)best_score,
-           best->attempts);
+           best->attempts, best->in_use);
   return ECHO_SUCCESS;
 }
 
@@ -552,6 +555,12 @@ void discovery_mark_address_in_use(peer_addr_manager_t *manager,
   peer_addr_entry_t *entry = find_address(manager, addr);
   if (entry != NULL) {
     entry->in_use = ECHO_TRUE;
+  } else {
+    /* This should never happen - we just selected this address from the manager.
+     * Log an error to help diagnose if it does occur. */
+    log_warn(LOG_COMP_NET,
+             "BUG: mark_address_in_use failed to find %d.%d.%d.%d:%u",
+             addr->ip[12], addr->ip[13], addr->ip[14], addr->ip[15], addr->port);
   }
 }
 

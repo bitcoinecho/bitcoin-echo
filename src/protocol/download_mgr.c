@@ -742,25 +742,25 @@ bool download_mgr_check_stall(download_mgr_t *mgr, uint32_t validated_height) {
 
   uint64_t stall_duration = now - mgr->last_progress_time;
 
-  /* Adaptive stall timeout based on halving epoch.
+  /* Adaptive stall timeout based on block height (linear scaling).
    *
-   * Early blocks are tiny and should arrive quickly, so use shorter timeouts.
-   * Later blocks are larger and need more time. Scale with halving epoch:
-   *   Epoch 0 (blocks 0-209,999):     0.5 second base
-   *   Epoch 1 (blocks 210,000-419,999): 1.0 seconds base
-   *   Epoch 2 (blocks 420,000-629,999): 1.5 seconds base
-   *   etc.
+   * Block sizes grow roughly linearly with height, so timeout should too.
+   * Formula: timeout = 500ms + (height / 100) ms
+   *   Height 0:      500ms
+   *   Height 100k:   1500ms (1.5s)
+   *   Height 250k:   3000ms (3s)
+   *   Height 400k:   4500ms (4.5s)
    *
-   * This keeps momentum early in the chain while being patient later.
+   * This gives tight timeouts for tiny early blocks while being patient
+   * for larger blocks later in the chain.
    * The timeout doubles on each steal attempt (up to 64 seconds max).
    * Timeout resets when validation makes progress.
    */
-#define STALL_EPOCH_BLOCKS 210000    /* Blocks per halving epoch */
-#define STALL_MS_PER_EPOCH 1000      /* 1 second per epoch (was 500ms, too aggressive for larger blocks) */
+#define STALL_BASE_TIMEOUT_MS 500    /* Minimum timeout for earliest blocks */
+#define STALL_MS_PER_100_BLOCKS 1    /* Add 1ms per 100 blocks of height */
 #define STALL_MAX_TIMEOUT_MS 64000   /* 64 second max (matches Bitcoin Core) */
 
-  uint32_t epoch = validated_height / STALL_EPOCH_BLOCKS;
-  uint64_t base_timeout = (uint64_t)(epoch + 1) * STALL_MS_PER_EPOCH;
+  uint64_t base_timeout = STALL_BASE_TIMEOUT_MS + (validated_height / 100);
   uint64_t stall_timeout = base_timeout;
   for (uint32_t i = 0; i < mgr->stall_backoff_count && stall_timeout < STALL_MAX_TIMEOUT_MS; i++) {
     stall_timeout *= 2;
