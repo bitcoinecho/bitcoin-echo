@@ -900,8 +900,18 @@ static bool validate_block_internal(const consensus_engine_t *engine,
 bool consensus_validate_block(const consensus_engine_t *engine,
                               const block_t *block,
                               consensus_result_t *result) {
-  /* Pure validation always verifies scripts (no AssumeValid) */
-  return validate_block_internal(engine, block, NULL, false, result);
+  ECHO_ASSERT(engine != NULL);
+  ECHO_ASSERT(block != NULL);
+
+  /*
+   * AssumeValid: Skip script verification for blocks below the assumevalid
+   * height. This matches the behavior in consensus_validate_and_apply_block.
+   */
+  uint32_t height = get_block_height(engine, &block->header);
+  bool skip_scripts = (engine->assume_valid_height > 0 &&
+                       height <= engine->assume_valid_height);
+
+  return validate_block_internal(engine, block, NULL, skip_scripts, result);
 }
 
 bool consensus_validate_tx(const consensus_engine_t *engine, const tx_t *tx,
