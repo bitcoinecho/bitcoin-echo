@@ -3399,9 +3399,14 @@ echo_result_t node_apply_block(node_t *node, const block_t *block) {
 
   /*
    * Step 4: Update UTXO database atomically.
-   * Collect new UTXOs (outputs) and spent UTXOs (inputs).
+   *
+   * IBD MODE: Skip entirely. The in-memory UTXO set (updated by consensus_apply_block)
+   * is the source of truth. SQLite persistence only happens at clean shutdown.
+   * This eliminates both I/O AND redundant TXID computation during IBD.
+   *
+   * NORMAL MODE: Persist every block to SQLite for real-time durability.
    */
-  if (node->utxo_db_open) {
+  if (node->utxo_db_open && !node->ibd_mode) {
     /* Count new outputs and spent inputs */
     size_t new_count = 0;
     size_t spent_count = 0;
@@ -3475,25 +3480,13 @@ echo_result_t node_apply_block(node_t *node, const block_t *block) {
       }
     }
 
-    /*
-     * UTXO Persistence Strategy:
-     *
-     * NORMAL MODE: Persist every block to SQLite (real-time durability)
-     *
-     * IBD MODE: Skip all per-block persistence. The in-memory UTXO set is
-     * the source of truth. Persistence only happens at clean shutdown.
-     * This eliminates ALL SQLite I/O during IBD for maximum sync speed.
-     */
-    if (!node->ibd_mode) {
-      /* Normal operation: persist every block */
-      result = utxo_db_apply_block(&node->utxo_db, new_utxos, new_count,
-                                   spent_outpoints, spent_count);
-      if (result != ECHO_OK) {
-        log_error(LOG_COMP_DB, "Failed to apply block to UTXO database: %d",
-                  result);
-      }
+    /* Persist to SQLite */
+    result = utxo_db_apply_block(&node->utxo_db, new_utxos, new_count,
+                                 spent_outpoints, spent_count);
+    if (result != ECHO_OK) {
+      log_error(LOG_COMP_DB, "Failed to apply block to UTXO database: %d",
+                result);
     }
-    /* IBD mode: no persistence - flush happens at shutdown only */
 
     free(new_utxos);
     free(new_entries);

@@ -62,8 +62,6 @@ static void ipv4_to_ipv6_mapped(const char *ipv4, uint8_t *ipv6) {
   /* Use sscanf with bounds checking - we only read 4 bounded integers */
   /* NOLINTBEGIN(cert-err34-c) - sscanf correct here: return value checked */
   int parsed = sscanf(ipv4, "%u.%u.%u.%u", &a, &b, &c, &d);
-  log_info(LOG_COMP_NET, "ipv4_to_ipv6_mapped: input='%s' parsed=%d values=%u.%u.%u.%u",
-           ipv4, parsed, a, b, c, d);
   if (parsed == 4) {
     /* NOLINTEND(cert-err34-c) */
     if (a <= 255 && b <= 255 && c <= 255 && d <= 255) {
@@ -71,8 +69,6 @@ static void ipv4_to_ipv6_mapped(const char *ipv4, uint8_t *ipv6) {
       ipv6[13] = (uint8_t)b;
       ipv6[14] = (uint8_t)c;
       ipv6[15] = (uint8_t)d;
-      log_info(LOG_COMP_NET, "Successfully converted to IPv6-mapped: %d.%d.%d.%d",
-               ipv6[12], ipv6[13], ipv6[14], ipv6[15]);
     } else {
       log_warn(LOG_COMP_NET, "IP octet out of range: %u.%u.%u.%u", a, b, c, d);
     }
@@ -104,7 +100,8 @@ static echo_bool_t is_loopback(const uint8_t *ipv6) {
   return ECHO_FALSE;
 }
 
-/* Helper: Check if address is unspecified (0.0.0.0 or ::) */
+/* Helper: Check if address is unspecified or in reserved "current network" block
+ * RFC 791: 0.0.0.0/8 is reserved for "this network" and should not be routed */
 static echo_bool_t is_unspecified(const uint8_t *ipv6) {
   static const uint8_t zero[16] = {0};
 
@@ -113,9 +110,9 @@ static echo_bool_t is_unspecified(const uint8_t *ipv6) {
     return ECHO_TRUE;
   }
 
-  /* Check for IPv4-mapped 0.0.0.0 (::ffff:0.0.0.0) */
-  if (is_ipv4_mapped(ipv6) && ipv6[12] == 0 && ipv6[13] == 0 && ipv6[14] == 0 &&
-      ipv6[15] == 0) {
+  /* Check for IPv4-mapped addresses in the 0.0.0.0/8 reserved block.
+   * This includes 0.0.0.0 and all 0.x.x.x addresses (RFC 791 "current network") */
+  if (is_ipv4_mapped(ipv6) && ipv6[12] == 0) {
     return ECHO_TRUE;
   }
 
@@ -237,6 +234,13 @@ size_t discovery_query_dns_seeds(peer_addr_manager_t *manager) {
       addr.services = SERVICE_NODE_NETWORK | SERVICE_NODE_WITNESS;
       addr.timestamp = (uint32_t)(plat_time_ms() / 1000);
 
+      /* Validate address (reject reserved, multicast, loopback, etc.) */
+      if (!discovery_is_address_valid(manager, &addr)) {
+        log_debug(LOG_COMP_NET, "Skipping invalid DNS address: %d.%d.%d.%d:%u",
+                  addr.ip[12], addr.ip[13], addr.ip[14], addr.ip[15], addr.port);
+        continue;
+      }
+
       /* Check for duplicate before adding (same IP may appear in multiple seeds) */
       if (find_address(manager, &addr) != NULL) {
         continue;
@@ -313,16 +317,15 @@ size_t discovery_add_hardcoded_seeds(peer_addr_manager_t *manager) {
     net_addr_t addr;
     memset(&addr, 0, sizeof(addr));
     ipv4_to_ipv6_mapped(ip_str, addr.ip);
-
-    /* Skip if conversion failed (check if still 0.0.0.0) */
-    if (addr.ip[12] == 0 && addr.ip[13] == 0 && addr.ip[14] == 0 && addr.ip[15] == 0) {
-      log_warn(LOG_COMP_NET, "Skipping invalid hardcoded seed: %s", seeds[i]);
-      continue;
-    }
-
     addr.port = port;
     addr.services = SERVICE_NODE_NETWORK | SERVICE_NODE_WITNESS;
     addr.timestamp = (uint32_t)(plat_time_ms() / 1000);
+
+    /* Validate address (reject reserved, multicast, loopback, etc.) */
+    if (!discovery_is_address_valid(manager, &addr)) {
+      log_warn(LOG_COMP_NET, "Skipping invalid hardcoded seed: %s", seeds[i]);
+      continue;
+    }
 
     /* Add to manager */
     peer_addr_entry_t entry;
