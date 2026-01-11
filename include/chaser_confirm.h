@@ -16,6 +16,7 @@
 #ifndef ECHO_CHASER_CONFIRM_H
 #define ECHO_CHASER_CONFIRM_H
 
+#include <pthread.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -42,6 +43,10 @@ typedef enum {
  *
  * Applies validated blocks to chainstate in height order.
  * Handles reorganizations when a stronger chain is found.
+ *
+ * Uses a dedicated worker thread to process blocks asynchronously,
+ * preventing the dispatcher mutex from being held during I/O-heavy
+ * block confirmation operations.
  */
 typedef struct {
     chaser_t base;               /* Base chaser (must be first) */
@@ -55,6 +60,14 @@ typedef struct {
 
     /* Configuration */
     uint32_t top_checkpoint;     /* Height of top checkpoint */
+
+    /* Worker thread */
+    pthread_t worker;            /* Worker thread handle */
+    pthread_mutex_t worker_mutex;/* Protects work_pending and shutdown */
+    pthread_cond_t worker_cond;  /* Signals worker when work available */
+    bool work_pending;           /* Work available for worker */
+    bool worker_shutdown;        /* Signal worker to exit */
+    bool worker_started;         /* Worker thread has been started */
 } chaser_confirm_t;
 
 /**

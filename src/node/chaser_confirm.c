@@ -32,6 +32,7 @@ static bool confirm_handle_event(chaser_t *self, chase_event_t event,
                                  chase_value_t value);
 static void confirm_stop(chaser_t *self);
 static void confirm_destroy(chaser_t *self);
+static void *confirm_worker_thread(void *arg);
 
 static const chaser_vtable_t confirm_vtable = {
     .start = confirm_start,
@@ -64,6 +65,24 @@ chaser_confirm_t *chaser_confirm_create(node_t *node,
     chaser->fork_point = 0;
     chaser->top_checkpoint = 0; /* TODO: Get from config */
 
+    /* Initialize worker thread synchronization */
+    if (pthread_mutex_init(&chaser->worker_mutex, NULL) != 0) {
+        chaser_destroy(&chaser->base);
+        free(chaser);
+        return NULL;
+    }
+
+    if (pthread_cond_init(&chaser->worker_cond, NULL) != 0) {
+        pthread_mutex_destroy(&chaser->worker_mutex);
+        chaser_destroy(&chaser->base);
+        free(chaser);
+        return NULL;
+    }
+
+    chaser->work_pending = false;
+    chaser->worker_shutdown = false;
+    chaser->worker_started = false;
+
     return chaser;
 }
 
@@ -71,6 +90,22 @@ void chaser_confirm_destroy(chaser_confirm_t *chaser) {
     if (!chaser) {
         return;
     }
+
+    /* Signal worker thread to shut down */
+    if (chaser->worker_started) {
+        pthread_mutex_lock(&chaser->worker_mutex);
+        chaser->worker_shutdown = true;
+        pthread_cond_signal(&chaser->worker_cond);
+        pthread_mutex_unlock(&chaser->worker_mutex);
+
+        /* Wait for worker to exit */
+        pthread_join(chaser->worker, NULL);
+        chaser->worker_started = false;
+    }
+
+    /* Clean up synchronization primitives */
+    pthread_cond_destroy(&chaser->worker_cond);
+    pthread_mutex_destroy(&chaser->worker_mutex);
 
     chaser_stop(&chaser->base);
     chaser_destroy(&chaser->base);
@@ -229,6 +264,111 @@ bool chaser_confirm_reorganize(chaser_confirm_t *chaser, uint32_t fork_point) {
 }
 
 /*
+ * Worker Thread
+ *
+ * Processes blocks in a dedicated thread to avoid holding the dispatcher
+ * mutex during I/O-heavy confirmation operations. The event handler simply
+ * signals this thread when work may be available.
+ */
+
+static void confirm_process_blocks(chaser_confirm_t *chaser) {
+    node_t *node = chaser->base.node;
+    uint32_t confirmed = chaser_confirm_height(chaser);
+
+    /* Try to confirm blocks in sequence */
+    while (1) {
+        uint32_t next_height = confirmed + 1;
+
+        /* Check for shutdown */
+        pthread_mutex_lock(&chaser->worker_mutex);
+        bool shutdown = chaser->worker_shutdown;
+        pthread_mutex_unlock(&chaser->worker_mutex);
+        if (shutdown) {
+            break;
+        }
+
+        /* Try to load block at next height */
+        block_t block;
+        hash256_t hash;
+        echo_result_t result =
+            node_load_block_at_height(node, next_height, &block, &hash);
+
+        if (result != ECHO_OK) {
+            break; /* Block not stored/validated yet */
+        }
+
+        /* Confirm the block */
+        bool bypass = chaser_confirm_is_bypass(chaser, next_height);
+
+        if (bypass) {
+            /* Just update height for checkpoint blocks */
+            block_free(&block);
+            chaser_lock(&chaser->base);
+            chaser->confirmed_height = next_height;
+            chaser_unlock(&chaser->base);
+            chaser_notify_height(&chaser->base, CHASE_ORGANIZED, next_height);
+        } else {
+            /* Pass preloaded block to avoid double-loading */
+            confirm_result_t conf_result = confirm_block_internal(
+                chaser, next_height, hash.bytes, &block, &hash);
+            block_free(&block);
+            if (conf_result != CONFIRM_SUCCESS) {
+                break; /* Confirmation failed */
+            }
+        }
+
+        chaser_set_position(&chaser->base, next_height);
+        confirmed = next_height;
+
+        /*
+         * Checkpoint WAL periodically to prevent unbounded growth.
+         * During IBD, SQLite WAL grows because auto-checkpoint uses
+         * PASSIVE mode which fails when readers are present. By
+         * checkpointing inside the confirmation loop (with mutex
+         * held by block_index_db_checkpoint), we guarantee no readers.
+         */
+        if (confirmed % CHECKPOINT_INTERVAL == 0) {
+            block_index_db_t *bdb = node_get_block_index_db(node);
+            if (bdb) {
+                block_index_db_checkpoint(bdb);
+                log_info(LOG_COMP_SYNC,
+                         "chaser_confirm: WAL checkpoint at height %u",
+                         confirmed);
+            }
+        }
+    }
+}
+
+static void *confirm_worker_thread(void *arg) {
+    chaser_confirm_t *chaser = (chaser_confirm_t *)arg;
+
+    log_info(LOG_COMP_SYNC, "chaser_confirm: worker thread running");
+
+    while (1) {
+        /* Wait for work signal */
+        pthread_mutex_lock(&chaser->worker_mutex);
+        while (!chaser->work_pending && !chaser->worker_shutdown) {
+            pthread_cond_wait(&chaser->worker_cond, &chaser->worker_mutex);
+        }
+
+        if (chaser->worker_shutdown) {
+            pthread_mutex_unlock(&chaser->worker_mutex);
+            break;
+        }
+
+        /* Clear work pending flag before processing */
+        chaser->work_pending = false;
+        pthread_mutex_unlock(&chaser->worker_mutex);
+
+        /* Process all available blocks */
+        confirm_process_blocks(chaser);
+    }
+
+    log_info(LOG_COMP_SYNC, "chaser_confirm: worker thread exiting");
+    return NULL;
+}
+
+/*
  * Chaser Virtual Methods
  */
 
@@ -243,6 +383,15 @@ static int confirm_start(chaser_t *self) {
     } else {
         chaser->confirmed_height = 0;
     }
+
+    /* Start worker thread */
+    if (pthread_create(&chaser->worker, NULL, confirm_worker_thread, chaser) !=
+        0) {
+        log_error(LOG_COMP_SYNC, "chaser_confirm: failed to create worker thread");
+        return -1;
+    }
+    chaser->worker_started = true;
+    log_info(LOG_COMP_SYNC, "chaser_confirm: worker thread started");
 
     return 0;
 }
@@ -264,98 +413,17 @@ static bool confirm_handle_event(chaser_t *self, chase_event_t event,
     case CHASE_RESUME:
     case CHASE_START:
     case CHASE_BUMP:
-        /* Check for blocks to confirm in sequence */
-        {
-            node_t *node = chaser->base.node;
-            uint32_t confirmed = chaser_confirm_height(chaser);
-
-            /* Try to confirm blocks in sequence */
-            while (1) {
-                uint32_t next_height = confirmed + 1;
-
-                /* Try to load block at next height */
-                block_t block;
-                hash256_t hash;
-                echo_result_t result =
-                    node_load_block_at_height(node, next_height, &block, &hash);
-
-                if (result != ECHO_OK) {
-                    break; /* Block not stored/validated yet */
-                }
-
-                /* Confirm the block */
-                bool bypass = chaser_confirm_is_bypass(chaser, next_height);
-
-                if (bypass) {
-                    /* Just update height for checkpoint blocks */
-                    block_free(&block);
-                    chaser_lock(&chaser->base);
-                    chaser->confirmed_height = next_height;
-                    chaser_unlock(&chaser->base);
-                    chaser_notify_height(&chaser->base, CHASE_ORGANIZED,
-                                         next_height);
-                } else {
-                    /* Pass preloaded block to avoid double-loading */
-                    confirm_result_t conf_result = confirm_block_internal(
-                        chaser, next_height, hash.bytes, &block, &hash);
-                    block_free(&block);
-                    if (conf_result != CONFIRM_SUCCESS) {
-                        break; /* Confirmation failed */
-                    }
-                }
-
-                chaser_set_position(self, next_height);
-                confirmed = next_height;
-
-                /*
-                 * Checkpoint WAL periodically to prevent unbounded growth.
-                 * During IBD, SQLite WAL grows because auto-checkpoint uses
-                 * PASSIVE mode which fails when readers are present. By
-                 * checkpointing inside the confirmation loop (with mutex
-                 * held by block_index_db_checkpoint), we guarantee no readers.
-                 */
-                if (confirmed % CHECKPOINT_INTERVAL == 0) {
-                    block_index_db_t *bdb = node_get_block_index_db(node);
-                    if (bdb) {
-                        block_index_db_checkpoint(bdb);
-                        log_info(LOG_COMP_SYNC,
-                                 "chaser_confirm: WAL checkpoint at height %u",
-                                 confirmed);
-                    }
-                }
-            }
-        }
-        break;
-
     case CHASE_VALID:
-        /* Block has been validated */
-        /* value.height is the validated block height */
-        {
-            uint32_t height = value.height;
-            uint32_t confirmed = chaser_confirm_height(chaser);
-
-            /* Can only confirm if all previous blocks are confirmed */
-            if (height == confirmed + 1) {
-                /* TODO: Get block hash from database */
-                uint8_t hash[32] = {0};
-                bool bypass = chaser_confirm_is_bypass(chaser, height);
-
-                if (bypass) {
-                    /* Just update height for checkpoint blocks */
-                    chaser_lock(&chaser->base);
-                    chaser->confirmed_height = height;
-                    chaser_unlock(&chaser->base);
-                    chaser_notify_height(&chaser->base, CHASE_ORGANIZED, height);
-                } else {
-                    chaser_confirm_block(chaser, height, hash);
-                }
-
-                chaser_set_position(self, height);
-
-                /* Bump to check for more blocks */
-                chaser_notify_height(&chaser->base, CHASE_BUMP, 0);
-            }
-        }
+    case CHASE_CHECKED:
+        /*
+         * Signal worker thread to check for blocks.
+         * All block processing happens in the worker thread to avoid
+         * holding the dispatcher mutex during I/O operations.
+         */
+        pthread_mutex_lock(&chaser->worker_mutex);
+        chaser->work_pending = true;
+        pthread_cond_signal(&chaser->worker_cond);
+        pthread_mutex_unlock(&chaser->worker_mutex);
         break;
 
     case CHASE_REGRESSED:
@@ -367,22 +435,38 @@ static bool confirm_handle_event(chaser_t *self, chase_event_t event,
                 chaser_confirm_reorganize(chaser, branch_point);
                 chaser_set_position(self, branch_point);
             }
+            /* Signal worker to continue after reorg */
+            pthread_mutex_lock(&chaser->worker_mutex);
+            chaser->work_pending = true;
+            pthread_cond_signal(&chaser->worker_cond);
+            pthread_mutex_unlock(&chaser->worker_mutex);
         }
         break;
 
     case CHASE_STOP:
+        /* Signal worker to shut down */
+        pthread_mutex_lock(&chaser->worker_mutex);
+        chaser->worker_shutdown = true;
+        pthread_cond_signal(&chaser->worker_cond);
+        pthread_mutex_unlock(&chaser->worker_mutex);
         return false;
 
     default:
         break;
     }
 
+    (void)value; /* May be unused depending on event */
     return true;
 }
 
 static void confirm_stop(chaser_t *self) {
-    (void)self;
-    /* Nothing special to do on stop */
+    chaser_confirm_t *chaser = (chaser_confirm_t *)self;
+
+    /* Signal worker thread to stop */
+    pthread_mutex_lock(&chaser->worker_mutex);
+    chaser->worker_shutdown = true;
+    pthread_cond_signal(&chaser->worker_cond);
+    pthread_mutex_unlock(&chaser->worker_mutex);
 }
 
 static void confirm_destroy(chaser_t *self) {
