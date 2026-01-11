@@ -148,6 +148,34 @@ static uint32_t get_gap_threshold(uint32_t height) {
 }
 
 /**
+ * Recalculate lowest_pending_height by scanning queue and assigned batches.
+ *
+ * Must be called after any batch is removed/completed to keep backpressure
+ * calculations accurate. Without this, lowest_pending_height stays stuck at
+ * the first-ever queued height, making gap=0 and disabling backpressure.
+ */
+static void recalculate_lowest_pending(download_mgr_t *mgr) {
+  uint32_t lowest = UINT32_MAX;
+
+  /* Scan queue */
+  for (batch_node_t *node = mgr->queue_head; node != NULL; node = node->next) {
+    if (node->batch.count > 0 && node->batch.heights[0] < lowest) {
+      lowest = node->batch.heights[0];
+    }
+  }
+
+  /* Scan assigned batches */
+  for (size_t i = 0; i < mgr->peer_count; i++) {
+    work_batch_t *batch = mgr->peers[i].batch;
+    if (batch != NULL && batch->remaining > 0 && batch->heights[0] < lowest) {
+      lowest = batch->heights[0];
+    }
+  }
+
+  mgr->lowest_pending_height = (lowest == UINT32_MAX) ? 0 : lowest;
+}
+
+/**
  * Get batch size for a given block height.
  *
  * Bitcoin Core uses MAX_BLOCKS_IN_TRANSIT_PER_PEER = 16 as a fixed limit.
@@ -462,6 +490,7 @@ void download_mgr_remove_peer(download_mgr_t *mgr, peer_t *peer) {
     node->batch.assigned_time = 0;        /* Mark as unassigned */
     perf->batch = NULL;
     return_or_discard_batch(mgr, node);   /* Return or discard if stale */
+    recalculate_lowest_pending(mgr);      /* Update for backpressure */
   }
 
   /* Mark slot as empty */
@@ -556,9 +585,31 @@ bool download_mgr_peer_request_work(download_mgr_t *mgr, peer_t *peer) {
     batch_node_t *old_node = (batch_node_t *)(void *)perf->batch;
     uint32_t old_start = old_node->batch.heights[0];
     uint32_t old_end = old_start + (uint32_t)old_node->batch.count - 1;
-    LOG_INFO("download_mgr: freeing completed batch [%u-%u]", old_start, old_end);
-    batch_node_destroy(old_node);
-    perf->batch = NULL;
+
+    /* SAFETY CHECK: verify remaining is consistent with received[] */
+    size_t unreceived = 0;
+    for (size_t i = 0; i < old_node->batch.count; i++) {
+      if (!old_node->batch.received[i]) {
+        unreceived++;
+      }
+    }
+    if (unreceived > 0 && old_node->batch.remaining == 0) {
+      /* BUG: remaining hit 0 but blocks missing! Return to queue instead */
+      LOG_ERROR("download_mgr: BUG - batch [%u-%u] has remaining=0 but %zu "
+                "blocks unreceived! Returning to queue.",
+                old_start, old_end, unreceived);
+      old_node->batch.remaining = unreceived; /* Fix the count */
+      old_node->batch.assigned_time = 0;
+      perf->batch = NULL;
+      queue_push_after_sticky(mgr, old_node);
+      recalculate_lowest_pending(mgr);
+    } else {
+      LOG_INFO("download_mgr: freeing completed batch [%u-%u]", old_start, old_end);
+      batch_node_destroy(old_node);
+      perf->batch = NULL;
+      /* Recalculate lowest pending height for accurate backpressure */
+      recalculate_lowest_pending(mgr);
+    }
   }
 
   /* Try to get a batch from the queue */
@@ -571,7 +622,7 @@ bool download_mgr_peer_request_work(download_mgr_t *mgr, peer_t *peer) {
   /*
    * Backpressure: limit how far downloads race ahead of confirmation.
    *
-   * The gap = (lowest_pending_height - confirmed_height) represents blocks
+   * The gap = (highest_received_height - confirmed_height) represents blocks
    * downloaded but not yet confirmed. These blocks consume disk space and
    * cannot be pruned. If gap exceeds threshold, pause regular downloads.
    *
@@ -579,16 +630,16 @@ bool download_mgr_peer_request_work(download_mgr_t *mgr, peer_t *peer) {
    * resolving blocking blocks that stall the entire pipeline.
    */
   uint32_t gap = 0;
-  if (mgr->lowest_pending_height > mgr->confirmed_height) {
-    gap = mgr->lowest_pending_height - mgr->confirmed_height;
+  if (mgr->highest_received_height > mgr->confirmed_height) {
+    gap = mgr->highest_received_height - mgr->confirmed_height;
   }
   uint32_t threshold = get_gap_threshold(mgr->confirmed_height);
   bool backpressure_active = (gap > threshold);
 
   if (backpressure_active && !mgr->queue_head->batch.sticky) {
     /* Head is regular batch but backpressure active - pause downloads */
-    LOG_DEBUG("download_mgr: backpressure active (gap %u > %u), pausing",
-              gap, threshold);
+    LOG_INFO("download_mgr: backpressure active (gap %u > threshold %u), pausing",
+             gap, threshold);
     return false;
   }
 
@@ -843,7 +894,40 @@ bool download_mgr_check_stall(download_mgr_t *mgr, uint32_t validated_height) {
   peer_perf_t *blocker = find_peer_with_lowest_batch(mgr);
 
   if (blocker == NULL) {
-    /* No peer with work - nothing to steal */
+    /* No peer with work - check if needed block is in queue.
+     * This can happen when backpressure pauses all downloads:
+     *   1. Backpressure active (gap > threshold)
+     *   2. All in-flight batches complete
+     *   3. No new work assigned due to backpressure
+     *   4. Confirmation can't proceed → deadlock!
+     *
+     * Fix: if the needed block is in queue, make it sticky so
+     * backpressure gets bypassed for that critical batch. */
+    uint32_t next_height = validated_height + 1;
+    for (batch_node_t *qnode = mgr->queue_head; qnode != NULL; qnode = qnode->next) {
+      uint32_t qstart = qnode->batch.heights[0];
+      uint32_t qend = qstart + (uint32_t)qnode->batch.count - 1;
+      if (next_height >= qstart && next_height <= qend && !qnode->batch.sticky) {
+        /* Found batch with our needed block - make it sticky */
+        qnode->batch.sticky = true;
+        qnode->batch.sticky_height = next_height;
+        /* Move to front of queue */
+        if (qnode != mgr->queue_head) {
+          if (qnode->prev) qnode->prev->next = qnode->next;
+          if (qnode->next) qnode->next->prev = qnode->prev;
+          if (qnode == mgr->queue_tail) mgr->queue_tail = qnode->prev;
+          qnode->next = mgr->queue_head;
+          qnode->prev = NULL;
+          if (mgr->queue_head) mgr->queue_head->prev = qnode;
+          mgr->queue_head = qnode;
+        }
+        LOG_INFO("download_mgr: backpressure deadlock recovery - made batch "
+                 "[%u-%u] sticky for height %u",
+                 qstart, qend, next_height);
+        mgr->last_progress_time = plat_time_ms();
+        return true;
+      }
+    }
     LOG_INFO("download_mgr: stalled but no peers have work to steal");
     return false;
   }
@@ -867,20 +951,34 @@ bool download_mgr_check_stall(download_mgr_t *mgr, uint32_t validated_height) {
 
     if (queue_lowest <= next_height) {
       /* Found the needed block in the queue but not being worked on.
-       * Don't wait for "idle peer" - move this batch to the front so the
-       * next peer to finish gets it immediately. */
+       * Check if backpressure is blocking assignment - if so, make sticky. */
+      uint32_t gap = 0;
+      if (mgr->highest_received_height > mgr->confirmed_height) {
+        gap = mgr->highest_received_height - mgr->confirmed_height;
+      }
+      uint32_t threshold = get_gap_threshold(mgr->confirmed_height);
+      bool need_sticky = (gap > threshold);
+
       for (batch_node_t *qnode = mgr->queue_head; qnode != NULL; qnode = qnode->next) {
         uint32_t qstart = qnode->batch.heights[0];
         uint32_t qend = qstart + (uint32_t)qnode->batch.count - 1;
         if (next_height >= qstart && next_height <= qend) {
           /* Found the batch containing our needed block */
+          if (need_sticky && !qnode->batch.sticky) {
+            /* Only make sticky if backpressure is blocking us */
+            qnode->batch.sticky = true;
+            qnode->batch.sticky_height = next_height;
+            LOG_INFO("download_mgr: made queued batch [%u-%u] sticky for "
+                     "height %u (gap %u > threshold %u)",
+                     qstart, qend, next_height, gap, threshold);
+          }
           if (qnode != mgr->queue_head) {
             /* Remove from current position */
             if (qnode->prev) qnode->prev->next = qnode->next;
             if (qnode->next) qnode->next->prev = qnode->prev;
             if (qnode == mgr->queue_tail) mgr->queue_tail = qnode->prev;
-            /* Insert at front (after any sticky batch) */
-            if (mgr->queue_head && mgr->queue_head->batch.sticky) {
+            /* Insert at front (after any existing sticky batch) */
+            if (mgr->queue_head && mgr->queue_head->batch.sticky && !qnode->batch.sticky) {
               /* Insert after sticky */
               batch_node_t *sticky = mgr->queue_head;
               qnode->next = sticky->next;
@@ -894,7 +992,6 @@ bool download_mgr_check_stall(download_mgr_t *mgr, uint32_t validated_height) {
               qnode->prev = NULL;
               if (mgr->queue_head) mgr->queue_head->prev = qnode;
               mgr->queue_head = qnode;
-              if (mgr->queue_tail == NULL) mgr->queue_tail = qnode;
             }
             LOG_INFO("download_mgr: moved queued batch [%u-%u] to front "
                      "(contains needed block %u)",
@@ -904,7 +1001,7 @@ bool download_mgr_check_stall(download_mgr_t *mgr, uint32_t validated_height) {
         }
       }
       mgr->last_progress_time = now;
-      return false;
+      return false;  /* Don't signal steal - just repositioned queue */
     }
 
     /* Neither assigned nor queued - this is a real GAP */

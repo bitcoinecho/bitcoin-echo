@@ -1502,8 +1502,16 @@ echo_result_t node_store_block(node_t *node, const block_t *block) {
     return result;
   }
 
-  /* If storage thread is running, queue for async write */
-  if (node->storage_thread_running) {
+  /* DISABLED: Async storage causes race condition where download_mgr marks
+   * blocks as received before they're actually written to disk, leading to
+   * batch completion with missing blocks (GAP errors).
+   *
+   * TODO: Implement proper storage callback to mark blocks as received
+   * only after the storage thread has written them to disk.
+   *
+   * For now, use synchronous writes to ensure correctness.
+   */
+  if (false && node->storage_thread_running) {
     struct storage_queue_entry *entry = malloc(sizeof(*entry));
     if (entry == NULL) {
       free(block_data);
@@ -4096,7 +4104,8 @@ echo_result_t node_load_block_at_height(node_t *node, uint32_t height,
         walk = walk->prev;
       }
 
-      if (walk != NULL && walk->height == height && walk->data_file >= 0) {
+      if (walk != NULL && walk->height == height &&
+          walk->data_file != BLOCK_DATA_NOT_STORED) {
         /* Found in memory with stored data - load directly */
         block_file_pos_t pos;
         pos.file_index = (uint32_t)walk->data_file;

@@ -294,6 +294,13 @@ static void confirm_process_blocks(chaser_confirm_t *chaser) {
             node_load_block_at_height(node, next_height, &block, &hash);
 
         if (result != ECHO_OK) {
+            /* Log why we can't proceed - helps diagnose stalls */
+            if (confirmed % 10000 == 0 || result != ECHO_ERR_NOT_FOUND) {
+                log_debug(LOG_COMP_SYNC,
+                          "chaser_confirm: cannot load block %u: error=%d "
+                          "(will retry on next event)",
+                          next_height, result);
+            }
             break; /* Block not stored/validated yet */
         }
 

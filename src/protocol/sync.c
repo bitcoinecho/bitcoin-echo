@@ -1197,16 +1197,29 @@ echo_result_t sync_handle_block(sync_manager_t *mgr, peer_t *peer,
   block_index_t *block_index = block_index_map_lookup(index_map, &block_hash);
   bool was_already_stored = (block_index && block_index->data_file != BLOCK_DATA_NOT_STORED);
 
+  /* Store block if callback provided (before marking received in download mgr).
+   * CRITICAL: We must store FIRST, then mark received. If storage fails,
+   * we don't want to mark the block as received or the batch will complete
+   * without all blocks actually being stored. */
+  bool storage_ok = true;
+  if (mgr->callbacks.store_block) {
+    echo_result_t store_result = mgr->callbacks.store_block(block, mgr->callbacks.ctx);
+    if (store_result != ECHO_OK && store_result != ECHO_ERR_EXISTS) {
+      /* Storage failed (not just "already exists") - don't mark as received */
+      storage_ok = false;
+      log_warn(LOG_COMP_SYNC, "Block storage failed for height %u: %d",
+               block_index ? block_index->height : 0, store_result);
+    }
+  }
+
   /* Notify download manager of block receipt for performance tracking.
    * Calculate approximate block size: header + tx count varint + txs.
    * This doesn't need to be exact - it's for relative peer comparison.
-   */
-  size_t block_bytes = 80 + block->tx_count * 250; /* Rough estimate: 250 bytes/tx avg */
-  download_mgr_block_received(mgr->download_mgr, peer, &block_hash, block_bytes);
-
-  /* Store block if callback provided (before validation - we need the data) */
-  if (mgr->callbacks.store_block) {
-    mgr->callbacks.store_block(block, mgr->callbacks.ctx);
+   * Only mark received if storage succeeded to prevent batch completion
+   * with missing blocks. */
+  if (storage_ok) {
+    size_t block_bytes = 80 + block->tx_count * 250; /* Rough estimate: 250 bytes/tx avg */
+    download_mgr_block_received(mgr->download_mgr, peer, &block_hash, block_bytes);
   }
 
   /* Re-fetch block index after store_block (may have been created/updated) */
