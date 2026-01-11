@@ -994,9 +994,33 @@ bool download_mgr_check_stall(download_mgr_t *mgr, uint32_t validated_height) {
   /* Check if we already have a sticky batch for this height */
   if (mgr->queue_head != NULL && mgr->queue_head->batch.sticky &&
       mgr->queue_head->batch.sticky_height == next_height) {
-    LOG_DEBUG("download_mgr: sticky batch for height %u already exists",
-              next_height);
-    mgr->last_progress_time = now;
+    /* Sticky batch exists but validation hasn't progressed.
+     *
+     * CRITICAL: Do NOT reset last_progress_time here! The old code reset the
+     * timer, which caused a bug where stall detection would cycle every few
+     * seconds without ever escalating. This prevented backoff from increasing
+     * and slow peers from being disconnected.
+     *
+     * By letting the stall timer continue, we enable proper escalation:
+     * - Backoff increases exponentially (up to 64 seconds)
+     * - Performance checks eventually kick slow peers
+     * - The system can recover instead of being stuck indefinitely
+     *
+     * We DO increment backoff to escalate the timeout, giving more time for
+     * the existing sticky batch to resolve while avoiding tight loops. */
+    if (stall_duration >= stall_timeout * 2) {
+      /* Sticky batch has been stuck for 2x the timeout - escalate */
+      mgr->stall_backoff_count++;
+      LOG_WARN("download_mgr: sticky batch for height %u stuck for %llu ms "
+               "(timeout was %llu ms, backoff now %u)",
+               next_height, (unsigned long long)stall_duration,
+               (unsigned long long)stall_timeout, mgr->stall_backoff_count);
+    } else {
+      LOG_DEBUG("download_mgr: sticky batch for height %u exists, waiting "
+                "(stall=%llu ms, timeout=%llu ms)",
+                next_height, (unsigned long long)stall_duration,
+                (unsigned long long)stall_timeout);
+    }
     return false;
   }
 
