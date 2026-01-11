@@ -52,6 +52,7 @@ struct download_mgr {
   uint32_t lowest_pending_height;   /* Lowest height in queue/assigned */
   uint32_t highest_queued_height;   /* Highest height added */
   uint32_t highest_received_height; /* Highest block received (download frontier) */
+  uint32_t confirmed_height;        /* Current confirmed height (for backpressure) */
 
   /* Peer performance tracking */
   peer_perf_t peers[DOWNLOAD_MAX_PEERS];
@@ -106,6 +107,44 @@ static batch_node_t *batch_node_clone(const batch_node_t *src) {
   node->next = NULL;
   node->prev = NULL;
   return node;
+}
+
+/**
+ * Backpressure thresholds - limit how far downloads can race ahead of
+ * confirmation to prevent disk overflow.
+ *
+ * The "gap" metric: (lowest_pending_height - confirmed_height) represents
+ * blocks that have been downloaded but not yet confirmed. These blocks:
+ * - Consume disk space (stored in blocks DB)
+ * - Cannot be pruned until confirmed
+ * - Accumulate if downloads outpace confirmation
+ *
+ * Thresholds are height-dependent because block sizes vary dramatically:
+ * - Early blocks (~height <100k): ~200 bytes average, 30k blocks = ~6MB
+ * - Mid blocks (100k-200k): ~10-50KB average, 20k blocks = ~200MB-1GB
+ * - Late blocks (>200k): ~500KB-1MB average, 10k blocks = ~5-10GB
+ *
+ * When gap exceeds threshold, we pause regular batch assignment to let
+ * confirmation catch up. Sticky batches (for resolving blocking blocks)
+ * are NEVER paused since they're critical for forward progress.
+ */
+#define BACKPRESSURE_GAP_EARLY   30000  /* Height < 100k: generous for tiny blocks */
+#define BACKPRESSURE_GAP_MID     20000  /* Height 100k-200k */
+#define BACKPRESSURE_GAP_LATE    10000  /* Height > 200k: tighter for large blocks */
+#define BACKPRESSURE_HEIGHT_EARLY     100000
+#define BACKPRESSURE_HEIGHT_MID       200000
+
+/**
+ * Get gap threshold for backpressure based on current height.
+ */
+static uint32_t get_gap_threshold(uint32_t height) {
+  if (height < BACKPRESSURE_HEIGHT_EARLY) {
+    return BACKPRESSURE_GAP_EARLY;
+  } else if (height < BACKPRESSURE_HEIGHT_MID) {
+    return BACKPRESSURE_GAP_MID;
+  } else {
+    return BACKPRESSURE_GAP_LATE;
+  }
 }
 
 /**
@@ -529,13 +568,39 @@ bool download_mgr_peer_request_work(download_mgr_t *mgr, peer_t *peer) {
     return false;
   }
 
+  /*
+   * Backpressure: limit how far downloads race ahead of confirmation.
+   *
+   * The gap = (lowest_pending_height - confirmed_height) represents blocks
+   * downloaded but not yet confirmed. These blocks consume disk space and
+   * cannot be pruned. If gap exceeds threshold, pause regular downloads.
+   *
+   * Sticky batches ALWAYS bypass backpressure - they're critical for
+   * resolving blocking blocks that stall the entire pipeline.
+   */
+  uint32_t gap = 0;
+  if (mgr->lowest_pending_height > mgr->confirmed_height) {
+    gap = mgr->lowest_pending_height - mgr->confirmed_height;
+  }
+  uint32_t threshold = get_gap_threshold(mgr->confirmed_height);
+  bool backpressure_active = (gap > threshold);
+
+  if (backpressure_active && !mgr->queue_head->batch.sticky) {
+    /* Head is regular batch but backpressure active - pause downloads */
+    LOG_DEBUG("download_mgr: backpressure active (gap %u > %u), pausing",
+              gap, threshold);
+    return false;
+  }
+
   batch_node_t *node;
   bool is_sticky_clone = false;
 
   if (mgr->queue_head->batch.sticky) {
-    /* Sticky batch at head - alternate between priority and regular batches.
-     * This keeps frontier moving while also racing on blocking blocks. */
-    if (!mgr->sticky_assign_toggle) {
+    /*
+     * Sticky batch at head - normally alternate between sticky clones and
+     * regular batches. But under backpressure, force sticky-only mode.
+     */
+    if (backpressure_active || !mgr->sticky_assign_toggle) {
       /* Toggle OFF: assign sticky clone (PRIORITY batch) */
       node = batch_node_clone(mgr->queue_head);
       if (node == NULL) {
@@ -1664,6 +1729,16 @@ uint32_t download_mgr_highest_queued_height(const download_mgr_t *mgr) {
     return 0;
   }
   return mgr->highest_queued_height;
+}
+
+void download_mgr_set_confirmed_height(download_mgr_t *mgr, uint32_t height) {
+  if (mgr == NULL) {
+    return;
+  }
+  if (height > mgr->confirmed_height) {
+    mgr->confirmed_height = height;
+    LOG_DEBUG("download_mgr: confirmed_height updated to %u", height);
+  }
 }
 
 void download_mgr_block_complete(download_mgr_t *mgr, const hash256_t *hash,

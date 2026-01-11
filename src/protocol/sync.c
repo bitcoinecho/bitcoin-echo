@@ -224,6 +224,18 @@ static bool sync_chase_handler(chase_event_t event, chase_value_t value,
     /* Stop receiving events */
     return false;
 
+  case CHASE_ORGANIZED: {
+    /* Confirmation made progress - update download_mgr for backpressure.
+     * This lets downloads know how far behind confirmation is. */
+    uint32_t confirmed_height = value.height;
+    download_mgr_set_confirmed_height(mgr->download_mgr, confirmed_height);
+    /* Log periodically to avoid spam (every 10k blocks) */
+    if (confirmed_height % 10000 == 0) {
+      log_info(LOG_COMP_SYNC, "Backpressure: confirmed_height=%u", confirmed_height);
+    }
+    break;
+  }
+
   default:
     /* Ignore other events */
     break;

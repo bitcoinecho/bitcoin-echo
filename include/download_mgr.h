@@ -388,6 +388,21 @@ size_t download_mgr_inflight_count(const download_mgr_t *mgr);
 uint32_t download_mgr_highest_queued_height(const download_mgr_t *mgr);
 
 /**
+ * Update the confirmed height for backpressure calculation.
+ *
+ * Backpressure limits how far downloads can race ahead of confirmation.
+ * The gap (lowest_pending_height - confirmed_height) represents blocks
+ * that are downloaded but not yet confirmed (sitting on disk, can't be pruned).
+ *
+ * Call this when confirmation makes progress (CHASE_ORGANIZED events).
+ *
+ * Parameters:
+ *   mgr    - Download manager
+ *   height - Current confirmed block height
+ */
+void download_mgr_set_confirmed_height(download_mgr_t *mgr, uint32_t height);
+
+/**
  * Mark block as complete (validated).
  * NOTE: With batch model, blocks are implicitly complete when received.
  * This is kept for compatibility but is a no-op.
