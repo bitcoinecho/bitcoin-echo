@@ -16,6 +16,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Forward declarations for internal functions */
+static echo_result_t block_storage_get_file_size_locked(
+    const block_file_manager_t *mgr, uint32_t file_index, uint64_t *size);
+
 /*
  * Scan existing block files to find the current write position.
  * This is called during initialization to resume writing where we left off.
@@ -149,6 +153,9 @@ echo_result_t block_storage_init(block_file_manager_t *mgr,
   }
   mgr->read_cache_access_counter = 0;
 
+  /* Initialize mutex for thread safety */
+  pthread_mutex_init(&mgr->mutex, NULL);
+
   return ECHO_OK;
 }
 
@@ -174,6 +181,8 @@ echo_result_t block_storage_write(block_file_manager_t *mgr,
   if (!mgr || !block_data || !pos_out) {
     return ECHO_ERR_NULL_PARAM;
   }
+
+  pthread_mutex_lock(&mgr->mutex);
 
   /* Check if we need to start a new file */
   uint32_t record_size = BLOCK_FILE_RECORD_HEADER_SIZE + block_size;
@@ -202,6 +211,7 @@ echo_result_t block_storage_write(block_file_manager_t *mgr,
 
     FILE *f = fopen(path, "ab");
     if (!f) {
+      pthread_mutex_unlock(&mgr->mutex);
       return ECHO_ERR_PLATFORM_IO;
     }
     mgr->current_file = f;
@@ -215,6 +225,7 @@ echo_result_t block_storage_write(block_file_manager_t *mgr,
                             (magic >> 16) & 0xFF, (magic >> 24) & 0xFF};
 
   if (fwrite(magic_bytes, 1, 4, f) != 4) {
+    pthread_mutex_unlock(&mgr->mutex);
     return ECHO_ERR_PLATFORM_IO;
   }
 
@@ -224,11 +235,13 @@ echo_result_t block_storage_write(block_file_manager_t *mgr,
                            (block_size >> 24) & 0xFF};
 
   if (fwrite(size_bytes, 1, 4, f) != 4) {
+    pthread_mutex_unlock(&mgr->mutex);
     return ECHO_ERR_PLATFORM_IO;
   }
 
   /* Write block data */
   if (fwrite(block_data, 1, block_size, f) != block_size) {
+    pthread_mutex_unlock(&mgr->mutex);
     return ECHO_ERR_PLATFORM_IO;
   }
 
@@ -249,6 +262,7 @@ echo_result_t block_storage_write(block_file_manager_t *mgr,
     mgr->blocks_since_flush = 0;
   }
 
+  pthread_mutex_unlock(&mgr->mutex);
   return ECHO_OK;
 }
 
@@ -330,6 +344,8 @@ echo_result_t block_storage_read(block_file_manager_t *mgr,
   *block_out = NULL;
   *size_out = 0;
 
+  pthread_mutex_lock(&mgr->mutex);
+
   /* CRITICAL: If reading from the current write file, flush buffered writes.
    * Without this, the read handle won't see data still in stdio's buffer. */
   if (pos.file_index == mgr->current_file_index && mgr->current_file != NULL) {
@@ -339,6 +355,7 @@ echo_result_t block_storage_read(block_file_manager_t *mgr,
   /* Get cached file handle (opens file if not cached) */
   FILE *f = get_cached_read_handle(mgr, pos.file_index);
   if (!f) {
+    pthread_mutex_unlock(&mgr->mutex);
     return ECHO_ERR_NOT_FOUND;
   }
 
@@ -353,12 +370,14 @@ echo_result_t block_storage_read(block_file_manager_t *mgr,
         break;
       }
     }
+    pthread_mutex_unlock(&mgr->mutex);
     return ECHO_ERR_PLATFORM_IO;
   }
 
   /* Read and verify magic bytes */
   uint8_t magic_bytes[4];
   if (fread(magic_bytes, 1, 4, f) != 4) {
+    pthread_mutex_unlock(&mgr->mutex);
     return ECHO_ERR_TRUNCATED;
   }
 
@@ -367,12 +386,14 @@ echo_result_t block_storage_read(block_file_manager_t *mgr,
       ((uint32_t)magic_bytes[2] << 16) | ((uint32_t)magic_bytes[3] << 24);
 
   if (magic != ECHO_NETWORK_MAGIC) {
+    pthread_mutex_unlock(&mgr->mutex);
     return ECHO_ERR_INVALID_FORMAT;
   }
 
   /* Read block size */
   uint8_t size_bytes[4];
   if (fread(size_bytes, 1, 4, f) != 4) {
+    pthread_mutex_unlock(&mgr->mutex);
     return ECHO_ERR_TRUNCATED;
   }
 
@@ -382,18 +403,21 @@ echo_result_t block_storage_read(block_file_manager_t *mgr,
 
   /* Sanity check block size */
   if (block_size == 0 || block_size > ECHO_MAX_BLOCK_SIZE * 4) {
+    pthread_mutex_unlock(&mgr->mutex);
     return ECHO_ERR_INVALID_FORMAT;
   }
 
   /* Allocate buffer for block */
   uint8_t *block = (uint8_t *)malloc(block_size);
   if (!block) {
+    pthread_mutex_unlock(&mgr->mutex);
     return ECHO_ERR_OUT_OF_MEMORY;
   }
 
   /* Read block data */
   if (fread(block, 1, block_size, f) != block_size) {
     free(block);
+    pthread_mutex_unlock(&mgr->mutex);
     return ECHO_ERR_TRUNCATED;
   }
 
@@ -402,6 +426,7 @@ echo_result_t block_storage_read(block_file_manager_t *mgr,
   /* Success */
   *block_out = block;
   *size_out = block_size;
+  pthread_mutex_unlock(&mgr->mutex);
   return ECHO_OK;
 }
 
@@ -420,8 +445,11 @@ echo_result_t block_storage_delete_file(block_file_manager_t *mgr,
     return ECHO_ERR_NULL_PARAM;
   }
 
+  pthread_mutex_lock(&mgr->mutex);
+
   /* Cannot delete the current write file */
   if (file_index >= mgr->current_file_index) {
+    pthread_mutex_unlock(&mgr->mutex);
     return ECHO_ERR_INVALID_PARAM;
   }
 
@@ -430,6 +458,7 @@ echo_result_t block_storage_delete_file(block_file_manager_t *mgr,
 
   /* Check if file exists */
   if (!plat_file_exists(path)) {
+    pthread_mutex_unlock(&mgr->mutex);
     return ECHO_ERR_NOT_FOUND;
   }
 
@@ -445,12 +474,13 @@ echo_result_t block_storage_delete_file(block_file_manager_t *mgr,
     }
   }
 
-  /* Get file size before deletion (for cache update) */
+  /* Get file size before deletion (for cache update) - use internal locked version */
   uint64_t file_size = 0;
-  block_storage_get_file_size(mgr, file_index, &file_size);
+  block_storage_get_file_size_locked(mgr, file_index, &file_size);
 
   /* Delete the file */
   if (remove(path) != 0) {
+    pthread_mutex_unlock(&mgr->mutex);
     return ECHO_ERR_PLATFORM_IO;
   }
 
@@ -459,6 +489,7 @@ echo_result_t block_storage_delete_file(block_file_manager_t *mgr,
     mgr->cached_total_size -= file_size;
   }
 
+  pthread_mutex_unlock(&mgr->mutex);
   return ECHO_OK;
 }
 
@@ -471,25 +502,26 @@ echo_result_t block_storage_file_exists(const block_file_manager_t *mgr,
     return ECHO_ERR_NULL_PARAM;
   }
 
+  /* Cast away const for mutex - standard C idiom for synchronized accessors.
+   * The mutex is not part of the logical const-ness of the data structure. */
+  // NOLINTNEXTLINE(clang-diagnostic-cast-qual)
+  block_file_manager_t *mutable_mgr = (block_file_manager_t *)mgr;
+  pthread_mutex_lock(&mutable_mgr->mutex);
+
   char path[512];
   block_storage_get_path(mgr, file_index, path);
 
   *exists = plat_file_exists(path);
+
+  pthread_mutex_unlock(&mutable_mgr->mutex);
   return ECHO_OK;
 }
 
 /*
- * Get the size of a block file.
- *
- * For the current write file, returns tracked offset (includes buffered data).
- * For other files, queries the filesystem.
+ * Internal: Get the size of a block file (caller must hold mutex).
  */
-echo_result_t block_storage_get_file_size(const block_file_manager_t *mgr,
-                                          uint32_t file_index, uint64_t *size) {
-  if (mgr == NULL || size == NULL) {
-    return ECHO_ERR_NULL_PARAM;
-  }
-
+static echo_result_t block_storage_get_file_size_locked(
+    const block_file_manager_t *mgr, uint32_t file_index, uint64_t *size) {
   /* For current write file, use tracked offset (includes buffered data) */
   if (file_index == mgr->current_file_index && mgr->current_file != NULL) {
     *size = mgr->current_file_offset;
@@ -529,6 +561,30 @@ echo_result_t block_storage_get_file_size(const block_file_manager_t *mgr,
 }
 
 /*
+ * Get the size of a block file.
+ *
+ * For the current write file, returns tracked offset (includes buffered data).
+ * For other files, queries the filesystem.
+ */
+echo_result_t block_storage_get_file_size(const block_file_manager_t *mgr,
+                                          uint32_t file_index, uint64_t *size) {
+  if (mgr == NULL || size == NULL) {
+    return ECHO_ERR_NULL_PARAM;
+  }
+
+  /* Cast away const for mutex - standard C idiom for synchronized accessors.
+   * The mutex is not part of the logical const-ness of the data structure. */
+  // NOLINTNEXTLINE(clang-diagnostic-cast-qual)
+  block_file_manager_t *mutable_mgr = (block_file_manager_t *)mgr;
+  pthread_mutex_lock(&mutable_mgr->mutex);
+
+  echo_result_t result = block_storage_get_file_size_locked(mgr, file_index, size);
+
+  pthread_mutex_unlock(&mutable_mgr->mutex);
+  return result;
+}
+
+/*
  * Get total disk usage of all block files.
  * Returns the cached value that is maintained incrementally.
  */
@@ -538,7 +594,15 @@ echo_result_t block_storage_get_total_size(const block_file_manager_t *mgr,
     return ECHO_ERR_NULL_PARAM;
   }
 
+  /* Cast away const for mutex - standard C idiom for synchronized accessors.
+   * The mutex is not part of the logical const-ness of the data structure. */
+  // NOLINTNEXTLINE(clang-diagnostic-cast-qual)
+  block_file_manager_t *mutable_mgr = (block_file_manager_t *)mgr;
+  pthread_mutex_lock(&mutable_mgr->mutex);
+
   *total_size = mgr->cached_total_size;
+
+  pthread_mutex_unlock(&mutable_mgr->mutex);
   return ECHO_OK;
 }
 
@@ -549,7 +613,17 @@ uint32_t block_storage_get_current_file(const block_file_manager_t *mgr) {
   if (mgr == NULL) {
     return 0;
   }
-  return mgr->current_file_index;
+
+  /* Cast away const for mutex - standard C idiom for synchronized accessors.
+   * The mutex is not part of the logical const-ness of the data structure. */
+  // NOLINTNEXTLINE(clang-diagnostic-cast-qual)
+  block_file_manager_t *mutable_mgr = (block_file_manager_t *)mgr;
+  pthread_mutex_lock(&mutable_mgr->mutex);
+
+  uint32_t result = mgr->current_file_index;
+
+  pthread_mutex_unlock(&mutable_mgr->mutex);
+  return result;
 }
 
 /*
@@ -561,6 +635,12 @@ echo_result_t block_storage_get_lowest_file(const block_file_manager_t *mgr,
     return ECHO_ERR_NULL_PARAM;
   }
 
+  /* Cast away const for mutex - standard C idiom for synchronized accessors.
+   * The mutex is not part of the logical const-ness of the data structure. */
+  // NOLINTNEXTLINE(clang-diagnostic-cast-qual)
+  block_file_manager_t *mutable_mgr = (block_file_manager_t *)mgr;
+  pthread_mutex_lock(&mutable_mgr->mutex);
+
   char path[512];
 
   /* Scan from 0 to find the first existing file */
@@ -569,10 +649,12 @@ echo_result_t block_storage_get_lowest_file(const block_file_manager_t *mgr,
 
     if (plat_file_exists(path)) {
       *file_index = i;
+      pthread_mutex_unlock(&mutable_mgr->mutex);
       return ECHO_OK;
     }
   }
 
+  pthread_mutex_unlock(&mutable_mgr->mutex);
   return ECHO_ERR_NOT_FOUND;
 }
 
@@ -590,14 +672,18 @@ echo_result_t block_storage_flush(block_file_manager_t *mgr) {
     return ECHO_ERR_NULL_PARAM;
   }
 
+  pthread_mutex_lock(&mgr->mutex);
+
   if (mgr->current_file != NULL) {
     FILE *f = (FILE *)mgr->current_file;
     if (fflush(f) != 0) {
+      pthread_mutex_unlock(&mgr->mutex);
       return ECHO_ERR_PLATFORM_IO;
     }
     mgr->blocks_since_flush = 0;
   }
 
+  pthread_mutex_unlock(&mgr->mutex);
   return ECHO_OK;
 }
 
@@ -626,4 +712,7 @@ void block_storage_close(block_file_manager_t *mgr) {
       mgr->read_cache[i].file_index = UINT32_MAX;
     }
   }
+
+  /* Destroy mutex */
+  pthread_mutex_destroy(&mgr->mutex);
 }

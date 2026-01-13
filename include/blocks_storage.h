@@ -20,6 +20,7 @@
 #define ECHO_BLOCKS_STORAGE_H
 
 #include "echo_types.h"
+#include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -62,6 +63,8 @@ typedef struct {
     uint64_t last_access;       /* Access counter for LRU eviction */
   } read_cache[BLOCK_READ_CACHE_SIZE];
   uint64_t read_cache_access_counter; /* Monotonic counter for LRU */
+
+  pthread_mutex_t mutex; /* Protects all mutable state for thread safety */
 } block_file_manager_t;
 
 /*
