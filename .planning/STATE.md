@@ -53,6 +53,8 @@ Recent decisions affecting current work:
 - [Phase 01]: All routine eviction events use LOG_DEBUG only — invisible during normal IBD, available for diagnostics
 - [01-07]: download_mgr_inject_peer_rate() always sets has_reported=true even for zero-rate stalled peers — stalled peer IS a reporter (used to deliver, stopped), distinct from warming-up peer (never delivered)
 - [01-07]: Test injection API is a proper public function (not #ifdef-guarded) with "FOR UNIT TESTS ONLY" doc comment — simpler and more honest than preprocessor-conditional builds
+- [Phase 01]: Corrupted size field test uses 0xFFFFFFFF — validation already present in blocks.c (ECHO_MAX_BLOCK_SIZE*4 check), no fix needed
+- [Phase 01]: Near-4x witness limit test uses ECHO_MAX_BLOCK_SIZE*4-1 (3,999,999 bytes) — highest valid storage size per current blocks.c bounds
 
 ### Pending Todos
 
