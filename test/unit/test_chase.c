@@ -103,6 +103,10 @@ echo_result_t block_index_db_lookup_by_height(void *bdb, uint32_t height,
     (void)bdb; (void)height; (void)entry_out;
     return ECHO_ERR_NOT_FOUND; /* Stub — hash lookup returns not-found */
 }
+echo_result_t txindex_delete_by_block(void *bdb, const void *block_hash) {
+    (void)bdb; (void)block_hash;
+    return ECHO_OK; /* Stub — reorg txindex cleanup is a no-op in chase tests */
+}
 
 /* Fake node for tests - just needs to be non-NULL */
 static int g_fake_node = 0;
