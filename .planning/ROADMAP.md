@@ -93,11 +93,11 @@ Plans:
   2. The witness commitment in the template is computed from the wtxid merkle root (coinbase wtxid = 32 zero bytes; all other transactions use wtxid, not txid)
   3. getblocktemplate returns RPC error -28 while the node is still syncing — it does not serve a partial template
   4. A block constructed from the template and submitted via submitblock is accepted by Echo and results in that block appearing at the chain tip
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 06-01: Implement getblocktemplate with real MTP mintime, mempool transaction selection, witness commitment computation using wtxid merkle root (RPC-05)
-- [ ] 06-02: Implement submitblock — deserialize, validate, and apply the submitted block (RPC-06)
+- [ ] 06-01-PLAN.md — IBD guard mechanism + getblocktemplate with real MTP, correct bits, BIP-145 fields, witness commitment (RPC-05)
+- [ ] 06-02-PLAN.md — submitblock IBD guard and peer announcement after acceptance (RPC-06)
 
 ## Progress
 
