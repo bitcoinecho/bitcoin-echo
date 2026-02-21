@@ -53,6 +53,7 @@ static bool test_storage_has_block(uint32_t height) {
 void block_free(void *block) { (void)block; }
 uint32_t chainstate_get_height(void *cs) { (void)cs; return 0; }
 void log_error(int comp, const char *fmt, ...) { (void)comp; (void)fmt; }
+void log_warn(int comp, const char *fmt, ...) { (void)comp; (void)fmt; }
 void log_info(int comp, const char *fmt, ...) { (void)comp; (void)fmt; }
 void log_debug(int comp, const char *fmt, ...) { (void)comp; (void)fmt; }
 echo_result_t node_apply_block(void *node, const void *block) {
@@ -84,6 +85,11 @@ void *node_get_block_index_db(void *node) {
 }
 void block_index_db_checkpoint(void *bdb) {
     (void)bdb; /* No-op stub for tests */
+}
+echo_result_t block_index_db_lookup_by_height(void *bdb, uint32_t height,
+                                               void *entry_out) {
+    (void)bdb; (void)height; (void)entry_out;
+    return ECHO_ERR_NOT_FOUND; /* Stub — hash lookup returns not-found */
 }
 
 /* Fake node for tests - just needs to be non-NULL */
