@@ -9,11 +9,11 @@ Requirements for peer-compatible mainnet node. Each maps to roadmap phases.
 
 ### Consensus
 
-- [ ] **CONS-01**: Node validates OP_CHECKSIGADD (BIP-342 Tapscript) correctly for all key types including unknown-key-type upgrade rule
+- [x] **CONS-01**: Node validates OP_CHECKSIGADD (BIP-342 Tapscript) correctly for all key types including unknown-key-type upgrade rule
 - [x] **CONS-02**: Node performs full UTXO rollback on chain reorganization using delta undo system
 - [x] **CONS-03**: Node stores chainwork in big-endian format for correct SQLite bytewise fork selection
 - [x] **CONS-04**: Node recomputes chainwork correctly during reorg (stores prev_chainwork in block_delta_t)
-- [ ] **CONS-05**: Node passes all BIP-342 reference test vectors for Tapscript validation
+- [x] **CONS-05**: Node passes all BIP-342 reference test vectors for Tapscript validation
 
 ### P2P Network
 
@@ -48,7 +48,7 @@ Requirements for peer-compatible mainnet node. Each maps to roadmap phases.
 - [x] **TEST-01**: Test suite covers reorg scenarios: simple fork, deep reorg (6+ blocks), same-work competing chains
 - [x] **TEST-02**: Test suite covers concurrent block storage reads and writes under load
 - [x] **TEST-03**: Test suite covers peer eviction with multiple slow/stalled peers
-- [ ] **TEST-04**: Test suite covers Taproot script validation using BIP-342 reference vectors
+- [x] **TEST-04**: Test suite covers Taproot script validation using BIP-342 reference vectors
 - [x] **TEST-05**: Test suite covers large block handling at ECHO_MAX_BLOCK_SIZE and near 4x limit, including corrupted size fields and truncated reads
 - [ ] **TEST-06**: Test suite covers BIP-125 RBF replacement validation with all 5 rules
 
@@ -96,11 +96,11 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| CONS-01 | Phase 2 | Pending |
+| CONS-01 | Phase 2 | Complete |
 | CONS-02 | Phase 2 | Complete |
 | CONS-03 | Phase 1 | Complete |
 | CONS-04 | Phase 2 | Complete |
-| CONS-05 | Phase 2 | Pending |
+| CONS-05 | Phase 2 | Complete |
 | P2P-01 | Phase 3 | Pending |
 | P2P-02 | Phase 3 | Pending |
 | P2P-03 | Phase 3 | Pending |
@@ -120,7 +120,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | TEST-01 | Phase 2 | Complete |
 | TEST-02 | Phase 1 | Complete |
 | TEST-03 | Phase 1 | Complete |
-| TEST-04 | Phase 2 | Pending |
+| TEST-04 | Phase 2 | Complete |
 | TEST-05 | Phase 1 | Complete |
 | TEST-06 | Phase 3 | Pending |
 
