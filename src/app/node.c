@@ -3676,6 +3676,39 @@ echo_result_t node_apply_block(node_t *node, const block_t *block) {
   }
 
   /*
+   * Step 3: Populate transaction index.
+   *
+   * Index all transactions in this block so getrawtransaction can look them
+   * up by txid. The file position comes from the block_index_db entry, which
+   * was recorded by node_store_block earlier in the confirmation pipeline.
+   *
+   * If the block hasn't been stored yet (data_file < 0), skip txindex with a
+   * debug log. This edge case is defensive; in normal operation store always
+   * precedes apply.
+   *
+   * IBD MODE: Index every block. The txindex is small relative to UTXO writes
+   * and is needed at any point after IBD completes for RPC queries.
+   */
+  if (node->block_index_db_open) {
+    block_index_entry_t bentry;
+    echo_result_t idx_res = block_index_db_lookup_by_hash(
+        &node->block_index_db, &block_hash, &bentry);
+    if (idx_res == ECHO_OK && bentry.data_file >= 0) {
+      idx_res = txindex_insert_block(&node->block_index_db, &block_hash, block,
+                                     (uint32_t)bentry.data_file, bentry.data_pos);
+      if (idx_res != ECHO_OK) {
+        log_warn(LOG_COMP_DB,
+                 "txindex insert failed for block at height %u: %d", height,
+                 idx_res);
+      }
+    } else if (idx_res == ECHO_OK && bentry.data_file < 0) {
+      log_debug(LOG_COMP_DB,
+                "skipping txindex for block %u: not yet stored on disk",
+                height);
+    }
+  }
+
+  /*
    * Step 4: Update UTXO database atomically.
    *
    * IBD MODE: Skip entirely. The in-memory UTXO set (updated by consensus_apply_block)

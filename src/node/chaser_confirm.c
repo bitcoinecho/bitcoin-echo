@@ -274,6 +274,24 @@ bool chaser_confirm_reorganize(chaser_confirm_t *chaser, uint32_t fork_point) {
                 return false;
             }
 
+            /* Delete txindex entries for this disconnected block before
+             * reverting in-memory UTXO state. Best-effort: log and continue
+             * if deletion fails. */
+            if (chaser->base.node != NULL) {
+                block_index_db_t *bdb =
+                    node_get_block_index_db(chaser->base.node);
+                if (bdb != NULL) {
+                    echo_result_t txdel_res =
+                        txindex_delete_by_block(bdb, &delta->block_hash);
+                    if (txdel_res != ECHO_OK) {
+                        log_warn(LOG_COMP_DB,
+                                 "txindex delete failed for block at height "
+                                 "%u during reorg: %d",
+                                 h, txdel_res);
+                    }
+                }
+            }
+
             echo_result_t result =
                 chainstate_revert_block(chaser->chainstate, delta);
             if (result != ECHO_OK) {
