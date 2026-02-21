@@ -96,39 +96,39 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| CONS-01 | — | Pending |
-| CONS-02 | — | Pending |
-| CONS-03 | — | Pending |
-| CONS-04 | — | Pending |
-| CONS-05 | — | Pending |
-| P2P-01 | — | Pending |
-| P2P-02 | — | Pending |
-| P2P-03 | — | Pending |
-| P2P-04 | — | Pending |
-| BUGF-01 | — | Pending |
-| BUGF-02 | — | Pending |
-| INFR-01 | — | Pending |
-| INFR-02 | — | Pending |
-| INFR-03 | — | Pending |
-| INFR-04 | — | Pending |
-| INFR-05 | — | Pending |
-| RPC-01 | — | Pending |
-| RPC-02 | — | Pending |
-| RPC-03 | — | Pending |
-| RPC-04 | — | Pending |
-| RPC-05 | — | Pending |
-| TEST-01 | — | Pending |
-| TEST-02 | — | Pending |
-| TEST-03 | — | Pending |
-| TEST-04 | — | Pending |
-| TEST-05 | — | Pending |
-| TEST-06 | — | Pending |
+| CONS-01 | Phase 2 | Pending |
+| CONS-02 | Phase 2 | Pending |
+| CONS-03 | Phase 1 | Pending |
+| CONS-04 | Phase 2 | Pending |
+| CONS-05 | Phase 2 | Pending |
+| P2P-01 | Phase 3 | Pending |
+| P2P-02 | Phase 3 | Pending |
+| P2P-03 | Phase 3 | Pending |
+| P2P-04 | Phase 3 | Pending |
+| BUGF-01 | Phase 1 | Pending |
+| BUGF-02 | Phase 1 | Pending |
+| INFR-01 | Phase 1 | Pending |
+| INFR-02 | Phase 1 | Pending |
+| INFR-03 | Phase 1 | Pending |
+| INFR-04 | Phase 1 | Pending |
+| INFR-05 | Phase 1 | Pending |
+| RPC-01 | Phase 4 | Pending |
+| RPC-02 | Phase 4 | Pending |
+| RPC-03 | Phase 4 | Pending |
+| RPC-04 | Phase 4 | Pending |
+| RPC-05 | Phase 4 | Pending |
+| TEST-01 | Phase 2 | Pending |
+| TEST-02 | Phase 1 | Pending |
+| TEST-03 | Phase 1 | Pending |
+| TEST-04 | Phase 2 | Pending |
+| TEST-05 | Phase 1 | Pending |
+| TEST-06 | Phase 3 | Pending |
 
 **Coverage:**
 - v1 requirements: 27 total
-- Mapped to phases: 0
-- Unmapped: 27
+- Mapped to phases: 27
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-02-20*
-*Last updated: 2026-02-20 after initial definition*
+*Last updated: 2026-02-20 after roadmap creation — all 27 requirements mapped*
