@@ -38,6 +38,7 @@
 #include "peer.h"
 #include "platform.h"
 #include "protocol.h"
+#include "protocol_serialize.h"
 #include "sync.h"
 #include "tx.h"
 #include "tx_validate.h"
@@ -2762,29 +2763,138 @@ static void node_handle_peer_message(node_t *node, peer_t *peer,
         const inv_vector_t *inv = &msg->payload.getdata.inventory[i];
 
         if (inv->type == INV_BLOCK || inv->type == INV_WITNESS_BLOCK) {
-          /*
-           * Block request handling (Pruning): If pruning is enabled and
-           * we've pruned this block, send NOTFOUND.
-           */
-          if (node_is_pruning_enabled(node) && node->block_index_db_open) {
-            bool is_pruned = false;
-            echo_result_t prune_result = block_index_db_is_pruned(
-                &node->block_index_db, &inv->hash, &is_pruned);
+          bool want_witness = (inv->type == INV_WITNESS_BLOCK);
 
-            if (prune_result == ECHO_OK && is_pruned) {
-              /* Block is pruned - send NOTFOUND */
-              log_debug(LOG_COMP_NET, "Requested block is pruned, sending notfound");
-              inv_vector_t notfound_inv = *inv; /* Copy to avoid const issues */
-              msg_t notfound_msg;
-              memset(&notfound_msg, 0, sizeof(notfound_msg));
-              notfound_msg.type = MSG_NOTFOUND;
-              notfound_msg.payload.notfound.count = 1;
-              notfound_msg.payload.notfound.inventory = &notfound_inv;
-              peer_queue_message(peer, &notfound_msg);
-            }
-            /* If block is not pruned, we could serve it */
+          /*
+           * Block serving: look up block in index, check availability, serve.
+           * Three notfound cases: (1) unknown hash, (2) pruned, (3) header-only.
+           */
+
+          /* Step 1: Check if block exists in our index */
+          block_index_entry_t idx_entry;
+          echo_result_t blk_result = ECHO_ERR_NOT_FOUND;
+          if (node->block_index_db_open) {
+            blk_result = block_index_db_lookup_by_hash(
+                &node->block_index_db, &inv->hash, &idx_entry);
           }
-          /* TODO: Full block serving */
+
+          if (blk_result == ECHO_ERR_NOT_FOUND) {
+            log_debug(LOG_COMP_NET, "Requested block not in index, sending notfound to %s",
+                      peer->address);
+            goto serve_block_notfound;
+          }
+          if (blk_result != ECHO_OK) {
+            continue; /* Database error — skip silently */
+          }
+
+          /* Step 2: Check if block data is available (not pruned, not header-only) */
+          if (!(idx_entry.status & BLOCK_STATUS_HAVE_DATA) ||
+              (idx_entry.status & BLOCK_STATUS_PRUNED)) {
+            log_debug(LOG_COMP_NET, "Block not available (pruned or header-only), "
+                      "sending notfound to %s", peer->address);
+            goto serve_block_notfound;
+          }
+
+          /* Step 3: Load block from storage */
+          block_t block;
+          block_init(&block);
+          blk_result = node_load_block(node, &inv->hash, &block);
+          if (blk_result != ECHO_OK) {
+            log_debug(LOG_COMP_NET, "Failed to load block for serving: %d", blk_result);
+            block_free(&block);
+            goto serve_block_notfound;
+          }
+
+          /* Step 4: Serialize to heap buffer and send directly.
+           * We bypass peer_queue_message because:
+           * (a) peer_send_message_internal has no MSG_BLOCK case (20KB stack limit),
+           * (b) msg_block_serialize always includes witness (wrong for INV_BLOCK),
+           * (c) block_t ownership transfer to the queue is complex and error-prone.
+           * Direct-send: serialize → build header → plat_socket_send → free. */
+
+          if (want_witness) {
+            /* INV_WITNESS_BLOCK: full witness serialization via block_serialize */
+            size_t buf_size = block_serialize_size(&block);
+            if (buf_size == 0) {
+              block_free(&block);
+              continue;
+            }
+
+            uint8_t *buf = malloc(buf_size);
+            if (!buf) {
+              log_error(LOG_COMP_NET, "Failed to allocate witness block buffer (%zu bytes)",
+                        buf_size);
+              block_free(&block);
+              continue;
+            }
+
+            size_t written = 0;
+            echo_result_t ser = block_serialize(&block, buf, buf_size, &written);
+            block_free(&block); /* block_t no longer needed — we have the bytes */
+            if (ser != ECHO_OK) {
+              free(buf);
+              continue;
+            }
+
+            /* Build 24-byte message header and send */
+            msg_header_t hdr;
+            hdr.magic = MAGIC_MAINNET;
+            memset(hdr.command, 0, COMMAND_LEN);
+            const char *cmd = msg_command_string(MSG_BLOCK);
+            if (cmd) {
+              memcpy(hdr.command, cmd, strlen(cmd));
+            }
+            hdr.length = (uint32_t)written;
+            hdr.checksum = msg_checksum(buf, written);
+
+            uint8_t hdr_buf[24];
+            ser = msg_header_serialize(&hdr, hdr_buf, sizeof(hdr_buf));
+            if (ser != ECHO_OK) {
+              free(buf);
+              continue;
+            }
+
+            int sent = plat_socket_send(peer->socket, hdr_buf, 24);
+            if (sent <= 0) {
+              free(buf);
+              continue;
+            }
+
+            /* Send payload — may need multiple sends for large blocks */
+            size_t total_sent = 0;
+            while (total_sent < written) {
+              sent = plat_socket_send(peer->socket, buf + total_sent,
+                                      written - total_sent);
+              if (sent <= 0) {
+                free(buf);
+                goto serve_block_done;
+              }
+              total_sent += (size_t)sent;
+            }
+
+            free(buf);
+            log_debug(LOG_COMP_NET, "Served witness block to peer %s", peer->address);
+
+          } else {
+            /* INV_BLOCK: legacy stripped serialization — see Task 2 */
+            /* Task 2 fills in this branch */
+            block_free(&block);
+          }
+
+serve_block_done:
+          continue;
+
+serve_block_notfound:
+          {
+            inv_vector_t nf_inv = *inv;
+            msg_t nf_msg;
+            memset(&nf_msg, 0, sizeof(nf_msg));
+            nf_msg.type = MSG_NOTFOUND;
+            nf_msg.payload.notfound.count = 1;
+            nf_msg.payload.notfound.inventory = &nf_inv;
+            peer_queue_message(peer, &nf_msg);
+          }
+          continue;
         } else if (inv->type == INV_TX || inv->type == INV_WITNESS_TX) {
           /*
            * IBD Optimization: During initial block download, don't serve
