@@ -48,12 +48,11 @@ See: `.planning/milestones/v1.0-ROADMAP.md` for full details
   2. A peer that sends getdata with MSG_WITNESS_BLOCK for a known block hash receives the full witness-serialized block back — a peer that sends MSG_BLOCK receives the stripped legacy serialization, not a witness block
   3. Node announces new blocks to witness-capable peers using INV_WITNESS_BLOCK (0x40000002), not INV_BLOCK — legacy peers still receive INV_BLOCK announcements
   4. Serving a block that is no longer in the local block store returns a notfound message, not silence or a crash
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 03-01: Add NODE_WITNESS service flag to version message and services bitmask (P2P-01)
-- [ ] 03-02: Implement getdata block handler — serve witness or stripped block based on inventory type bit 30, guard against pruned blocks (P2P-02)
-- [ ] 03-03: Use INV_WITNESS_BLOCK when announcing blocks to witness-capable peers (P2P-04)
+- [ ] 03-01-PLAN.md — NODE_WITNESS service flag + INV_WITNESS_BLOCK inventory type for announcements and IBD requests (P2P-01, P2P-04)
+- [ ] 03-02-PLAN.md — getdata block handler: serve witness/legacy blocks, notfound for pruned/unknown (P2P-02)
 
 ### Phase 4: BIP-125 Full-RBF Mempool
 **Goal**: Echo's mempool correctly enforces all 5 BIP-125 replacement rules, making it compatible with Bitcoin Core v28+ full-RBF default policy and enabling accurate fee-market transaction selection for getblocktemplate
@@ -111,7 +110,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 |-------|-----------|----------------|--------|-----------|
 | 1. Foundation Fixes | v1.0 | 7/7 | Complete | 2026-02-20 |
 | 2. Consensus Completeness | v1.0 | 3/3 | Complete | 2026-02-21 |
-| 3. P2P Block Serving | v1.1 | 0/3 | Not started | - |
+| 3. P2P Block Serving | v1.1 | 0/2 | Not started | - |
 | 4. BIP-125 Full-RBF Mempool | v1.1 | 0/2 | Not started | - |
 | 5. Storage Layer and Core RPC | v1.1 | 0/4 | Not started | - |
 | 6. getblocktemplate and submitblock | v1.1 | 0/2 | Not started | - |
