@@ -1240,15 +1240,28 @@ echo_result_t chain_reorganize(chainstate_t *state, chain_reorg_t *reorg,
       return result;
     }
 
-    /* We need to construct a block header from the index */
-    /* For now, we'll create a minimal header with the info we have */
+    /* We need to construct a block header from the index.
+     *
+     * Important: the header we pass to chainstate_apply_block must produce the
+     * CORRECT block hash when hashed, because chainstate_apply_block stores it
+     * as state->tip.hash. The next block's prev_hash check relies on this hash
+     * matching to_connect->hash.
+     *
+     * block_index_t does not store the nonce, so we cannot reconstruct the exact
+     * header that was originally mined. Instead, we use chainstate_apply_block
+     * with a minimal header and then patch state->tip.hash and height_index to
+     * use the authoritative hash from the block index. This is safe because:
+     *   - The UTXO changes from the block are already correct (they use TXIDs)
+     *   - chainwork is computed from bits (unchanged)
+     *   - The only field affected is the chaining hash used for prev_hash checks
+     */
     block_header_t header;
-    header.version = 1; /* Simplified - real impl would store this */
+    header.version = 1;
     header.prev_hash = to_connect->prev_hash;
-    memset(&header.merkle_root, 0, 32); /* Simplified */
+    memset(&header.merkle_root, 0, 32);
     header.timestamp = to_connect->timestamp;
     header.bits = to_connect->bits;
-    header.nonce = 0; /* Not needed for application */
+    header.nonce = 0; /* Nonce not stored in block_index_t; patched below */
 
     /* Apply the block.
      *
@@ -1260,6 +1273,26 @@ echo_result_t chain_reorganize(chainstate_t *state, chain_reorg_t *reorg,
     result = chainstate_apply_block(state, &header, txs, tx_count, &delta);
     if (result != ECHO_OK) {
       return result;
+    }
+
+    /* Patch the state to use the authoritative block hash from block_index_t.
+     *
+     * chainstate_apply_block computed block_hash = hash(minimal_header) which
+     * differs from to_connect->hash because nonce=0. We must fix:
+     *   1. state->tip.hash (used as prev_hash check for the NEXT block)
+     *   2. state->height_index[height] (used by chainstate_revert_block for undo)
+     *   3. delta->block_hash (used by chainstate_revert_block to verify tip)
+     *
+     * The delta pointer is a borrowed reference from chainstate — we access it
+     * here to fix the block_hash field, which is valid since we are inside
+     * chainstate.c (same translation unit as the struct definition).
+     */
+    state->tip.hash = to_connect->hash;
+    if (state->tip.height < state->height_index_capacity) {
+      state->height_index[state->tip.height] = to_connect->hash;
+    }
+    if (delta != NULL) {
+      delta->block_hash = to_connect->hash;
     }
 
     /* Mark block as on main chain */
