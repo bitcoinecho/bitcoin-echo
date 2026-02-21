@@ -39,6 +39,7 @@
 #include "platform.h"
 #include "protocol.h"
 #include "protocol_serialize.h"
+#include "serialize.h"
 #include "sync.h"
 #include "tx.h"
 #include "tx_validate.h"
@@ -2876,9 +2877,112 @@ static void node_handle_peer_message(node_t *node, peer_t *peer,
             log_debug(LOG_COMP_NET, "Served witness block to peer %s", peer->address);
 
           } else {
-            /* INV_BLOCK: legacy stripped serialization — see Task 2 */
-            /* Task 2 fills in this branch */
-            block_free(&block);
+            /*
+             * INV_BLOCK: serve legacy block WITHOUT witness data.
+             * ROADMAP success criterion 2 requires stripped serialization for INV_BLOCK.
+             * block_serialize always includes witness, so we serialize manually:
+             * header (80 bytes) + varint(tx_count) + each tx via tx_serialize(ECHO_FALSE).
+             *
+             * Same direct-send pattern as the witness path above.
+             */
+
+            /* Compute stripped (no-witness) size */
+            size_t stripped_size = BLOCK_HEADER_SIZE;
+            stripped_size += varint_size(block.tx_count);
+            for (size_t t = 0; t < block.tx_count; t++) {
+              stripped_size += tx_serialize_size(&block.txs[t], ECHO_FALSE);
+            }
+
+            uint8_t *stripped_buf = malloc(stripped_size);
+            if (!stripped_buf) {
+              log_error(LOG_COMP_NET, "Failed to allocate legacy block buffer (%zu bytes)",
+                        stripped_size);
+              block_free(&block);
+              continue;
+            }
+
+            /* Serialize block header (80 bytes) */
+            size_t offset = 0;
+            echo_result_t ser = block_header_serialize(
+                &block.header, stripped_buf, stripped_size);
+            if (ser != ECHO_OK) {
+              free(stripped_buf);
+              block_free(&block);
+              continue;
+            }
+            offset = BLOCK_HEADER_SIZE;
+
+            /* Serialize tx count as varint */
+            size_t var_written = 0;
+            ser = varint_write(stripped_buf + offset, stripped_size - offset,
+                               block.tx_count, &var_written);
+            if (ser != ECHO_OK) {
+              free(stripped_buf);
+              block_free(&block);
+              continue;
+            }
+            offset += var_written;
+
+            /* Serialize each tx WITHOUT witness */
+            bool tx_ser_failed = false;
+            for (size_t t = 0; t < block.tx_count; t++) {
+              size_t tx_written = 0;
+              ser = tx_serialize(&block.txs[t], ECHO_FALSE,
+                                 stripped_buf + offset, stripped_size - offset,
+                                 &tx_written);
+              if (ser != ECHO_OK) {
+                tx_ser_failed = true;
+                break;
+              }
+              offset += tx_written;
+            }
+
+            block_free(&block); /* block_t no longer needed — we have the bytes */
+
+            if (tx_ser_failed) {
+              free(stripped_buf);
+              continue;
+            }
+
+            /* Build 24-byte message header and send */
+            msg_header_t hdr;
+            hdr.magic = MAGIC_MAINNET;
+            memset(hdr.command, 0, COMMAND_LEN);
+            const char *cmd = msg_command_string(MSG_BLOCK);
+            if (cmd) {
+              memcpy(hdr.command, cmd, strlen(cmd));
+            }
+            hdr.length = (uint32_t)offset;
+            hdr.checksum = msg_checksum(stripped_buf, offset);
+
+            uint8_t hdr_buf[24];
+            ser = msg_header_serialize(&hdr, hdr_buf, sizeof(hdr_buf));
+            if (ser != ECHO_OK) {
+              free(stripped_buf);
+              continue;
+            }
+
+            int sent = plat_socket_send(peer->socket, hdr_buf, 24);
+            if (sent <= 0) {
+              free(stripped_buf);
+              continue;
+            }
+
+            /* Send payload — may need multiple sends for large blocks */
+            size_t total_sent = 0;
+            while (total_sent < offset) {
+              sent = plat_socket_send(peer->socket, stripped_buf + total_sent,
+                                      offset - total_sent);
+              if (sent <= 0) {
+                free(stripped_buf);
+                goto serve_block_done;
+              }
+              total_sent += (size_t)sent;
+            }
+
+            free(stripped_buf);
+            log_debug(LOG_COMP_NET, "Served legacy (stripped) block to peer %s",
+                      peer->address);
           }
 
 serve_block_done:
