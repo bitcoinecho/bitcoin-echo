@@ -63,11 +63,11 @@ Plans:
   2. A replacement that violates any of the 5 rules is rejected with a specific error identifying which rule failed — it does not silently accept or panic
   3. Rule 3 is enforced on absolute fee totals, not feerates — a replacement paying 4999 sats that evicts a 5000-sat original is rejected even if the replacement's feerate is 10x higher
   4. All 5 replacement rules are exercised by the test suite, including inherited RBF signaling propagation to descendants and the 100-transaction eviction count limit
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 04-01: Implement BIP-125 full-RBF replacement logic in mempool_add — build eviction set, validate all 5 rules, replace atomically (P2P-03)
-- [ ] 04-02: BIP-125 RBF test suite — all 5 rules with edge cases including absolute-fee trap, inherited signaling, and eviction count limit (TEST-01)
+- [ ] 04-01-PLAN.md — Implement BIP-125 full-RBF replacement logic: eviction-set builder, inherited signaling check, 5-rule validator, atomic eviction (P2P-03)
+- [ ] 04-02-PLAN.md — BIP-125 RBF test suite: all 5 rules with edge cases including absolute-fee trap, inherited signaling, and eviction count limit (TEST-01)
 
 ### Phase 5: Storage Layer and Core RPC
 **Goal**: Operators can look up any confirmed transaction by txid, retrieve raw block hex, and read a correct mediantime — all backed by a durable transaction index that survives chain reorganizations
