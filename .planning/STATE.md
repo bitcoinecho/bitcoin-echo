@@ -5,16 +5,14 @@
 See: .planning/PROJECT.md (updated 2026-02-21)
 
 **Core value:** Echo must correctly validate and serve the Bitcoin blockchain on mainnet — a node that peers trust and rely on.
-**Current focus:** Milestone v1.0 complete — planning next milestone
+**Current focus:** Milestone v1.1 Network Participant
 
 ## Current Position
 
-Phase: v1.0 complete (Phases 1-2 shipped)
-Plan: All 10 plans complete
-Status: Milestone v1.0 archived
-Last activity: 2026-02-21 — v1.0 milestone completed and archived
-
-Progress: [██████████] 100% (v1.0)
+Phase: Not started (defining requirements)
+Plan: —
+Status: Defining requirements
+Last activity: 2026-02-21 — Milestone v1.1 started
 
 ## Performance Metrics
 
@@ -49,6 +47,6 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-21
-Stopped at: v1.0 milestone completed and archived
+Stopped at: Milestone v1.1 started, defining requirements
 Resume file: None
-Next action: `/gsd:new-milestone` to define next milestone scope
+Next action: Define requirements and create roadmap

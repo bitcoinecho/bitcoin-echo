@@ -63,6 +63,18 @@ Echo must correctly validate and serve the Bitcoin blockchain on mainnet — a n
 - BIP-324 v2 encrypted transport — v1 fallback sufficient, no peer disconnects
 - BIP-152 compact block relay — optimization, depends on block serving being stable
 
+## Current Milestone: v1.1 Network Participant
+
+**Goal:** Make Echo a real network participant — serve blocks to peers, handle BIP-125 full-RBF mempool policy, and expand RPC for block queries and mining pool integration.
+
+**Target features:**
+- NODE_WITNESS service flag and INV_WITNESS_BLOCK support
+- Full block serving to peers via getdata handler
+- BIP-125 full-RBF with all 5 replacement rules
+- Transaction index for confirmed tx lookups
+- RPC getblock, mediantime, getblocktemplate
+- BIP-125 RBF test suite
+
 ## Context
 
 Bitcoin Echo is a from-scratch Bitcoin full node in pure C11 with no external dependencies beyond vendored SQLite and libsecp256k1. The codebase is 15,648 LOC source + 31,692 LOC tests with heavy comments and a frozen consensus layer that performs no I/O.
@@ -97,4 +109,4 @@ Testing is against Bitcoin mainnet. The start sequence is: `rm -rf ~/.bitcoin-ec
 | Chainstate owns deltas, callers get borrowed refs | Clear ownership semantics, no double-free risk | ✓ Good — reorg rollback works cleanly |
 
 ---
-*Last updated: 2026-02-21 after v1.0 milestone*
+*Last updated: 2026-02-21 after v1.1 milestone start*
