@@ -14,6 +14,7 @@
 #include <unistd.h>
 
 #include "block.h"
+#include "block_index_db.h"
 #include "log.h"
 #include "node.h"
 #include "platform.h"
@@ -514,11 +515,27 @@ static bool validate_handle_event(chaser_t *self, chase_event_t event,
 
             /* Can only validate if all previous blocks are done */
             if (height == position + 1) {
-                /* TODO: Get block hash from database */
-                /* For now, submit with empty hash */
+                /* Look up the real block hash from the block index database.
+                 * Without a real hash, worker threads would load the wrong
+                 * block (node_load_block_at_height already re-resolves by
+                 * height, but passing a zero hash is incorrect metadata). */
                 uint8_t hash[32] = {0};
-                bool bypass = chaser_validate_is_bypass(chaser, height);
+                block_index_db_t *bdb =
+                    node_get_block_index_db(chaser->base.node);
+                if (bdb != NULL) {
+                    block_index_entry_t entry;
+                    echo_result_t rc =
+                        block_index_db_lookup_by_height(bdb, height, &entry);
+                    if (rc == ECHO_OK) {
+                        memcpy(hash, entry.hash.bytes, 32);
+                    } else {
+                        log_warn(LOG_COMP_SYNC,
+                                 "chaser_validate: no index entry for height %u",
+                                 height);
+                    }
+                }
 
+                bool bypass = chaser_validate_is_bypass(chaser, height);
                 if (chaser_validate_submit(chaser, height, hash, bypass) == 0) {
                     chaser_set_position(self, height);
                 }

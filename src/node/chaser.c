@@ -12,6 +12,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "log.h"
+
 /**
  * Internal event handler that dispatches to derived class
  */
@@ -179,8 +181,11 @@ void chaser_fault(chaser_t *self, int error) {
         return;
     }
 
-    /* Log the fault */
-    /* TODO: Integrate with logging system */
+    /* Log the fault before dispatching stop — flush is not guaranteed after
+     * CHASE_STOP is sent, so the log call must precede the notify. */
+    log_error(LOG_COMP_SYNC,
+              "chaser '%s' fault: error=%d — initiating shutdown",
+              self->name, error);
 
     /* Notify system of fault - this triggers shutdown */
     chase_value_t value = {.count = (size_t)error};
