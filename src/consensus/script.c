@@ -4888,13 +4888,35 @@ echo_result_t script_execute_tapscript(script_context_t *ctx,
         return ECHO_ERR_SCRIPT_ERROR;
       }
 
-      /* Validate pubkey length */
-      if (pubkey_elem.len != 32) {
+      /*
+       * BIP-342 key type dispatch.
+       *
+       * Three cases per the BIP-342 specification (section "Script execution"):
+       *   - pubkey_len == 0: empty pubkey is invalid — fail PUBKEYTYPE
+       *   - pubkey_len == 32: x-only key — continue to Schnorr verify below
+       *   - pubkey_len other: unknown key type — upgrade rule, succeed without
+       *       cryptographic verification so future soft forks can define new key
+       *       types without old nodes rejecting the transactions
+       */
+      if (pubkey_elem.len == 0) {
+        /* Empty pubkey: consensus failure per BIP-342 */
         element_free(&pubkey_elem);
         element_free(&sig_elem);
-        ctx->error = SCRIPT_ERR_WITNESS_PUBKEYTYPE;
+        ctx->error = SCRIPT_ERR_PUBKEYTYPE;
         return ECHO_ERR_SCRIPT_ERROR;
+      } else if (pubkey_elem.len != 32) {
+        /*
+         * Unknown key type: BIP-342 upgrade rule.
+         * No cryptographic verification — treat sig as valid.
+         * n is incremented (non-empty sig already confirmed at line above).
+         */
+        element_free(&pubkey_elem);
+        element_free(&sig_elem);
+        n++; /* Unknown key type counts as successful verification */
+        stack_push_num(&ctx->stack, n);
+        continue;
       }
+      /* pubkey_elem.len == 32: x-only Schnorr key, fall through to verify */
 
       /* Extract sighash type */
       uint32_t sighash_type = SIGHASH_DEFAULT;
@@ -4930,6 +4952,171 @@ echo_result_t script_execute_tapscript(script_context_t *ctx,
       element_free(&pubkey_elem);
       element_free(&sig_elem);
       stack_push_num(&ctx->stack, n);
+      continue;
+    }
+
+    /*
+     * Handle OP_CHECKSIG and OP_CHECKSIGVERIFY in Tapscript context.
+     *
+     * BIP-342 applies the same key type dispatch rule as OP_CHECKSIGADD:
+     *   - pubkey_len == 0: fail SCRIPT_ERR_PUBKEYTYPE
+     *   - pubkey_len == 32: x-only Schnorr key, verify BIP-340 signature
+     *   - pubkey_len other: unknown key type, succeed without crypto check
+     *
+     * The legacy script_exec_op() path uses ECDSA and does not implement
+     * the Tapscript key type dispatch, so we handle these opcodes here.
+     */
+    if (op == OP_CHECKSIG || op == OP_CHECKSIGVERIFY) {
+      if (ctx->stack.count < 2) {
+        ctx->error = SCRIPT_ERR_INVALID_STACK_OPERATION;
+        return ECHO_ERR_SCRIPT_ERROR;
+      }
+
+      /* Pop pubkey (top of stack) */
+      stack_element_t pubkey_elem;
+      echo_result_t res = stack_pop(&ctx->stack, &pubkey_elem);
+      if (res != ECHO_OK) {
+        ctx->error = SCRIPT_ERR_INVALID_STACK_OPERATION;
+        return res;
+      }
+
+      /* Pop sig */
+      stack_element_t sig_elem;
+      res = stack_pop(&ctx->stack, &sig_elem);
+      if (res != ECHO_OK) {
+        element_free(&pubkey_elem);
+        ctx->error = SCRIPT_ERR_INVALID_STACK_OPERATION;
+        return res;
+      }
+
+      /*
+       * BIP-342 key type dispatch (same rule as OP_CHECKSIGADD above).
+       */
+      if (pubkey_elem.len == 0) {
+        /* Empty pubkey: always invalid */
+        element_free(&pubkey_elem);
+        element_free(&sig_elem);
+        ctx->error = SCRIPT_ERR_PUBKEYTYPE;
+        return ECHO_ERR_SCRIPT_ERROR;
+      }
+
+      echo_bool_t sig_valid = ECHO_FALSE;
+
+      if (pubkey_elem.len != 32) {
+        /*
+         * Unknown key type: BIP-342 upgrade rule — succeed without crypto.
+         * A non-empty sig counts as valid for unknown key types.
+         */
+        sig_valid = (sig_elem.len > 0) ? ECHO_TRUE : ECHO_FALSE;
+      } else if (sig_elem.len == 0) {
+        /* Empty sig with known 32-byte key: sig is invalid */
+        sig_valid = ECHO_FALSE;
+      } else {
+        /* Known 32-byte x-only key: validate Schnorr signature */
+        if (sig_elem.len != 64 && sig_elem.len != 65) {
+          element_free(&pubkey_elem);
+          element_free(&sig_elem);
+          ctx->error = SCRIPT_ERR_SCHNORR_SIG;
+          return ECHO_ERR_SCRIPT_ERROR;
+        }
+
+        uint32_t sighash_type = SIGHASH_DEFAULT;
+        size_t actual_sig_len = sig_elem.len;
+        if (sig_elem.len == 65) {
+          sighash_type = sig_elem.data[64];
+          actual_sig_len = 64;
+          if (sighash_type == SIGHASH_DEFAULT) {
+            element_free(&pubkey_elem);
+            element_free(&sig_elem);
+            ctx->error = SCRIPT_ERR_SIG_HASHTYPE;
+            return ECHO_ERR_SCRIPT_ERROR;
+          }
+        }
+
+        /* Compute Taproot sighash (script path: ext_flag = 1) */
+        uint8_t sighash[32];
+        res = sighash_taproot(ctx, sighash_type, 1, sighash);
+        if (res != ECHO_OK) {
+          element_free(&pubkey_elem);
+          element_free(&sig_elem);
+          ctx->error = SCRIPT_ERR_UNKNOWN_ERROR;
+          return res;
+        }
+
+        if (sig_verify(SIG_SCHNORR, sig_elem.data, actual_sig_len, sighash,
+                       pubkey_elem.data, pubkey_elem.len, 0)) {
+          sig_valid = ECHO_TRUE;
+        }
+      }
+
+      element_free(&pubkey_elem);
+      element_free(&sig_elem);
+
+      if (op == OP_CHECKSIGVERIFY) {
+        if (!sig_valid) {
+          ctx->error = SCRIPT_ERR_CHECKSIGVERIFY;
+          return ECHO_ERR_SCRIPT_ERROR;
+        }
+        /* CHECKSIGVERIFY: success means nothing pushed, just continue */
+        continue;
+      }
+
+      /* CHECKSIG: push true or false */
+      res = stack_push_bool(&ctx->stack, sig_valid);
+      if (res != ECHO_OK) {
+        ctx->error = SCRIPT_ERR_OUT_OF_MEMORY;
+        return res;
+      }
+      continue;
+    }
+
+    /*
+     * Handle OP_IF and OP_NOTIF in Tapscript context with MINIMALIF enforcement.
+     *
+     * BIP-342 mandates MINIMALIF: the argument to OP_IF and OP_NOTIF must be
+     * exactly empty ({}) or exactly {0x01}. Any other byte pattern is invalid
+     * and fails with SCRIPT_ERR_TAPSCRIPT_MINIMALIF. This prevents ambiguity
+     * in scripts and closes a potential malleability vector.
+     *
+     * We handle OP_IF/OP_NOTIF here before delegation so we can enforce this
+     * rule unconditionally in Tapscript without touching the legacy path.
+     */
+    if (op == OP_IF || op == OP_NOTIF) {
+      /* Only check MINIMALIF when we are actually executing (not skipping) */
+      if (script_is_executing(ctx)) {
+        if (ctx->stack.count < 1) {
+          ctx->error = SCRIPT_ERR_INVALID_STACK_OPERATION;
+          return ECHO_ERR_SCRIPT_ERROR;
+        }
+        const stack_element_t *top_elem;
+        echo_result_t peek_res = stack_peek(&ctx->stack, &top_elem);
+        if (peek_res != ECHO_OK) {
+          ctx->error = SCRIPT_ERR_INVALID_STACK_OPERATION;
+          return peek_res;
+        }
+        /*
+         * Valid minimal encodings: empty (false) or {0x01} (true).
+         * Anything else violates BIP-342 MINIMALIF.
+         */
+        if (top_elem->len > 1 ||
+            (top_elem->len == 1 && top_elem->data[0] != 0x01)) {
+          ctx->error = SCRIPT_ERR_TAPSCRIPT_MINIMALIF;
+          return ECHO_ERR_SCRIPT_ERROR;
+        }
+      }
+      /* Fall through to standard execution after MINIMALIF check */
+      pos--; /* Back up to let the standard executor re-read this opcode */
+
+      size_t opcode_len = 1;
+      if (pos + opcode_len > len) {
+        ctx->error = SCRIPT_ERR_BAD_OPCODE;
+        return ECHO_ERR_SCRIPT_ERROR;
+      }
+      echo_result_t if_res = script_execute(ctx, script + pos, opcode_len);
+      if (if_res != ECHO_OK) {
+        return if_res;
+      }
+      pos += opcode_len;
       continue;
     }
 
