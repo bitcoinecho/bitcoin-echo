@@ -1019,7 +1019,9 @@ static echo_result_t node_init_chase(node_t *node) {
 
   if (checkpoint_height > 0 && checkpoint_height != UINT32_MAX) {
     chaser_validate_set_checkpoint(node->chaser_validate, checkpoint_height);
-    chaser_confirm_set_checkpoint(node->chaser_confirm, checkpoint_height);
+    /* Note: chaser_confirm no longer uses a checkpoint bypass.
+     * All blocks flow through confirm_block_internal() for UTXO application.
+     * The consensus engine's assume_valid_height handles script skipping. */
   }
 
   /* Start chasers (subscribes them to events) */

@@ -370,23 +370,23 @@ static void confirm_process_blocks(chaser_confirm_t *chaser) {
             break; /* Block not stored/validated yet */
         }
 
-        /* Confirm the block */
-        bool bypass = chaser_confirm_is_bypass(chaser, next_height);
-
-        if (bypass) {
-            /* Just update height for checkpoint blocks */
-            block_free(&block);
-            chaser_lock(&chaser->base);
-            chaser->confirmed_height = next_height;
-            chaser_unlock(&chaser->base);
-            chaser_notify_height(&chaser->base, CHASE_ORGANIZED, next_height);
-        } else {
-            /* Pass preloaded block to avoid double-loading */
+        /* Confirm the block.
+         *
+         * All blocks — including those below the checkpoint — must flow
+         * through confirm_block_internal() to apply UTXO changes via
+         * node_apply_block(). The consensus engine's assume_valid_height
+         * handles skipping script verification for historical blocks.
+         *
+         * Previously, checkpoint blocks bypassed confirmation entirely
+         * (just incrementing the height counter). This left the UTXO set
+         * empty at the checkpoint, making post-checkpoint validation
+         * impossible. */
+        {
             confirm_result_t conf_result = confirm_block_internal(
                 chaser, next_height, hash.bytes, &block, &hash);
             block_free(&block);
             if (conf_result != CONFIRM_SUCCESS) {
-                break; /* Confirmation failed */
+                break;
             }
         }
 
