@@ -35,7 +35,7 @@ See: `.planning/milestones/v1.0-ROADMAP.md` for full details
 
 #### Phase 6: getblocktemplate and submitblock
 
-- [ ] **Phase 6: getblocktemplate and submitblock** — Complete mining workflow: generate template with correct witness commitment, submit mined block
+- [x] **Phase 6: getblocktemplate and submitblock** — Complete mining workflow: generate template with correct witness commitment, submit mined block (completed 2026-02-21)
 
 ## Phase Details
 
@@ -111,4 +111,4 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 | 3. P2P Block Serving | v1.1 | 2/2 | Complete | 2026-02-21 |
 | 4. BIP-125 Full-RBF Mempool | 2/2 | Complete   | 2026-02-21 | - |
 | 5. Storage Layer and Core RPC | 2/2 | Complete   | 2026-02-21 | - |
-| 6. getblocktemplate and submitblock | v1.1 | 1/2 | In progress | - |
+| 6. getblocktemplate and submitblock | 2/2 | Complete   | 2026-02-21 | - |

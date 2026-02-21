@@ -5,23 +5,23 @@
 See: .planning/PROJECT.md (updated 2026-02-21)
 
 **Core value:** Echo must correctly validate and serve the Bitcoin blockchain on mainnet — a node that peers trust and rely on.
-**Current focus:** Phase 6 — getblocktemplate and submitblock
+**Current focus:** Phase 6 — getblocktemplate and submitblock — COMPLETE
 
 ## Current Position
 
-Phase: 6 of 6 for v1.1 (getblocktemplate and submitblock) — IN PROGRESS
-Plan: 1 of 2 in phase 06 — Plan 06-01 complete
-Status: Plan 06-01 complete — production getblocktemplate with IBD guard, MTP, witness commitment
-Last activity: 2026-02-21 — Plan 06-01 complete (getblocktemplate BIP-22/BIP-145 production implementation)
+Phase: 6 of 6 for v1.1 (getblocktemplate and submitblock) — COMPLETE
+Plan: 2 of 2 in phase 06 — Plan 06-02 complete
+Status: Plan 06-02 complete — production submitblock with IBD guard and peer announcement
+Last activity: 2026-02-21 — Plan 06-02 complete (submitblock IBD guard + node_announce_block_to_peers)
 
-Progress: [████████░░] 83% (v1.0: phases 1-2 complete; v1.1: phases 3-6 in progress, phase 6 plan 1/2 complete)
+Progress: [██████████] 100% (v1.0: phases 1-2 complete; v1.1: phases 3-6 complete)
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 16
+- Total plans completed: 17
 - Average duration: ~7 min
-- Total execution time: ~108 min
+- Total execution time: ~109 min
 
 **By Phase:**
 
@@ -32,7 +32,7 @@ Progress: [████████░░] 83% (v1.0: phases 1-2 complete; v1.1:
 | 03-p2p-block-serving | 2 | ~4 min | ~2 min |
 | 04-bip125-full-rbf-mempool | 2 | ~10 min | ~5 min |
 | 05-storage-layer-and-core-rpc | 2 | ~16 min | ~8 min |
-| 06-getblocktemplate-submitblock | 1 of 2 | ~3 min | ~3 min |
+| 06-getblocktemplate-submitblock | 2 of 2 | ~4 min | ~2 min |
 
 *Updated after each plan completion*
 
@@ -68,6 +68,9 @@ v1.1 roadmap decision: Follow research-recommended 4-phase structure (phases 3-6
 06-01 decision: merkle_root() direct call (not merkle_root_wtxids()) — no coinbase tx_t exists at template generation time; calloc ensures coinbase wtxid slot is zero-initialized per BIP-141.
 06-01 decision: consensus_build_validation_ctx + difficulty_compute_next for correct bits at retarget boundaries; falls back to tip_index->bits on failure.
 
+06-02 decision: IBD guard for submitblock returns ECHO_ERR_INVALID_STATE (same -28 convention as getblocktemplate) — miners cannot build on incomplete chain during sync.
+06-02 decision: block_free() moved after node_announce_block_to_peers() — announcement references block.header so free must come last to avoid use-after-free.
+
 ### Pending Todos
 
 None.
@@ -83,6 +86,6 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-21
-Stopped at: Plan 06-01 complete — production getblocktemplate (IBD guard, MTP, witness commitment, correct bits)
+Stopped at: Plan 06-02 complete — production submitblock (IBD guard + peer announcement)
 Resume file: None
-Next action: Execute Plan 06-02 (submitblock production implementation)
+Next action: Phase 06 complete. All v1.1 plans done. getblocktemplate and submitblock are production-ready.
