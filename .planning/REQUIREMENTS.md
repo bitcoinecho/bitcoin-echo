@@ -33,7 +33,7 @@ Requirements for peer-compatible mainnet node. Each maps to roadmap phases.
 - [ ] **INFR-02**: Chaser validation retrieves real block hash from block index instead of submitting all-zeros
 - [ ] **INFR-03**: Checkpoint height is configurable via node config instead of hardcoded to 0
 - [ ] **INFR-04**: Chaser fault handler logs error details via log system before shutdown signal
-- [ ] **INFR-05**: Peer eviction threshold (SLOWEST_EVICTION_MIN_RATE) calibrated from mainnet IBD measurement data
+- [x] **INFR-05**: Peer eviction threshold (SLOWEST_EVICTION_MIN_RATE) calibrated from mainnet IBD measurement data
 
 ### RPC
 
@@ -111,7 +111,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | INFR-02 | Phase 1 | Pending |
 | INFR-03 | Phase 1 | Pending |
 | INFR-04 | Phase 1 | Pending |
-| INFR-05 | Phase 1 | Pending |
+| INFR-05 | Phase 1 | Complete |
 | RPC-01 | Phase 4 | Pending |
 | RPC-02 | Phase 4 | Pending |
 | RPC-03 | Phase 4 | Pending |

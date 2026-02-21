@@ -34,6 +34,7 @@ Progress: [█░░░░░░░░░] 14%
 - Trend: Stable ~5-9 min/plan
 
 *Updated after each plan completion*
+| Phase 01 P05 | 8 | 1 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -47,6 +48,8 @@ Recent decisions affecting current work:
 - [Roadmap]: getblocktemplate included in Phase 4 as last item — highest complexity, depends on mempool (Phase 3 RBF) and block serving both stable
 - [01-03]: Byte reversal at DB boundary only — work256_compare/add/sub unchanged; ORDER BY chainwork DESC is semantically correct Nakamoto criterion
 - [01-04]: fflush() not fsync() — fflush pushes to OS page cache (one write(2) syscall); fsync would flush to physical media and kill IBD throughput
+- [Phase 01]: DOWNLOAD_MIN_RATE_BYTES_PER_SEC set to 1024 (1 KB/s) — conservative threshold based on Bitcoin Core nMinExpectedRate behavior; 3072 was arbitrary
+- [Phase 01]: All routine eviction events use LOG_DEBUG only — invisible during normal IBD, available for diagnostics
 
 ### Pending Todos
 
