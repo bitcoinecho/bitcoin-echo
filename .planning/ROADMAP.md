@@ -110,7 +110,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 |-------|-----------|----------------|--------|-----------|
 | 1. Foundation Fixes | v1.0 | 7/7 | Complete | 2026-02-20 |
 | 2. Consensus Completeness | v1.0 | 3/3 | Complete | 2026-02-21 |
-| 3. P2P Block Serving | v1.1 | 0/2 | Not started | - |
+| 3. P2P Block Serving | 1/2 | In Progress|  | - |
 | 4. BIP-125 Full-RBF Mempool | v1.1 | 0/2 | Not started | - |
 | 5. Storage Layer and Core RPC | v1.1 | 0/4 | Not started | - |
 | 6. getblocktemplate and submitblock | v1.1 | 0/2 | Not started | - |

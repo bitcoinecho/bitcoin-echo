@@ -10,18 +10,18 @@ See: .planning/PROJECT.md (updated 2026-02-21)
 ## Current Position
 
 Phase: 3 of 6 for v1.1 (P2P Block Serving)
-Plan: 0 of 3 in current phase
-Status: Ready to plan
-Last activity: 2026-02-21 — v1.1 roadmap created (phases 3-6 defined)
+Plan: 1 of 3 in current phase
+Status: In progress
+Last activity: 2026-02-21 — Plan 03-01 complete (SERVICE_NODE_WITNESS + INV_WITNESS_BLOCK)
 
-Progress: [████░░░░░░] 36% (v1.0: phases 1-2 complete; v1.1: phases 3-6 pending)
+Progress: [████░░░░░░] 37% (v1.0: phases 1-2 complete; v1.1: phase 3 in progress 1/3 plans done)
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 10
-- Average duration: ~10 min
-- Total execution time: ~82 min
+- Total plans completed: 11
+- Average duration: ~9 min
+- Total execution time: ~83 min
 
 **By Phase:**
 
@@ -29,6 +29,7 @@ Progress: [████░░░░░░] 36% (v1.0: phases 1-2 complete; v1.1:
 |-------|-------|-------|----------|
 | 01-foundation-fixes | 7 | ~41 min | ~6 min |
 | 02-consensus-completeness | 3 | ~41 min | ~14 min |
+| 03-p2p-block-serving | 1 | ~1 min | ~1 min |
 
 *Updated after each plan completion*
 
@@ -40,6 +41,9 @@ v1.0 decisions archived — see `.planning/milestones/v1.0-ROADMAP.md`.
 Key decisions preserved in PROJECT.md Key Decisions table.
 
 v1.1 roadmap decision: Follow research-recommended 4-phase structure (phases 3-6) — ordering is hard implementation dependency, not preference. Phase 3 (P2P) must precede Phase 6 (getblocktemplate) because block serving must be stable before mining integration begins.
+
+03-01 decision: Pruned nodes advertise SERVICE_NODE_WITNESS — NODE_WITNESS signals protocol capability (SegWit wire format), not block history availability. Bitcoin Core does the same.
+03-01 decision: peer->services check before inventory type — BIP-144 requires INV_WITNESS_BLOCK only to peers that advertised NODE_WITNESS during handshake.
 
 ### Pending Todos
 
@@ -56,6 +60,6 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-21
-Stopped at: v1.1 roadmap written — phases 3-6 defined, ROADMAP.md and STATE.md written, REQUIREMENTS.md traceability updated
+Stopped at: Plan 03-01 complete — SERVICE_NODE_WITNESS in version message + INV_WITNESS_BLOCK for witness-capable peers
 Resume file: None
-Next action: /gsd:plan-phase 3
+Next action: /gsd:execute-phase 03 02
