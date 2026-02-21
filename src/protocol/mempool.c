@@ -530,6 +530,147 @@ static mempool_entry_t *wtxid_table_lookup(const mempool_t *mp,
 
 /*
  * ============================================================================
+ * RBF (REPLACE-BY-FEE) HELPERS
+ * ============================================================================
+ *
+ * These helpers implement the BIP-125 validation algorithm called from the
+ * conflict branch in mempool_add.  The five BIP-125 rules and their reject
+ * codes are:
+ *
+ *   Rule 1: Every tx in the eviction set must signal RBF (directly or by
+ *           inheriting from an unconfirmed ancestor).
+ *           Reject: MEMPOOL_REJECT_CONFLICT
+ *
+ *   Rule 2: The replacement may only spend unconfirmed outputs that are
+ *           already being evicted — no new unconfirmed inputs.
+ *           Reject: MEMPOOL_REJECT_CONFLICT
+ *
+ *   Rule 3: replacement_fee >= sum(eviction_set[i]->fee).
+ *           Absolute satoshi total, not fee rate.
+ *           Reject: MEMPOOL_REJECT_RBF_INSUFFICIENT_FEE
+ *
+ *   Rule 4: replacement_fee >= total_evicted_fees +
+ *                              (MEMPOOL_RBF_INCREMENT * vsize / 1000).
+ *           Covers relay bandwidth at the minimum incremental rate.
+ *           Reject: MEMPOOL_REJECT_RBF_INSUFFICIENT_FEE
+ *
+ *   Rule 5: |eviction_set| <= MEMPOOL_MAX_REPLACEMENT_COUNT.
+ *           Reject: MEMPOOL_REJECT_RBF_TOO_MANY_REPLACED
+ */
+
+/* Stack array size for the eviction set (capped by Rule 5). */
+#define MAX_EVICTION_SET MEMPOOL_MAX_REPLACEMENT_COUNT
+
+/* NOLINTBEGIN(misc-no-recursion) - Recursion bounded by
+ * MEMPOOL_MAX_ANCESTORS (25) — walks the unconfirmed ancestor chain to check
+ * inherited RBF signaling per BIP-125 Rule 1. */
+/**
+ * Check whether a mempool entry signals RBF directly or through any
+ * unconfirmed ancestor (BIP-125 Rule 1 inherited signaling).
+ *
+ * Parameters:
+ *   mp    - Mempool (read-only)
+ *   entry - Entry to check
+ *
+ * Returns true if this entry or any mempool ancestor signals RBF.
+ */
+static bool entry_signals_rbf_inherited(const mempool_t *mp,
+                                        const mempool_entry_t *entry) {
+  if (entry->signals_rbf) {
+    return true;
+  }
+
+  /* Walk each input: if the parent is unconfirmed and itself signals
+   * (directly or via its own ancestors), this entry inherits the signal. */
+  for (size_t i = 0; i < entry->tx.input_count; i++) {
+    const mempool_entry_t *parent =
+        txid_table_lookup(mp, &entry->tx.inputs[i].prevout.txid);
+    if (parent != NULL && entry_signals_rbf_inherited(mp, parent)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+/* NOLINTEND(misc-no-recursion) */
+
+/**
+ * Collect the full eviction set for an RBF replacement attempt.
+ *
+ * The eviction set contains all direct conflicts (mempool transactions that
+ * spend at least one of the same outputs as the replacement) plus all of
+ * their descendants, up to MEMPOOL_MAX_REPLACEMENT_COUNT entries.
+ *
+ * Rule 5 is enforced during collection: if the set would exceed
+ * MEMPOOL_MAX_REPLACEMENT_COUNT, the function returns ECHO_ERR_INVALID
+ * with result->reason set to MEMPOOL_REJECT_RBF_TOO_MANY_REPLACED.
+ *
+ * Parameters:
+ *   mp             - Mempool
+ *   replacement    - Incoming transaction
+ *   eviction_set   - Output array (caller-allocated, size MAX_EVICTION_SET)
+ *   eviction_count - Output: number of entries written
+ *   result         - Output: reject reason on error
+ *
+ * Returns ECHO_OK on success, ECHO_ERR_INVALID if Rule 5 is violated.
+ */
+static echo_result_t rbf_collect_eviction_set(
+    mempool_t *mp, const tx_t *replacement, mempool_entry_t **eviction_set,
+    size_t *eviction_count, mempool_accept_result_t *result) {
+  *eviction_count = 0;
+
+  /* Helper: add entry to set if not already present (O(n) over ≤100 items). */
+#define ADD_TO_EVICTION_SET(e)                                                 \
+  do {                                                                         \
+    bool _already = false;                                                     \
+    for (size_t _k = 0; _k < *eviction_count; _k++) {                         \
+      if (eviction_set[_k] == (e)) {                                           \
+        _already = true;                                                        \
+        break;                                                                  \
+      }                                                                         \
+    }                                                                           \
+    if (!_already) {                                                            \
+      if (*eviction_count >= MAX_EVICTION_SET) {                               \
+        if (result != NULL) {                                                   \
+          result->reason = MEMPOOL_REJECT_RBF_TOO_MANY_REPLACED;              \
+        }                                                                       \
+        return ECHO_ERR_INVALID;                                                \
+      }                                                                         \
+      eviction_set[(*eviction_count)++] = (e);                                \
+    }                                                                           \
+  } while (0)
+
+  /* Step 1: collect direct conflicts (transactions that spend the same
+   * outputs as the replacement). */
+  for (size_t i = 0; i < replacement->input_count; i++) {
+    mempool_entry_t *conflict = spent_lookup(mp, &replacement->inputs[i].prevout);
+    if (conflict != NULL) {
+      ADD_TO_EVICTION_SET(conflict);
+    }
+  }
+
+  /* Step 2: expand the set to include all descendants of every conflict.
+   * Process newly added entries as we grow the array (BFS via index walk). */
+  for (size_t idx = 0; idx < *eviction_count; idx++) {
+    mempool_entry_t *parent = eviction_set[idx];
+
+    /* For each output of this conflict, look up whether a child spends it. */
+    for (size_t o = 0; o < parent->tx.output_count; o++) {
+      outpoint_t op = {.txid = parent->txid, .vout = (uint32_t)o};
+      mempool_entry_t *child = spent_lookup(mp, &op);
+      if (child != NULL) {
+        ADD_TO_EVICTION_SET(child);
+      }
+    }
+  }
+
+#undef ADD_TO_EVICTION_SET
+
+  return ECHO_OK;
+}
+
+/*
+ * ============================================================================
  * INTERNAL REMOVAL
  * ============================================================================
  */
@@ -687,23 +828,15 @@ echo_result_t mempool_add(mempool_t *mp, const tx_t *tx,
   for (size_t i = 0; i < tx->input_count; i++) {
     const outpoint_t *prevout = &tx->inputs[i].prevout;
 
-    /* Check if spent by mempool tx (conflict detection) */
+    /* Check if spent by mempool tx (conflict detection).
+     * We only record the first conflicting txid here; the full Rule 1
+     * signaling check (including inherited signaling) happens in
+     * rbf_validate_replacement() once we know a conflict exists. */
     mempool_entry_t *spender = spent_lookup(mp, prevout);
     if (spender != NULL) {
       if (!has_conflict) {
         has_conflict = true;
         first_conflict = spender->txid;
-      }
-
-      /* Check if this is RBF replacement */
-      if (!spender->signals_rbf) {
-        /* Original doesn't signal RBF - reject */
-        if (result != NULL) {
-          result->reason = MEMPOOL_REJECT_CONFLICT;
-          result->conflicts_count = 1;
-          result->first_conflict = first_conflict;
-        }
-        return ECHO_ERR_INVALID;
       }
     }
 
