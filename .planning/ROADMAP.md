@@ -66,7 +66,7 @@ Plans:
 **Plans**: 2 plans
 
 Plans:
-- [ ] 04-01-PLAN.md — Implement BIP-125 full-RBF replacement logic: eviction-set builder, inherited signaling check, 5-rule validator, atomic eviction (P2P-03)
+- [x] 04-01-PLAN.md — Implement BIP-125 full-RBF replacement logic: eviction-set builder, inherited signaling check, 5-rule validator, atomic eviction (P2P-03)
 - [ ] 04-02-PLAN.md — BIP-125 RBF test suite: all 5 rules with edge cases including absolute-fee trap, inherited signaling, and eviction count limit (TEST-01)
 
 ### Phase 5: Storage Layer and Core RPC
@@ -111,6 +111,6 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 | 1. Foundation Fixes | v1.0 | 7/7 | Complete | 2026-02-20 |
 | 2. Consensus Completeness | v1.0 | 3/3 | Complete | 2026-02-21 |
 | 3. P2P Block Serving | v1.1 | 2/2 | Complete | 2026-02-21 |
-| 4. BIP-125 Full-RBF Mempool | v1.1 | 0/2 | Not started | - |
+| 4. BIP-125 Full-RBF Mempool | v1.1 | 1/2 | In progress | - |
 | 5. Storage Layer and Core RPC | v1.1 | 0/4 | Not started | - |
 | 6. getblocktemplate and submitblock | v1.1 | 0/2 | Not started | - |

@@ -11,7 +11,7 @@ Requirements for the Network Participant milestone. Each maps to roadmap phases.
 
 - [x] **P2P-01**: Node advertises NODE_WITNESS (service bit 3) in version message to peers
 - [x] **P2P-02**: Node serves full witness-serialized blocks to peers via getdata handler
-- [ ] **P2P-03**: Node implements BIP-125 full-RBF with all 5 replacement rules in mempool
+- [x] **P2P-03**: Node implements BIP-125 full-RBF with all 5 replacement rules in mempool
 - [x] **P2P-04**: Node uses INV_WITNESS_BLOCK inventory type when requesting blocks from witness-capable peers
 
 ### RPC
@@ -72,7 +72,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | P2P-01 | Phase 3 | Complete |
 | P2P-02 | Phase 3 | Complete |
 | P2P-04 | Phase 3 | Complete |
-| P2P-03 | Phase 4 | Pending |
+| P2P-03 | Phase 4 | Complete |
 | TEST-01 | Phase 4 | Pending |
 | RPC-01 | Phase 5 | Pending |
 | RPC-02 | Phase 5 | Pending |
