@@ -24,15 +24,15 @@ Requirements for peer-compatible mainnet node. Each maps to roadmap phases.
 
 ### Bug Fixes
 
-- [ ] **BUGF-01**: Download manager correctly handles batch remaining count when duplicate blocks received from reassigned batches
-- [ ] **BUGF-02**: Peer manager prevents duplicate address connections via proper deduplication check before connection setup
+- [x] **BUGF-01**: Download manager correctly handles batch remaining count when duplicate blocks received from reassigned batches
+- [x] **BUGF-02**: Peer manager prevents duplicate address connections via proper deduplication check before connection setup
 
 ### Infrastructure
 
 - [x] **INFR-01**: Block storage uses async write with completion callback — download manager tracks "durably written" not "enqueued"
-- [ ] **INFR-02**: Chaser validation retrieves real block hash from block index instead of submitting all-zeros
-- [ ] **INFR-03**: Checkpoint height is configurable via node config instead of hardcoded to 0
-- [ ] **INFR-04**: Chaser fault handler logs error details via log system before shutdown signal
+- [x] **INFR-02**: Chaser validation retrieves real block hash from block index instead of submitting all-zeros
+- [x] **INFR-03**: Checkpoint height is configurable via node config instead of hardcoded to 0
+- [x] **INFR-04**: Chaser fault handler logs error details via log system before shutdown signal
 - [x] **INFR-05**: Peer eviction threshold (SLOWEST_EVICTION_MIN_RATE) calibrated from mainnet IBD measurement data
 
 ### RPC
@@ -105,12 +105,12 @@ Which phases cover which requirements. Updated during roadmap creation.
 | P2P-02 | Phase 3 | Pending |
 | P2P-03 | Phase 3 | Pending |
 | P2P-04 | Phase 3 | Pending |
-| BUGF-01 | Phase 1 | Pending |
-| BUGF-02 | Phase 1 | Pending |
+| BUGF-01 | Phase 1 | Complete |
+| BUGF-02 | Phase 1 | Complete |
 | INFR-01 | Phase 1 | Complete |
-| INFR-02 | Phase 1 | Pending |
-| INFR-03 | Phase 1 | Pending |
-| INFR-04 | Phase 1 | Pending |
+| INFR-02 | Phase 1 | Complete |
+| INFR-03 | Phase 1 | Complete |
+| INFR-04 | Phase 1 | Complete |
 | INFR-05 | Phase 1 | Complete |
 | RPC-01 | Phase 4 | Pending |
 | RPC-02 | Phase 4 | Pending |

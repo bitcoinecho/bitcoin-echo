@@ -12,7 +12,7 @@ Four phases ordered by hard dependency. Phase 1 eliminates active bugs and infra
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-- [ ] **Phase 1: Foundation Fixes** - Eliminate active bugs and infrastructure gaps that block all subsequent work
+- [x] **Phase 1: Foundation Fixes** - Eliminate active bugs and infrastructure gaps that block all subsequent work (completed 2026-02-20)
 - [x] **Phase 2: Consensus Completeness** - Implement OP_CHECKSIGADD and full UTXO rollback for correct chainstate (completed 2026-02-21)
 - [ ] **Phase 3: Peer Network Compatibility** - Advertise witness support, serve blocks, and enforce full-RBF
 - [ ] **Phase 4: RPC and Operator Capabilities** - Transaction index, block retrieval, mediantime, and block templates
@@ -29,7 +29,7 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. Chainwork values stored in the block index database are big-endian blobs that sort correctly under SQLite bytewise comparison, confirmed by direct database inspection
   4. Block storage write completion is acknowledged by the download manager only after the block is confirmed durably on disk — GAP errors no longer appear during IBD
   5. Chaser fault events log the error detail to the log system before initiating shutdown — crash diagnostics are readable in the node log
-**Plans:** 7 plans
+**Plans:** 7/7 plans complete
 
 Plans:
 - [ ] 01-01-PLAN.md — Wire chaser fault logging, block hash retrieval, and checkpoint config (INFR-04, INFR-02, INFR-03)
@@ -99,7 +99,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundation Fixes | 0/7 | Not started | - |
+| 1. Foundation Fixes | 7/7 | Complete | 2026-02-20 |
 | 2. Consensus Completeness | 3/3 | Complete    | 2026-02-21 |
 | 3. Peer Network Compatibility | 0/5 | Not started | - |
 | 4. RPC and Operator Capabilities | 0/5 | Not started | - |
