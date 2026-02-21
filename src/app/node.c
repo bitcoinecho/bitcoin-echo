@@ -2932,9 +2932,12 @@ echo_result_t node_process_peers(node_t *node) {
             our_height = consensus_get_height(node->consensus);
           }
 
-          /* Service flags: NODE_NETWORK (1) only if we're not pruned
-           * Pruned nodes cannot serve historical blocks */
-          uint64_t services = node_is_pruning_enabled(node) ? 0 : 1;
+          /* Service flags: Always advertise NODE_WITNESS (we speak SegWit protocol).
+           * Add NODE_NETWORK only if not pruned (full block history available). */
+          uint64_t services = SERVICE_NODE_WITNESS;
+          if (!node_is_pruning_enabled(node)) {
+            services |= SERVICE_NODE_NETWORK;
+          }
           peer_send_version(peer, services, (int32_t)our_height, true);
         }
         break; /* Only accept one per loop iteration */
@@ -2958,7 +2961,10 @@ echo_result_t node_process_peers(node_t *node) {
         if (node->consensus != NULL) {
           our_height = consensus_get_height(node->consensus);
         }
-        uint64_t services = node_is_pruning_enabled(node) ? 0 : 1;
+        uint64_t services = SERVICE_NODE_WITNESS;
+        if (!node_is_pruning_enabled(node)) {
+          services |= SERVICE_NODE_NETWORK;
+        }
         peer_send_version(peer, services, (int32_t)our_height, true);
       } else if (peer->state == PEER_STATE_DISCONNECTED) {
         /* Connection failed - release address back to pool */
@@ -3326,7 +3332,10 @@ echo_result_t node_maintenance(node_t *node) {
             if (node->consensus != NULL) {
               our_height = consensus_get_height(node->consensus);
             }
-            uint64_t services = node_is_pruning_enabled(node) ? 0 : 1;
+            uint64_t services = SERVICE_NODE_WITNESS;
+            if (!node_is_pruning_enabled(node)) {
+              services |= SERVICE_NODE_NETWORK;
+            }
             peer_send_version(peer, services, (int32_t)our_height, true);
           } else {
             /* Async connection started - peer is in CONNECTING state.
