@@ -10,28 +10,28 @@ See: .planning/PROJECT.md (updated 2026-02-20)
 ## Current Position
 
 Phase: 1 of 4 (Foundation Fixes)
-Plan: 3 of 7 in current phase
+Plan: 4 of 7 in current phase
 Status: In progress
-Last activity: 2026-02-21 — Plan 01-03 complete: chainwork big-endian storage
+Last activity: 2026-02-21 — Plan 01-04 complete: flush-before-index ordering in block storage
 
-Progress: [█░░░░░░░░░] 10%
+Progress: [█░░░░░░░░░] 14%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 1
-- Average duration: 9 min
-- Total execution time: 9 min
+- Total plans completed: 4
+- Average duration: ~7 min
+- Total execution time: ~26 min
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
-| 01-foundation-fixes | 1 | 9 min | 9 min |
+| 01-foundation-fixes | 4 | ~26 min | ~6.5 min |
 
 **Recent Trend:**
-- Last 5 plans: 01-03 (9 min)
-- Trend: —
+- Last 5 plans: 01-01 (~5 min), 01-02 (5 min), 01-03 (9 min), 01-04 (4 min)
+- Trend: Stable ~5-9 min/plan
 
 *Updated after each plan completion*
 
@@ -46,6 +46,7 @@ Recent decisions affecting current work:
 - [Roadmap]: CONS-03 (chainwork endianness) assigned to Phase 1, not Phase 2 — it silently corrupts reorg test results if fixed concurrently with reorg work
 - [Roadmap]: getblocktemplate included in Phase 4 as last item — highest complexity, depends on mempool (Phase 3 RBF) and block serving both stable
 - [01-03]: Byte reversal at DB boundary only — work256_compare/add/sub unchanged; ORDER BY chainwork DESC is semantically correct Nakamoto criterion
+- [01-04]: fflush() not fsync() — fflush pushes to OS page cache (one write(2) syscall); fsync would flush to physical media and kill IBD throughput
 
 ### Pending Todos
 
@@ -55,10 +56,10 @@ None yet.
 
 - [Phase 2 planning]: Verify whether script_execute() actually routes witness v1 scriptpath spends to script_execute_tapscript() or falls through to generic dispatcher — flag from research, must read script.c before planning Phase 2
 - [Phase 2 planning]: Confirm vendored secp256k1 API signature for secp256k1_schnorrsig_verify before implementation
-- [Phase 1 planning]: Verify download manager synchronization model before designing async storage callback — must be mutex-protected or lock-free
+- [Phase 1 planning, RESOLVED]: Download manager synchronization model confirmed — block_storage_write() is synchronous with mutex protection; async storage path disabled (INFR-01 fixed with flush-before-index approach)
 
 ## Session Continuity
 
 Last session: 2026-02-21
-Stopped at: Completed 01-03-PLAN.md (chainwork big-endian storage)
+Stopped at: Completed 01-04-PLAN.md (flush-before-index block storage ordering)
 Resume file: None
