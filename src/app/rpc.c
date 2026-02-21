@@ -1124,6 +1124,15 @@ static void rpc_execute_single(rpc_server_t *server, rpc_request_t *req,
 
     if (res == ECHO_OK) {
       rpc_response_success(req->id, result_str, response);
+    } else if (res == ECHO_ERR_INVALID_STATE) {
+      /*
+       * Handlers return ECHO_ERR_INVALID_STATE when the node is not ready to
+       * serve requests (e.g., still performing initial block download). This
+       * maps to Bitcoin Core's -28 error code that mining clients expect to
+       * handle gracefully while the node catches up.
+       */
+      rpc_response_error(req->id, RPC_ERR_CLIENT_IN_WARMUP,
+                         "Bitcoin Echo is downloading blocks...", response);
     } else {
       /* Handler sets its own error - extract it from result */
       rpc_response_error(req->id, RPC_ERR_INTERNAL_ERROR, "Internal error",
