@@ -22,6 +22,7 @@
 #include "echo_types.h"
 #include "log.h"
 #include "mempool.h"
+#include "merkle.h"
 #include "mining.h"
 #include "node.h"
 #include "platform.h"
@@ -2253,11 +2254,24 @@ echo_result_t rpc_getblocktemplate(node_t *node, const json_value_t *params,
     return ECHO_ERR_NULL_PARAM;
   }
 
+  /*
+   * IBD guard: do not serve block templates while the node is still syncing.
+   * Mining on an incomplete chain would produce blocks building on wrong tips.
+   * Return ECHO_ERR_INVALID_STATE; rpc_execute_single maps this to -28.
+   */
+  if (node_is_ibd_mode(node)) {
+    return ECHO_ERR_INVALID_STATE;
+  }
+
   const consensus_engine_t *consensus = node_get_consensus_const(node);
 
   /* Get current tip */
   chain_tip_t tip;
   consensus_get_chain_tip(consensus, &tip);
+
+  /* Look up tip in block index (needed for MTP and difficulty) */
+  const block_index_t *tip_index =
+      consensus_lookup_block_index(consensus, &tip.hash);
 
   char prev_hash[65];
   rpc_format_hash(&tip.hash, prev_hash);
@@ -2267,8 +2281,13 @@ echo_result_t rpc_getblocktemplate(node_t *node, const json_value_t *params,
 
   /* Get transactions from mempool */
   const mempool_t *mp = node_get_mempool_const(node);
-  mempool_stats_t mp_stats;
-  mempool_get_stats(mp, &mp_stats);
+
+  /* Select transactions for block */
+  const mempool_entry_t *selected[1000];
+  size_t selected_count = 0;
+  mempool_select_for_block(mp, selected, 1000,
+                           BLOCK_MAX_WEIGHT - 4000, /* Reserve for coinbase */
+                           &selected_count);
 
   json_builder_append(builder, "{");
 
@@ -2280,13 +2299,6 @@ echo_result_t rpc_getblocktemplate(node_t *node, const json_value_t *params,
 
   json_builder_append(builder, ",\"transactions\":[");
 
-  /* Select transactions for block */
-  const mempool_entry_t *selected[1000];
-  size_t selected_count = 0;
-  mempool_select_for_block(mp, selected, 1000,
-                           BLOCK_MAX_WEIGHT - 4000, /* Reserve for coinbase */
-                           &selected_count);
-
   satoshi_t total_fees = 0;
   for (size_t i = 0; i < selected_count; i++) {
     if (i > 0) {
@@ -2296,7 +2308,7 @@ echo_result_t rpc_getblocktemplate(node_t *node, const json_value_t *params,
     const mempool_entry_t *entry = selected[i];
     total_fees += entry->fee;
 
-    /* Serialize transaction data */
+    /* Serialize transaction data (witness-serialized for SegWit) */
     size_t tx_size = tx_serialize_size(&entry->tx, ECHO_TRUE);
     uint8_t *tx_data = malloc(tx_size);
     if (tx_data == NULL) {
@@ -2309,47 +2321,72 @@ echo_result_t rpc_getblocktemplate(node_t *node, const json_value_t *params,
       char txid_hex[65];
       rpc_format_hash(&entry->txid, txid_hex);
 
+      /* BIP-145: each tx object includes txid, hash (wtxid), and weight */
+      char wtxid_hex[65];
+      rpc_format_hash(&entry->wtxid, wtxid_hex);
+
       json_builder_append(builder, "{\"data\":");
       json_builder_hex(builder, tx_data, written);
       json_builder_append(builder, ",\"txid\":");
       json_builder_string(builder, txid_hex);
+      json_builder_append(builder, ",\"hash\":");
+      json_builder_string(builder, wtxid_hex);
       json_builder_append(builder, ",\"fee\":");
       json_builder_int(builder, entry->fee);
+      /*
+       * BIP-145: weight must be the true transaction weight, not vsize*4.
+       * tx_weight() returns base_size*3 + total_size, which is correct for
+       * both legacy and SegWit transactions.
+       */
       json_builder_append(builder, ",\"weight\":");
-      json_builder_uint(builder, entry->vsize * 4);
-      json_builder_append(builder, "}");
+      json_builder_uint(builder, tx_weight(&entry->tx));
+      json_builder_append(builder, ",\"depends\":[]}");
     }
     free(tx_data);
   }
 
   json_builder_append(builder, "]");
 
-  /* Coinbase value = subsidy + fees using proper subsidy calculation */
+  /* Coinbase value = subsidy + fees */
   satoshi_t subsidy = coinbase_subsidy(next_height);
 
   json_builder_append(builder, ",\"coinbasevalue\":");
   json_builder_int(builder, subsidy + total_fees);
 
   /*
-   * Determine difficulty bits.
-   * For regtest: always use trivial difficulty (REGTEST_POWLIMIT_BITS).
-   * For mainnet/testnet: would need full difficulty calculation from context.
+   * Compute correct difficulty bits for next block.
+   * Use consensus_build_validation_ctx() + difficulty_compute_next() so that
+   * retarget boundaries (every 2016 blocks) are handled correctly.
+   * Falls back to tip bits if the context build fails.
    */
   uint32_t bits;
 #if defined(ECHO_NETWORK_REGTEST)
   /* Regtest: trivial difficulty, no adjustment */
   bits = REGTEST_POWLIMIT_BITS;
 #else
-  /* Mainnet/testnet: use genesis difficulty as placeholder.
-   * Full difficulty adjustment would require the difficulty context. */
-  bits = DIFFICULTY_POWLIMIT_BITS;
+  {
+    full_block_ctx_t block_ctx;
+    full_block_ctx_init(&block_ctx);
+    echo_result_t ctx_res =
+        consensus_build_validation_ctx(consensus, next_height, &block_ctx);
+    if (ctx_res == ECHO_OK) {
+      if (difficulty_compute_next(&block_ctx.difficulty_ctx, &bits) !=
+          ECHO_OK) {
+        /* Should not happen; use tip bits as last resort */
+        bits = (tip_index != NULL) ? tip_index->bits : DIFFICULTY_POWLIMIT_BITS;
+      }
+    } else {
+      /* Context build failed; use tip bits as fallback */
+      bits = (tip_index != NULL) ? tip_index->bits : DIFFICULTY_POWLIMIT_BITS;
+    }
+  }
 #endif
 
   /* Convert bits to target for the "target" field */
   hash256_t target;
   block_bits_to_target(bits, &target);
 
-  /* Format target as hex string (big-endian for display) */
+  /* Format target as 64-char hex string (big-endian for display) */
   char target_hex[65];
   for (size_t i = 0; i < 32; i++) {
     snprintf(target_hex + (i * 2), 3, "%02x", target.bytes[31 - i]);
@@ -2359,15 +2396,44 @@ echo_result_t rpc_getblocktemplate(node_t *node, const json_value_t *params,
   json_builder_string(builder, target_hex);
 
   /*
-   * Calculate minimum time (MTP + 1).
-   * For regtest with empty chain, use 0.
-   * For proper operation, would query block index for MTP.
+   * Compute real Median Time Past (MTP) by walking up to 11 blocks back
+   * through block_index_map. BIP-22 requires mintime = MTP + 1 so that
+   * the template guides miners to use a valid timestamp (strictly > MTP).
+   *
+   * Pattern copied from rpc_getblockchaininfo which does the same walk.
+   * Uses node_get_consensus (non-const) as required by consensus_get_chainstate.
    */
   uint32_t mintime = 0;
-  if (tip.height > 0) {
-    /* Simple approximation: use tip timestamp as mintime.
-     * Full implementation would calculate actual MTP. */
-    mintime = (uint32_t)(plat_time_ms() / 1000) - 600; /* Rough estimate */
+  if (tip_index != NULL) {
+    uint32_t timestamps[11];
+    int ts_count = 0;
+    consensus_engine_t *cons_mut = node_get_consensus(node);
+    chainstate_t *cs = consensus_get_chainstate(cons_mut);
+    block_index_map_t *bim = chainstate_get_block_index_map(cs);
+    const block_index_t *cur = tip_index;
+
+    while (cur != NULL && ts_count < 11) {
+      timestamps[ts_count++] = cur->timestamp;
+      if (cur->height == 0) {
+        break;
+      }
+      cur = block_index_map_lookup(bim, &cur->prev_hash);
+    }
+
+    /* Insertion sort ascending (max 11 elements) */
+    for (int i = 1; i < ts_count; i++) {
+      uint32_t key = timestamps[i];
+      int j = i - 1;
+      while (j >= 0 && timestamps[j] > key) {
+        timestamps[j + 1] = timestamps[j];
+        j--;
+      }
+      timestamps[j + 1] = key;
+    }
+
+    uint32_t mtp = (ts_count > 0) ? timestamps[ts_count / 2] : 0;
+    /* BIP-22: mintime must be strictly greater than MTP */
+    mintime = mtp + 1;
   }
 
   json_builder_append(builder, ",\"mintime\":");
@@ -2384,12 +2450,66 @@ echo_result_t rpc_getblocktemplate(node_t *node, const json_value_t *params,
   json_builder_append(builder, ",\"height\":");
   json_builder_uint(builder, next_height);
 
-  /* Add sigoplimit and sizelimit for completeness */
   json_builder_append(builder, ",\"sigoplimit\":");
   json_builder_uint(builder, BLOCK_MAX_SIGOPS);
 
   json_builder_append(builder, ",\"weightlimit\":");
   json_builder_uint(builder, BLOCK_MAX_WEIGHT);
+
+  /* BIP-145: advertise segwit rule — Echo is mainnet-only post-SegWit
+   * activation (height 481824), so all block templates require segwit. */
+  json_builder_append(builder, ",\"rules\":[\"segwit\"]");
+
+  /*
+   * BIP-145: default_witness_commitment — 38-byte scriptPubKey of the form:
+   *   OP_RETURN(0x6a) push36(0x24) magic(aa21a9ed) <32-byte-commitment>
+   *
+   * The 32-byte commitment is SHA256d(witness_merkle_root || zero_nonce).
+   * The witness merkle root is built from wtxids of all selected transactions
+   * with the coinbase's wtxid replaced by 32 zero bytes (BIP-141 rule).
+   *
+   * We use calloc for the wtxid array so that wtxids[0] is zero-initialized
+   * (coinbase slot), then fill in real wtxids for selected transactions.
+   * We call merkle_root() directly (not merkle_root_wtxids()) because we do
+   * not have a coinbase tx_t object at template-generation time.
+   */
+  {
+    /* Allocate wtxid array: index 0 = coinbase (32 zeros), rest = real wtxids.
+     * Use count=1 minimum even for empty mempool so merkle_root gets valid
+     * input and emits the coinbase-only root (32 zero bytes). */
+    size_t wtxid_count = 1 + selected_count;
+    hash256_t *wtxids = calloc(wtxid_count, sizeof(hash256_t));
+    if (wtxids != NULL) {
+      /* wtxids[0] already zero (coinbase wtxid by BIP-141 protocol rule) */
+      for (size_t i = 0; i < selected_count; i++) {
+        tx_compute_wtxid(&selected[i]->tx, &wtxids[i + 1]);
+      }
+
+      hash256_t witness_root;
+      merkle_root(wtxids, wtxid_count, &witness_root);
+      free(wtxids);
+
+      /* Standard witness nonce: 32 zero bytes */
+      hash256_t nonce;
+      memset(&nonce, 0, sizeof(hash256_t));
+
+      hash256_t commitment;
+      witness_commitment(&witness_root, &nonce, &commitment);
+
+      /* Build 38-byte scriptPubKey: OP_RETURN push36 magic(4 bytes) + hash */
+      uint8_t script[38];
+      script[0] = 0x6a; /* OP_RETURN */
+      script[1] = 0x24; /* push 36 bytes */
+      script[2] = 0xaa;
+      script[3] = 0x21;
+      script[4] = 0xa9;
+      script[5] = 0xed;
+      memcpy(script + 6, commitment.bytes, 32);
+
+      json_builder_append(builder, ",\"default_witness_commitment\":");
+      json_builder_hex(builder, script, 38);
+    }
+  }
 
   json_builder_append(builder, "}");
 
