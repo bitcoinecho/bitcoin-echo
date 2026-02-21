@@ -1659,7 +1659,41 @@ echo_result_t rpc_getblockchaininfo(node_t *node, const json_value_t *params,
   json_builder_number(builder, difficulty);
 
   json_builder_append(builder, ",\"mediantime\":");
-  json_builder_uint(builder, 0); /* TODO: implement MTP query */
+  {
+    /* Compute Median Time Past (MTP): median of the 11 most recent block
+     * timestamps. Uses in-memory block_index_map for zero-I/O traversal. */
+    uint32_t mtp = 0;
+    if (tip_index != NULL) {
+      uint32_t timestamps[11];
+      int ts_count = 0;
+      consensus_engine_t *cons_mut = node_get_consensus(node);
+      chainstate_t *cs = consensus_get_chainstate(cons_mut);
+      block_index_map_t *bim = chainstate_get_block_index_map(cs);
+      const block_index_t *cur = tip_index;
+
+      while (cur != NULL && ts_count < 11) {
+        timestamps[ts_count++] = cur->timestamp;
+        if (cur->height == 0) {
+          break;
+        }
+        cur = block_index_map_lookup(bim, &cur->prev_hash);
+      }
+
+      /* Insertion sort ascending (max 11 elements) */
+      for (int i = 1; i < ts_count; i++) {
+        uint32_t key = timestamps[i];
+        int j = i - 1;
+        while (j >= 0 && timestamps[j] > key) {
+          timestamps[j + 1] = timestamps[j];
+          j--;
+        }
+        timestamps[j + 1] = key;
+      }
+
+      mtp = (ts_count > 0) ? timestamps[ts_count / 2] : 0;
+    }
+    json_builder_uint(builder, mtp);
+  }
 
   json_builder_append(builder, ",\"verificationprogress\":");
   json_builder_number(builder, node_stats.sync_progress / 100.0);
@@ -1779,9 +1813,32 @@ echo_result_t rpc_getblock(node_t *node, const json_value_t *params,
   }
 
   if (verbosity == 0) {
-    /* Return raw hex block */
-    /* TODO: Read block from storage and return hex */
-    json_builder_string(builder, "");
+    /* Return raw witness-serialized block hex from disk */
+    block_index_entry_t db_entry;
+    block_index_db_t *bdb = node_get_block_index_db(node);
+    echo_result_t read_res = block_index_db_lookup_by_hash(bdb, &block_hash, &db_entry);
+    if (read_res != ECHO_OK) {
+      return ECHO_ERR_NOT_FOUND;
+    }
+    /* Check block data availability — pruned or header-only blocks cannot be served */
+    if ((db_entry.status & BLOCK_STATUS_PRUNED) ||
+        !(db_entry.status & BLOCK_STATUS_HAVE_DATA) ||
+        db_entry.data_file < 0) {
+      return ECHO_ERR_NOT_FOUND;
+    }
+    block_file_pos_t pos = {
+      .file_index = (uint32_t)db_entry.data_file,
+      .file_offset = db_entry.data_pos,
+    };
+    uint8_t *block_bytes = NULL;
+    uint32_t block_size = 0;
+    block_file_manager_t *mgr = node_get_block_storage(node);
+    read_res = block_storage_read(mgr, pos, &block_bytes, &block_size);
+    if (read_res != ECHO_OK) {
+      return ECHO_ERR_NOT_FOUND;
+    }
+    json_builder_hex(builder, block_bytes, block_size);
+    free(block_bytes);
     return ECHO_OK;
   }
 
