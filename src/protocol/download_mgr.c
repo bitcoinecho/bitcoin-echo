@@ -1482,11 +1482,16 @@ size_t download_mgr_check_performance(download_mgr_t *mgr) {
     uint64_t since_last_delivery = now - perf->last_delivery_time;
     if (perf->last_delivery_time > 0 &&
         since_last_delivery < (uint64_t)(DOWNLOAD_PERF_WINDOW_MS * 2)) {
-      LOG_INFO("download_mgr: peer shows 0 B/s but delivered %llu ms ago, "
-               "keeping (between batches)",
-               (unsigned long long)since_last_delivery);
+      LOG_DEBUG("download_mgr: peer shows 0 B/s but delivered %llu ms ago, "
+                "keeping (between batches)",
+                (unsigned long long)since_last_delivery);
       continue; /* Not truly stalled, just between batches */
     }
+
+    LOG_DEBUG("download_mgr: evicting stalled peer (0 B/s, last delivery "
+              "%llu ms ago, reporters=%zu, min_keep=%d)",
+              (unsigned long long)since_last_delivery,
+              reporters, DOWNLOAD_MIN_PEERS_TO_KEEP);
 
     batch_node_t *node = (batch_node_t *)(void *)perf->batch;
     node->batch.assigned_time = 0;
@@ -1503,17 +1508,21 @@ size_t download_mgr_check_performance(download_mgr_t *mgr) {
   /* Phase 4: Disconnect slow peers (below absolute minimum rate).
    *
    * Unlike the old stddev-based eviction (removed 2025-12-31), this uses an
-   * absolute minimum threshold. Peers below 3 KB/s after the grace period
-   * are disconnected. This avoids the problem where similar-speed peers
-   * triggered eviction at 99% of average.
+   * absolute minimum threshold. Peers below DOWNLOAD_MIN_RATE_BYTES_PER_SEC
+   * (1 KB/s) after the grace period are disconnected. This avoids the problem
+   * where similar-speed peers triggered eviction at 99% of average.
    *
-   * 3 KB/s is very conservative - even a slow peer should manage this.
-   * Peers below this threshold are likely on congested/poor connections
-   * and replacing them with fresh peers should improve throughput.
+   * 1 KB/s is very conservative — see DOWNLOAD_MIN_RATE_BYTES_PER_SEC in
+   * download_mgr.h for full calibration rationale. Peers below this threshold
+   * are likely on congested/poor connections and replacing them with fresh
+   * peers should improve throughput.
    */
   for (size_t i = 0; i < rate_count; i++) {
     if (reporters - dropped <= DOWNLOAD_MIN_PEERS_TO_KEEP) {
-      LOG_DEBUG("download_mgr: keeping slow peer to maintain minimum");
+      LOG_DEBUG("download_mgr: slow peer (%.1f KB/s) retained — "
+                "at minimum peer count (%zu/%d)",
+                peers_with_rates[i]->bytes_per_second / 1024.0f,
+                reporters - dropped, DOWNLOAD_MIN_PEERS_TO_KEEP);
       break;
     }
 
@@ -1533,6 +1542,12 @@ size_t download_mgr_check_performance(download_mgr_t *mgr) {
       continue; /* Fast enough, keep */
     }
 
+    LOG_DEBUG("download_mgr: evicting slow peer — rate %.1f KB/s below "
+              "threshold %.1f KB/s (reporters=%zu, min_keep=%d)",
+              perf->bytes_per_second / 1024.0f,
+              (float)DOWNLOAD_MIN_RATE_BYTES_PER_SEC / 1024.0f,
+              reporters, DOWNLOAD_MIN_PEERS_TO_KEEP);
+
     batch_node_t *node = (batch_node_t *)(void *)perf->batch;
     node->batch.assigned_time = 0;
     perf->batch = NULL;
@@ -1546,8 +1561,8 @@ size_t download_mgr_check_performance(download_mgr_t *mgr) {
   }
 
   if (dropped > 0) {
-    LOG_INFO("download_mgr: performance check dropped %zu slow/stalled peers",
-             dropped);
+    LOG_DEBUG("download_mgr: performance check dropped %zu slow/stalled peers",
+              dropped);
   }
 
   return dropped;
@@ -1652,6 +1667,11 @@ size_t download_mgr_evict_slowest_percent(download_mgr_t *mgr, float percent,
       continue;
     }
 
+    LOG_DEBUG("download_mgr: evicting peer — rate %.1f KB/s in bottom %.0f%% "
+              "(candidates=%zu, min_keep=%d)",
+              rate / 1024.0f, percent,
+              candidate_count, DOWNLOAD_MIN_PEERS_TO_KEEP);
+
     /* Return batch to queue before disconnecting */
     if (perf->batch != NULL) {
       batch_node_t *node = (batch_node_t *)(void *)perf->batch;
@@ -1673,10 +1693,10 @@ size_t download_mgr_evict_slowest_percent(download_mgr_t *mgr, float percent,
     float slowest = candidates[0].rate;
     float fastest = candidates[candidate_count - 1].rate;
     float median = candidates[candidate_count / 2].rate;
-    LOG_INFO("download_mgr: evicted %zu slowest peers (%.1f%%). "
-             "Rates: slowest=%.1f KB/s, median=%.1f KB/s, fastest=%.1f KB/s",
-             evicted, percent, slowest / 1024.0f, median / 1024.0f,
-             fastest / 1024.0f);
+    LOG_DEBUG("download_mgr: evicted %zu slowest peers (%.1f%%). "
+              "Rates: slowest=%.1f KB/s, median=%.1f KB/s, fastest=%.1f KB/s",
+              evicted, percent, slowest / 1024.0f, median / 1024.0f,
+              fastest / 1024.0f);
   }
 
   return evicted;
