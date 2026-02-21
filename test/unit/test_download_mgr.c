@@ -846,6 +846,318 @@ static void test_remove_peer_with_work(void) {
 }
 
 /* ============================================================================
+ * Peer Eviction Tests
+ *
+ * These tests exercise download_mgr_evict_slowest_percent() and
+ * download_mgr_check_performance(). Both functions require peers to have
+ * has_reported=true and be past the grace period — state that normally takes
+ * 10+ seconds of real delivery to accumulate. We use the test-only
+ * download_mgr_inject_peer_rate() to set rates directly.
+ * ============================================================================
+ */
+
+/**
+ * Helper: add a peer, give it work, and inject a simulated download rate.
+ * Returns true if setup succeeded.
+ *
+ * After calling this the peer appears "active and past grace period" from
+ * the eviction functions' perspective, with the rate you specify.
+ */
+static bool setup_active_peer(download_mgr_t *mgr, mock_peer_t *peer,
+                              uint32_t height_start, float bytes_per_sec) {
+  /* Cast through void* to silence -Wcast-align: mock_peer_t is opaque to the
+   * download manager (it only stores and compares the pointer), so alignment
+   * is not an issue at the usage site. This matches the pattern used elsewhere
+   * in the codebase (e.g., batch_node_t cast in download_mgr.c). */
+  peer_t *p = (peer_t *)(void *)peer;
+
+  download_mgr_add_peer(mgr, p);
+
+  /* Give the peer a batch of work so it counts as "actively downloading" */
+  hash256_t hash;
+  uint32_t height = height_start;
+  make_test_hash(&hash, height);
+  download_mgr_add_work(mgr, &hash, &height, 1);
+  if (!download_mgr_peer_request_work(mgr, p)) {
+    return false; /* Could not assign work */
+  }
+
+  /* Inject rate — bypasses 10-second real-time window */
+  return download_mgr_inject_peer_rate(mgr, p, bytes_per_sec);
+}
+
+static void test_evict_slowest_above_min(void) {
+  test_case("evict slowest peers when above minimum count");
+
+  test_ctx_t ctx = {0};
+  download_callbacks_t callbacks = {.send_getdata = mock_send_getdata,
+                                    .disconnect_peer = mock_disconnect_peer,
+                                    .ctx = &ctx};
+
+  download_mgr_t *mgr = download_mgr_create(&callbacks);
+
+  /* 8 peers total: 4 fast (100 KB/s) and 4 slow (100 B/s).
+   * Use distinct height_start values so each peer gets a unique batch. */
+  mock_peer_t fast_peers[4];
+  mock_peer_t slow_peers[4];
+
+  for (int i = 0; i < 4; i++) {
+    fast_peers[i].id = 10 + i;
+    if (!setup_active_peer(mgr, &fast_peers[i], (uint32_t)(1000 + i * 2),
+                           100000.0f /* 100 KB/s */)) {
+      test_fail("failed to set up fast peer");
+      download_mgr_destroy(mgr);
+      return;
+    }
+  }
+
+  for (int i = 0; i < 4; i++) {
+    slow_peers[i].id = 20 + i;
+    if (!setup_active_peer(mgr, &slow_peers[i], (uint32_t)(2000 + i * 2),
+                           100.0f /* 100 B/s — below 1 KB/s threshold */)) {
+      test_fail("failed to set up slow peer");
+      download_mgr_destroy(mgr);
+      return;
+    }
+  }
+
+  /* Trigger percentile eviction: evict bottom 50%, respecting min_rate_to_keep=0
+   * (no rate floor — evict purely by rank). With 8 candidates, 50% = 4 peers. */
+  size_t evicted = download_mgr_evict_slowest_percent(mgr, 50.0f, 0.0f);
+
+  /* Should have evicted exactly the 4 slow peers, leaving 4 fast ones.
+   * Min peers to keep = DOWNLOAD_MIN_PEERS_TO_KEEP = 3, so 8-4=4 >= 3. */
+  if (evicted != 4) {
+    test_fail_uint("evicted count", 4, evicted);
+    download_mgr_destroy(mgr);
+    return;
+  }
+
+  /* Disconnect callback must have fired exactly 4 times */
+  if (ctx.disconnect_calls != 4) {
+    test_fail_uint("disconnect calls", 4, ctx.disconnect_calls);
+    download_mgr_destroy(mgr);
+    return;
+  }
+
+  download_mgr_destroy(mgr);
+  test_pass();
+}
+
+static void test_no_evict_at_minimum(void) {
+  test_case("no eviction when at minimum peer count");
+
+  test_ctx_t ctx = {0};
+  download_callbacks_t callbacks = {.send_getdata = mock_send_getdata,
+                                    .disconnect_peer = mock_disconnect_peer,
+                                    .ctx = &ctx};
+
+  download_mgr_t *mgr = download_mgr_create(&callbacks);
+
+  /* Set up exactly DOWNLOAD_MIN_PEERS_TO_KEEP slow peers.
+   * evict_slowest_percent requires candidate_count > DOWNLOAD_MIN_PEERS_TO_KEEP,
+   * so with exactly MIN peers it must refuse to evict any. */
+  mock_peer_t peers[DOWNLOAD_MIN_PEERS_TO_KEEP];
+
+  for (int i = 0; i < DOWNLOAD_MIN_PEERS_TO_KEEP; i++) {
+    peers[i].id = 30 + i;
+    if (!setup_active_peer(mgr, &peers[i], (uint32_t)(3000 + i * 2),
+                           50.0f /* 50 B/s — very slow */)) {
+      test_fail("failed to set up peer");
+      download_mgr_destroy(mgr);
+      return;
+    }
+  }
+
+  /* Attempt eviction — should be blocked because candidate_count == MIN */
+  size_t evicted = download_mgr_evict_slowest_percent(mgr, 50.0f, 0.0f);
+
+  if (evicted != 0) {
+    test_fail_uint("evicted count (should be zero at minimum)", 0, evicted);
+    download_mgr_destroy(mgr);
+    return;
+  }
+
+  /* No disconnects */
+  if (ctx.disconnect_calls != 0) {
+    test_fail_uint("disconnect calls (should be zero)", 0,
+                   ctx.disconnect_calls);
+    download_mgr_destroy(mgr);
+    return;
+  }
+
+  download_mgr_destroy(mgr);
+  test_pass();
+}
+
+static void test_evict_stops_at_minimum_floor(void) {
+  test_case("eviction stops at minimum peer count floor");
+
+  test_ctx_t ctx = {0};
+  download_callbacks_t callbacks = {.send_getdata = mock_send_getdata,
+                                    .disconnect_peer = mock_disconnect_peer,
+                                    .ctx = &ctx};
+
+  download_mgr_t *mgr = download_mgr_create(&callbacks);
+
+  /* 5 peers: 4 slow, 1 fast. If DOWNLOAD_MIN_PEERS_TO_KEEP=3:
+   *   max_evict = 5 - 3 = 2 (can only evict 2 to stay at floor)
+   * The 1 fast peer must survive; up to 2 slow peers are removed. */
+  mock_peer_t fast_peer = {.id = 40};
+  if (!setup_active_peer(mgr, &fast_peer, 4000, 100000.0f /* 100 KB/s */)) {
+    test_fail("failed to set up fast peer");
+    download_mgr_destroy(mgr);
+    return;
+  }
+
+  mock_peer_t slow_peers[4];
+  for (int i = 0; i < 4; i++) {
+    slow_peers[i].id = 41 + i;
+    if (!setup_active_peer(mgr, &slow_peers[i], (uint32_t)(4100 + i * 2),
+                           50.0f /* 50 B/s */)) {
+      test_fail("failed to set up slow peer");
+      download_mgr_destroy(mgr);
+      return;
+    }
+  }
+
+  /* Evict bottom 50% (no rate floor) — 50% of 5 = 2, capped at max_evict=2 */
+  size_t evicted = download_mgr_evict_slowest_percent(mgr, 50.0f, 0.0f);
+
+  /* Exactly 2 slow peers evicted (the floor prevents evicting all 4 slow) */
+  if (evicted != 2) {
+    test_fail_uint("evicted count", 2, evicted);
+    download_mgr_destroy(mgr);
+    return;
+  }
+
+  /* At least DOWNLOAD_MIN_PEERS_TO_KEEP peers must still be tracked */
+  download_metrics_t metrics;
+  download_mgr_get_metrics(mgr, &metrics);
+  if (metrics.total_peers < DOWNLOAD_MIN_PEERS_TO_KEEP) {
+    test_fail_uint("remaining peers below minimum", DOWNLOAD_MIN_PEERS_TO_KEEP,
+                   metrics.total_peers);
+    download_mgr_destroy(mgr);
+    return;
+  }
+
+  download_mgr_destroy(mgr);
+  test_pass();
+}
+
+static void test_evict_all_equal_rates(void) {
+  test_case("no crash with equal-rate peers");
+
+  test_ctx_t ctx = {0};
+  download_callbacks_t callbacks = {.send_getdata = mock_send_getdata,
+                                    .disconnect_peer = mock_disconnect_peer,
+                                    .ctx = &ctx};
+
+  download_mgr_t *mgr = download_mgr_create(&callbacks);
+
+  /* 6 peers all at the same slow rate (100 B/s — below 1 KB/s threshold).
+   * Eviction should still proceed without crashing: the sort is stable
+   * for equal rates, so the first N peers in insertion order get evicted. */
+  mock_peer_t peers[6];
+  for (int i = 0; i < 6; i++) {
+    peers[i].id = 50 + i;
+    if (!setup_active_peer(mgr, &peers[i], (uint32_t)(5000 + i * 2),
+                           100.0f /* identical rate */)) {
+      test_fail("failed to set up peer");
+      download_mgr_destroy(mgr);
+      return;
+    }
+  }
+
+  /* evict_slowest_percent must not crash and must respect min peers floor */
+  size_t evicted = download_mgr_evict_slowest_percent(mgr, 10.0f, 0.0f);
+
+  /* 10% of 6 = 0, rounds up to 1; max_evict = 6-3 = 3; so evicted == 1 */
+  if (evicted != 1) {
+    test_fail_uint("evicted count (equal-rate, 10%)", 1, evicted);
+    download_mgr_destroy(mgr);
+    return;
+  }
+
+  /* At least DOWNLOAD_MIN_PEERS_TO_KEEP must survive */
+  download_metrics_t metrics;
+  download_mgr_get_metrics(mgr, &metrics);
+  if (metrics.total_peers < DOWNLOAD_MIN_PEERS_TO_KEEP) {
+    test_fail_uint("remaining peers below minimum after equal-rate eviction",
+                   DOWNLOAD_MIN_PEERS_TO_KEEP, metrics.total_peers);
+    download_mgr_destroy(mgr);
+    return;
+  }
+
+  download_mgr_destroy(mgr);
+  test_pass();
+}
+
+static void test_evict_stalled_peer_zero_rate(void) {
+  test_case("stalled peer (zero rate) is evicted first");
+
+  test_ctx_t ctx = {0};
+  download_callbacks_t callbacks = {.send_getdata = mock_send_getdata,
+                                    .disconnect_peer = mock_disconnect_peer,
+                                    .ctx = &ctx};
+
+  download_mgr_t *mgr = download_mgr_create(&callbacks);
+
+  /* 6 peers: 5 at moderate speed, 1 stalled (zero bytes/sec).
+   * A stalled peer has rate=0 and has_reported=true — it USED to deliver
+   * but stopped. The zero rate sits at the bottom of any sorted list.
+   *
+   * Note: check_performance (not evict_slowest_percent) handles the
+   * stall-timeout disconnect path.  For evict_slowest_percent a zero-rate
+   * peer is simply the slowest and will be selected first. */
+  mock_peer_t stalled = {.id = 60};
+  if (!setup_active_peer(mgr, &stalled, 6000, 0.0f /* stalled */)) {
+    test_fail("failed to set up stalled peer");
+    download_mgr_destroy(mgr);
+    return;
+  }
+
+  mock_peer_t normal_peers[5];
+  for (int i = 0; i < 5; i++) {
+    normal_peers[i].id = 61 + i;
+    if (!setup_active_peer(mgr, &normal_peers[i], (uint32_t)(6100 + i * 2),
+                           50000.0f /* 50 KB/s */)) {
+      test_fail("failed to set up normal peer");
+      download_mgr_destroy(mgr);
+      return;
+    }
+  }
+
+  /* Evict bottom 10% (at least 1 peer, which should be the stalled one) */
+  ctx.disconnect_calls = 0;
+  size_t evicted = download_mgr_evict_slowest_percent(mgr, 10.0f, 0.0f);
+
+  /* Must have evicted exactly 1 (the stalled peer is the slowest) */
+  if (evicted != 1) {
+    test_fail_uint("evicted count", 1, evicted);
+    download_mgr_destroy(mgr);
+    return;
+  }
+
+  /* Disconnect callback must have fired exactly once */
+  if (ctx.disconnect_calls != 1) {
+    test_fail_uint("disconnect calls", 1, ctx.disconnect_calls);
+    download_mgr_destroy(mgr);
+    return;
+  }
+
+  /* The peer that was disconnected must be the stalled one */
+  if (ctx.last_disconnect_peer != (mock_peer_t *)&stalled) {
+    test_fail("evicted wrong peer — stalled peer should be evicted first");
+    download_mgr_destroy(mgr);
+    return;
+  }
+
+  download_mgr_destroy(mgr);
+  test_pass();
+}
+
+/* ============================================================================
  * Main
  * ============================================================================
  */
@@ -890,6 +1202,13 @@ int main(void) {
 
   /* Peer removal with work tests */
   test_remove_peer_with_work();
+
+  /* Peer eviction tests */
+  test_evict_slowest_above_min();
+  test_no_evict_at_minimum();
+  test_evict_stops_at_minimum_floor();
+  test_evict_all_equal_rates();
+  test_evict_stalled_peer_zero_rate();
 
   test_suite_end();
   return test_global_summary();

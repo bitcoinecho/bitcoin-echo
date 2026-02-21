@@ -1703,6 +1703,40 @@ size_t download_mgr_evict_slowest_percent(download_mgr_t *mgr, float percent,
 }
 
 /* ============================================================================
+ * Test Support
+ * ============================================================================
+ */
+
+bool download_mgr_inject_peer_rate(download_mgr_t *mgr, peer_t *peer,
+                                   float bytes_per_sec) {
+  if (mgr == NULL || peer == NULL) {
+    return false;
+  }
+
+  peer_perf_t *perf = find_peer_perf(mgr, peer);
+  if (perf == NULL) {
+    return false;
+  }
+
+  /* Set rate and mark peer as having reported — bypasses the 10-second
+   * performance window and grace period that normal operation requires.
+   * Push first_work_time far enough into the past to clear the grace period.
+   *
+   * has_reported is always set true here, including for zero-rate peers.
+   * A stalled peer (rate=0) IS a "reporter" — it USED to deliver and stopped.
+   * has_reported=false means "never delivered any bytes yet" (warming up).
+   * Setting it true with rate=0 lets tests exercise the stall-eviction path. */
+  perf->bytes_per_second = bytes_per_sec;
+  perf->has_reported = true;
+  perf->first_work_time = 1; /* Non-zero: past the grace period (epoch=1ms) */
+  /* Window start also far in the past so check_performance sees elapsed >= window */
+  perf->window_start_time = 1;
+  perf->bytes_this_window = 0;
+
+  return true;
+}
+
+/* ============================================================================
  * Query Functions
  * ============================================================================
  */

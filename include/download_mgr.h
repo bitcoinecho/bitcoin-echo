@@ -426,6 +426,33 @@ void download_mgr_block_complete(download_mgr_t *mgr, const hash256_t *hash,
                                  uint32_t height);
 
 /* ============================================================================
+ * Test Support
+ * ============================================================================
+ */
+
+/**
+ * Inject a simulated download rate for a peer. FOR UNIT TESTS ONLY.
+ *
+ * Eviction functions (check_performance, evict_slowest_percent) require peers
+ * to have has_reported=true and be past the grace period — state that normally
+ * takes 10+ seconds of real-time block delivery to accumulate. This function
+ * bypasses that path by directly setting the rate fields, allowing tests to
+ * exercise eviction logic without sleeping.
+ *
+ * Do NOT call this in production code. Its only valid caller is test_download_mgr.c.
+ *
+ * Parameters:
+ *   mgr            - Download manager
+ *   peer           - Peer to inject rate for (must already be added)
+ *   bytes_per_sec  - Simulated rate to set (bytes/second)
+ *
+ * Returns:
+ *   true if peer was found and rate injected, false if peer unknown
+ */
+bool download_mgr_inject_peer_rate(download_mgr_t *mgr, peer_t *peer,
+                                   float bytes_per_sec);
+
+/* ============================================================================
  * Debug/Metrics
  * ============================================================================
  */
