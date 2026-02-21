@@ -29,20 +29,16 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. Chainwork values stored in the block index database are big-endian blobs that sort correctly under SQLite bytewise comparison, confirmed by direct database inspection
   4. Block storage write completion is acknowledged by the download manager only after the block is confirmed durably on disk — GAP errors no longer appear during IBD
   5. Chaser fault events log the error detail to the log system before initiating shutdown — crash diagnostics are readable in the node log
-**Plans**: TBD
+**Plans:** 7 plans
 
 Plans:
-- [ ] 01-01: Fix download manager batch remaining count bug (BUGF-01)
-- [ ] 01-02: Fix duplicate peer address detection race (BUGF-02)
-- [ ] 01-03: Implement async storage write completion callback (INFR-01)
-- [ ] 01-04: Wire real block hash retrieval in chaser_validate (INFR-02)
-- [ ] 01-05: Wire checkpoint height from node config (INFR-03)
-- [ ] 01-06: Add error logging to chaser fault handler (INFR-04)
-- [ ] 01-07: Calibrate peer eviction threshold from mainnet IBD data (INFR-05)
-- [ ] 01-08: Fix chainwork big-endian storage in block_index_db (CONS-03)
-- [ ] 01-09: Test concurrent block storage reads and writes (TEST-02)
-- [ ] 01-10: Test peer eviction under load (TEST-03)
-- [ ] 01-11: Test large block handling at max size and near-limit (TEST-05)
+- [ ] 01-01-PLAN.md — Wire chaser fault logging, block hash retrieval, and checkpoint config (INFR-04, INFR-02, INFR-03)
+- [ ] 01-02-PLAN.md — Fix batch remaining count and duplicate address bugs (BUGF-01, BUGF-02)
+- [ ] 01-03-PLAN.md — Fix chainwork big-endian storage in block_index_db (CONS-03)
+- [ ] 01-04-PLAN.md — Implement flush-before-index for durable block storage writes (INFR-01)
+- [ ] 01-05-PLAN.md — Calibrate peer eviction threshold and add debug logging (INFR-05)
+- [ ] 01-06-PLAN.md — Test concurrent block storage and large block edge cases (TEST-02, TEST-05)
+- [ ] 01-07-PLAN.md — Test peer eviction under load (TEST-03)
 
 ### Phase 2: Consensus Completeness
 **Goal**: The node correctly validates all Taproot multisig transactions and correctly follows the longest chain through reorganizations with UTXO state consistency guaranteed
@@ -105,7 +101,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundation Fixes | 0/11 | Not started | - |
+| 1. Foundation Fixes | 0/7 | Not started | - |
 | 2. Consensus Completeness | 0/5 | Not started | - |
 | 3. Peer Network Compatibility | 0/5 | Not started | - |
 | 4. RPC and Operator Capabilities | 0/5 | Not started | - |
