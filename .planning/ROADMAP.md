@@ -78,13 +78,11 @@ Plans:
   2. getblock called with a block hash and verbosity=0 returns the raw witness-serialized hex for that block
   3. getblockchaininfo returns a mediantime that equals the median of the previous 11 block timestamps at the current chain tip — it does not return 0
   4. After a chain reorganization, getrawtransaction for a transaction in a disconnected block returns not-found — stale txindex entries from the reorg are removed in the same SQLite transaction as the UTXO delta rollback
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 05-01: Add tx_index table to block_index.db, implement txindex_insert and txindex_lookup, populate during block application, delete on block disconnect (RPC-01)
-- [ ] 05-02: Wire getrawtransaction for confirmed transactions using tx_index lookup (RPC-02)
-- [ ] 05-03: Wire getblock verbosity=0 to return raw witness-serialized hex from block storage (RPC-03)
-- [ ] 05-04: Implement get_median_time query and wire into getblockchaininfo mediantime field (RPC-04)
+- [ ] 05-01-PLAN.md — tx_index table + CRUD functions + population in node_apply_block + deletion in chaser_confirm reorg (RPC-01)
+- [ ] 05-02-PLAN.md — Wire getblock v=0 raw hex, mediantime MTP calculation, getrawtransaction confirmed tx lookup (RPC-02, RPC-03, RPC-04)
 
 ### Phase 6: getblocktemplate and submitblock
 **Goal**: Mining pools and operators can request a valid block template with a correct SegWit witness commitment and submit a mined block — Echo is usable as mining pool infrastructure
@@ -112,5 +110,5 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 | 2. Consensus Completeness | v1.0 | 3/3 | Complete | 2026-02-21 |
 | 3. P2P Block Serving | v1.1 | 2/2 | Complete | 2026-02-21 |
 | 4. BIP-125 Full-RBF Mempool | 2/2 | Complete   | 2026-02-21 | - |
-| 5. Storage Layer and Core RPC | v1.1 | 0/4 | Not started | - |
+| 5. Storage Layer and Core RPC | v1.1 | 0/2 | Not started | - |
 | 6. getblocktemplate and submitblock | v1.1 | 0/2 | Not started | - |
