@@ -31,7 +31,7 @@ See: `.planning/milestones/v1.0-ROADMAP.md` for full details
 
 #### Phase 5: Storage Layer and Core RPC
 
-- [ ] **Phase 5: Storage Layer and Core RPC** — Transaction index built, confirmed tx lookup live, getblock and mediantime return real data
+- [x] **Phase 5: Storage Layer and Core RPC** — Transaction index built, confirmed tx lookup live, getblock and mediantime return real data (completed 2026-02-21)
 
 #### Phase 6: getblocktemplate and submitblock
 
@@ -110,5 +110,5 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 | 2. Consensus Completeness | v1.0 | 3/3 | Complete | 2026-02-21 |
 | 3. P2P Block Serving | v1.1 | 2/2 | Complete | 2026-02-21 |
 | 4. BIP-125 Full-RBF Mempool | 2/2 | Complete   | 2026-02-21 | - |
-| 5. Storage Layer and Core RPC | v1.1 | 0/2 | Not started | - |
+| 5. Storage Layer and Core RPC | 2/2 | Complete   | 2026-02-21 | - |
 | 6. getblocktemplate and submitblock | v1.1 | 0/2 | Not started | - |

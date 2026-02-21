@@ -9,19 +9,19 @@ See: .planning/PROJECT.md (updated 2026-02-21)
 
 ## Current Position
 
-Phase: 5 of 6 for v1.1 (Storage Layer and Core RPC) — IN PROGRESS
-Plan: 1 of 2 in phase 05 (plan 05-01 complete)
-Status: Plan 05-01 complete, executing plan 05-02
-Last activity: 2026-02-21 — Plan 05-01 complete (tx_index table + population/deletion hooks in apply/reorg paths)
+Phase: 5 of 6 for v1.1 (Storage Layer and Core RPC) — COMPLETE
+Plan: 2 of 2 in phase 05 (all plans complete)
+Status: Phase 05 complete — all RPC stubs wired; ready for Phase 06
+Last activity: 2026-02-21 — Plan 05-02 complete (getrawtransaction, getblock v=0, mediantime MTP)
 
-Progress: [██████░░░░] 50% (v1.0: phases 1-2 complete; v1.1: phases 3-4 complete, phases 5-6 remaining)
+Progress: [████████░░] 75% (v1.0: phases 1-2 complete; v1.1: phases 3-5 complete, phase 6 remaining)
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 14
+- Total plans completed: 15
 - Average duration: ~7 min
-- Total execution time: ~96 min
+- Total execution time: ~105 min
 
 **By Phase:**
 
@@ -31,6 +31,7 @@ Progress: [██████░░░░] 50% (v1.0: phases 1-2 complete; v1.1:
 | 02-consensus-completeness | 3 | ~41 min | ~14 min |
 | 03-p2p-block-serving | 2 | ~4 min | ~2 min |
 | 04-bip125-full-rbf-mempool | 2 | ~10 min | ~5 min |
+| 05-storage-layer-and-core-rpc | 2 | ~16 min | ~8 min |
 
 *Updated after each plan completion*
 
@@ -58,6 +59,10 @@ v1.1 roadmap decision: Follow research-recommended 4-phase structure (phases 3-6
 04-02 decision: Inherited signaling test uses 2-input child (parent output + confirmed UTXO) so replacement conflicts on the confirmed input — avoids Rule 2 rejection that would fire if replacement spent parent's unconfirmed output.
 04-02 decision: Rule 5 test uses wide tree (root with 101 outputs, 101 children) because MEMPOOL_MAX_ANCESTORS (25) caps deep chain before reaching 101 entries.
 
+05-02 decision: txindex stores block-level file position only; tx extraction reads full block, parses, and scans — O(block_size) per getrawtransaction call, acceptable for Phase 5; per-tx offset optimization deferred.
+05-02 decision: No re-serialization needed for getblock v=0 — node_store_block always calls block_serialize with ECHO_TRUE so stored bytes are already witness-serialized.
+05-02 decision: consensus_get_chainstate requires non-const engine — use node_get_consensus(node) not the const consensus already in function scope for MTP walk.
+
 ### Pending Todos
 
 None.
@@ -67,12 +72,12 @@ None.
 - hash_scriptpubkeys/hash_amounts placeholders in script.c block real multi-input Taproot validation (pre-existing tech debt, not a v1.1 blocker)
 - test_chase Makefile link defect (pre-existing, stubs work around it)
 - [Phase 6 pre-check]: Verify witness commitment field format in getblocktemplate against live Bitcoin Core node before coding — default_witness_commitment is a hex output script, NOT a pre-built coinbase output
-- [Phase 5 pre-check]: Confirm stored block serialization format — if IBD used INV_BLOCK, blocks may be legacy-serialized and Phase 5 getblock will need re-serialization, not pass-through
-- [Phase 5 pre-check]: Verify txindex DELETE hook call site in chaser_confirm.c before implementing reorg integration
+- [Phase 5 pre-check — RESOLVED]: Stored blocks confirmed witness-serialized; no re-serialization needed in getblock v=0
+- [Phase 5 pre-check — RESOLVED]: txindex DELETE hook confirmed wired in chaser_confirm.c in Phase 05-01
 
 ## Session Continuity
 
 Last session: 2026-02-21
-Stopped at: Plan 05-01 complete — tx_index table with CRUD functions and apply/reorg hooks
+Stopped at: Plan 05-02 complete — Phase 5 fully complete
 Resume file: None
-Next action: Continue executing plan 05-02
+Next action: Begin Phase 06 (getblocktemplate)
