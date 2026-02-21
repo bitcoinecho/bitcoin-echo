@@ -470,7 +470,9 @@ static void test_chainstate_apply_genesis(void) {
     ASSERT_EQ(delta->created_count, 1);
     ASSERT_EQ(delta->spent_count, 0);
 
-    block_delta_destroy(delta);
+    /* delta is owned by chainstate — do NOT call block_delta_destroy here.
+     * chainstate_destroy will free it.
+     */
     tx_free(&coinbase);
     chainstate_destroy(state);
 }
@@ -512,8 +514,9 @@ static void test_chainstate_apply_second_block(void) {
     /* Verify UTXOs */
     ASSERT_EQ(utxo_set_size(chainstate_get_utxo_set(state)), 2);
 
-    block_delta_destroy(genesis_delta);
-    block_delta_destroy(second_delta);
+    /* Deltas are owned by chainstate — do NOT call block_delta_destroy here.
+     * chainstate_destroy will free them.
+     */
     tx_free(&genesis_coinbase);
     tx_free(&second_coinbase);
     chainstate_destroy(state);
@@ -593,8 +596,9 @@ static void test_chainstate_revert_block(void) {
     /* Verify UTXO from second block is removed */
     ASSERT_EQ(utxo_set_size(chainstate_get_utxo_set(state)), 1);
 
-    block_delta_destroy(genesis_delta);
-    block_delta_destroy(second_delta);
+    /* Deltas are owned by chainstate — do NOT call block_delta_destroy here.
+     * chainstate_destroy will free them.
+     */
     tx_free(&genesis_coinbase);
     tx_free(&second_coinbase);
     chainstate_destroy(state);
@@ -688,7 +692,9 @@ static void test_chainstate_spending_utxo(void) {
     ASSERT_EQ(delta->spent_count, 1);
     ASSERT_EQ(delta->created_count, 2);  /* coinbase + spending tx output */
 
-    block_delta_destroy(delta);
+    /* delta is owned by chainstate — do NOT call block_delta_destroy here.
+     * chainstate_destroy will free it.
+     */
     tx_free(&genesis_coinbase);
     tx_free(&second_coinbase);
     tx_free(&spending_tx);
@@ -811,7 +817,9 @@ static void test_chainstate_multiple_outputs(void) {
         ASSERT_EQ(utxo->value, 1000000000 + i * 100);
     }
 
-    block_delta_destroy(delta);
+    /* delta is owned by chainstate — do NOT call block_delta_destroy here.
+     * chainstate_destroy will free it.
+     */
     tx_free(&coinbase);
     chainstate_destroy(state);
 }

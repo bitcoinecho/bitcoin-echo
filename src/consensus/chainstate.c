@@ -581,7 +581,13 @@ echo_result_t chainstate_apply_block_with_txids(chainstate_t *state,
     return result;
   }
 
-  /* Create delta if requested */
+  /* Create delta if requested.
+   *
+   * When delta_out is non-NULL, the delta is created, stored in state->deltas[]
+   * (chainstate owns it), and also returned to the caller as a borrowed
+   * reference. Callers must NOT free the returned delta — use
+   * chainstate_prune_delta_at() to release it.
+   */
   block_delta_t *delta = NULL;
   if (delta_out != NULL) {
     delta = block_delta_create(&block_hash, new_height);
@@ -674,12 +680,54 @@ echo_result_t chainstate_apply_block_with_txids(chainstate_t *state,
     block_delta_destroy(delta);
     return result;
   }
+
+  /* Save chainwork before modification so revert can restore it exactly.
+   * This must happen BEFORE work256_add so the delta records the previous
+   * accumulated chainwork, not the new value.
+   */
+  if (delta != NULL) {
+    delta->prev_chainwork = state->tip.chainwork;
+  }
+
   work256_add(&state->tip.chainwork, &block_work, &state->tip.chainwork);
 
   /* Update height index */
   state->height_index[new_height] = block_hash;
 
-  /* Return delta if requested */
+  /* Store delta in chainstate for later reorg rollback.
+   *
+   * The chainstate takes ownership of the delta here. The pointer returned
+   * via delta_out is a borrowed reference — callers must NOT free it.
+   * Use chainstate_prune_delta_at() to release stored deltas.
+   *
+   * Grow the deltas array if needed (same doubling strategy as height_index).
+   */
+  if (delta != NULL) {
+    if (new_height >= state->deltas_capacity) {
+      size_t new_cap = state->deltas_capacity * 2;
+      while (new_cap <= new_height) {
+        new_cap *= 2;
+      }
+      block_delta_t **new_deltas =
+          realloc(state->deltas, new_cap * sizeof(block_delta_t *));
+      if (new_deltas == NULL) {
+        block_delta_destroy(delta);
+        return ECHO_ERR_NOMEM;
+      }
+      memset(new_deltas + state->deltas_capacity, 0,
+             (new_cap - state->deltas_capacity) * sizeof(block_delta_t *));
+      state->deltas = new_deltas;
+      state->deltas_capacity = new_cap;
+    }
+
+    /* Free any previous delta at this height (e.g., from an earlier reorg) */
+    if (state->deltas[new_height] != NULL) {
+      block_delta_destroy(state->deltas[new_height]);
+    }
+    state->deltas[new_height] = delta;
+  }
+
+  /* Return borrowed reference to caller if requested */
   if (delta_out != NULL) {
     *delta_out = delta;
   }
@@ -730,14 +778,19 @@ echo_result_t chainstate_revert_block(chainstate_t *state,
     state->tip.hash = state->height_index[delta->height - 1];
     state->tip.height = delta->height - 1;
 
-    /* Recalculate chainwork - need to subtract this block's work
-     * For now, we don't track per-block work in the delta,
-     * so we'd need to recompute from height_index.
-     * This is a simplification - a full implementation would store
-     * the previous chainwork in the delta.
+    /* Restore accumulated chainwork to the value recorded before this block
+     * was applied. This is exact: chainstate_apply_block_with_txids saves
+     * state->tip.chainwork into delta->prev_chainwork immediately before
+     * calling work256_add, so restoring it here perfectly undoes the addition.
      */
-    /* TODO: For now, leave chainwork as-is. A proper implementation
-     * would either store previous chainwork in delta or recompute. */
+    state->tip.chainwork = delta->prev_chainwork;
+  }
+
+  /* Clear the reverted height from the height_index so a future apply at
+   * the same height does not find a stale entry from the orphaned block.
+   */
+  if (delta->height < state->height_index_capacity) {
+    memset(&state->height_index[delta->height], 0, sizeof(hash256_t));
   }
 
   return ECHO_OK;
@@ -770,6 +823,24 @@ size_t chainstate_prune_deltas(chainstate_t *state, uint32_t below_height) {
   }
 
   return pruned_count;
+}
+
+const block_delta_t *chainstate_get_delta(const chainstate_t *state,
+                                          uint32_t height) {
+  ECHO_ASSERT(state != NULL);
+
+  /* Out of bounds: height exceeds the tip or the allocated array */
+  if (height > state->tip.height || height >= state->deltas_capacity) {
+    return NULL;
+  }
+
+  /* Also reject heights that have been pruned (too old for reorg window) */
+  if (state->tip.height >= DELTA_REORG_DEPTH &&
+      height < state->tip.height - DELTA_REORG_DEPTH) {
+    return NULL;
+  }
+
+  return state->deltas[height];
 }
 
 bool chainstate_is_on_main_chain(const chainstate_t *state,
@@ -1153,9 +1224,8 @@ echo_result_t chain_reorganize(chainstate_t *state, chain_reorg_t *reorg,
     /* Mark block as no longer on main chain */
     to_disconnect->on_main_chain = false;
 
-    /* Clear the delta */
-    block_delta_destroy(delta);
-    state->deltas[to_disconnect->height] = NULL;
+    /* Release the delta — chainstate owns it, use the public prune API */
+    chainstate_prune_delta_at(state, to_disconnect->height);
   }
 
   /* Phase 2: Connect blocks on new chain */
@@ -1180,33 +1250,16 @@ echo_result_t chain_reorganize(chainstate_t *state, chain_reorg_t *reorg,
     header.bits = to_connect->bits;
     header.nonce = 0; /* Not needed for application */
 
-    /* Apply the block */
+    /* Apply the block.
+     *
+     * chainstate_apply_block stores the delta in state->deltas[height]
+     * automatically (chainstate owns it). We pass &delta only to verify
+     * the apply succeeded and the delta was created.
+     */
     block_delta_t *delta = NULL;
     result = chainstate_apply_block(state, &header, txs, tx_count, &delta);
     if (result != ECHO_OK) {
       return result;
-    }
-
-    /* Store delta for future undo */
-    if (delta != NULL) {
-      /* Ensure capacity */
-      if (to_connect->height >= state->deltas_capacity) {
-        size_t new_cap = state->deltas_capacity * 2;
-        while (new_cap <= to_connect->height) {
-          new_cap *= 2;
-        }
-        block_delta_t **new_deltas =
-            realloc(state->deltas, new_cap * sizeof(block_delta_t *));
-        if (new_deltas == NULL) {
-          block_delta_destroy(delta);
-          return ECHO_ERR_NOMEM;
-        }
-        memset(new_deltas + state->deltas_capacity, 0,
-               (new_cap - state->deltas_capacity) * sizeof(block_delta_t *));
-        state->deltas = new_deltas;
-        state->deltas_capacity = new_cap;
-      }
-      state->deltas[to_connect->height] = delta;
     }
 
     /* Mark block as on main chain */

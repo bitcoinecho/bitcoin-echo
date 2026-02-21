@@ -99,6 +99,9 @@ typedef struct {
 
   utxo_entry_t **spent; /* Array of spent UTXO entries (for undo) */
   size_t spent_count;   /* Number of spent UTXOs */
+
+  /* Chainwork undo data */
+  work256_t prev_chainwork; /* Chainwork before this block was applied (for reorg restoration) */
 } block_delta_t;
 
 /**
@@ -335,6 +338,22 @@ echo_result_t chainstate_apply_block_with_txids(chainstate_t *state,
  */
 echo_result_t chainstate_revert_block(chainstate_t *state,
                                       const block_delta_t *delta);
+
+/**
+ * Retrieve the stored delta for a block at the given height.
+ *
+ * Deltas are stored during block application (when delta_out is non-NULL or
+ * when the block is applied through chain_reorganize). They are available
+ * for DELTA_REORG_DEPTH blocks from the tip.
+ *
+ * @param state The chain state
+ * @param height Block height to retrieve the delta for
+ * @return Pointer to the stored delta, or NULL if no delta is stored at that
+ *         height (out of range, not applied with delta tracking, or pruned).
+ *         The returned pointer is owned by the chain state — do NOT free it.
+ */
+const block_delta_t *chainstate_get_delta(const chainstate_t *state,
+                                          uint32_t height);
 
 /**
  * Prune a single delta at a specific height.

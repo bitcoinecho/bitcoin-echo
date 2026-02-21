@@ -1041,17 +1041,19 @@ static echo_result_t apply_block_internal(consensus_engine_t *engine,
   /*
    * Apply to chain state with pre-computed TXIDs.
    *
-   * IBD optimization: Pass NULL for delta_out to skip undo data creation.
-   * Creating deltas was O(n²) due to per-UTXO realloc - a massive bottleneck.
-   * During IBD, reorgs of historical blocks are essentially impossible.
-   * If we ever need to reorg during IBD, we'll restore from checkpoint.
+   * We request a delta (delta_out non-NULL) so that chainstate stores the
+   * block's undo data for chain reorganization rollback. The returned pointer
+   * is a borrowed reference owned by chainstate — we do not store or free it.
    *
-   * TODO: After IBD completes (near tip), enable delta tracking for shallow
-   * reorgs. For now, we prioritize sync speed.
+   * Memory note: each delta uses O(outputs + inputs) memory for its lifetime
+   * in the reorg window (DELTA_REORG_DEPTH = 550 blocks). Older deltas are
+   * pruned by chainstate_prune_delta_at() in the block application path.
+   * During IBD, only the most recent 550 blocks retain their deltas in memory.
    */
+  block_delta_t *delta_borrow = NULL;
   echo_result_t apply_result = chainstate_apply_block_with_txids(
       engine->chainstate, &block->header, block->txs, block->tx_count,
-      block_txids, NULL); /* NULL = skip delta creation for IBD performance */
+      block_txids, &delta_borrow); /* request delta for reorg rollback */
 
   if (owns_txids) {
     free(block_txids);
