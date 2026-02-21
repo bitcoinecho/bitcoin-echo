@@ -24,6 +24,44 @@
  * ======================================================================== */
 
 /*
+ * Convert work256_t (little-endian internal format) to big-endian blob for
+ * SQLite storage.
+ *
+ * SQLite compares BLOBs bytewise (most-significant byte first). Storing
+ * chainwork as big-endian ensures ORDER BY chainwork DESC correctly selects
+ * the highest-work chain. The in-memory work256_t format (little-endian,
+ * bytes[0]=LSB) is unchanged — byte reversal happens only at the DB boundary.
+ *
+ * Parameters:
+ *   work   - Source chainwork in little-endian internal format
+ *   be_out - Destination 32-byte buffer for big-endian blob
+ */
+static void work256_to_be_blob(const work256_t *work, uint8_t *be_out) {
+  int i;
+  for (i = 0; i < 32; i++) {
+    be_out[i] = work->bytes[31 - i];
+  }
+}
+
+/*
+ * Convert big-endian blob from SQLite back to work256_t (little-endian
+ * internal format).
+ *
+ * Symmetric inverse of work256_to_be_blob — insert big-endian, read back
+ * to little-endian, value matches original.
+ *
+ * Parameters:
+ *   be_in - Source 32-byte big-endian blob from database
+ *   work  - Destination work256_t in little-endian internal format
+ */
+static void be_blob_to_work256(const uint8_t *be_in, work256_t *work) {
+  int i;
+  for (i = 0; i < 32; i++) {
+    work->bytes[i] = be_in[31 - i];
+  }
+}
+
+/*
  * Create the block index schema.
  */
 static echo_result_t create_schema(db_t *db) {
@@ -145,20 +183,19 @@ static echo_result_t prepare_statements(block_index_db_t *bdb) {
     return result;
 
   /*
-   * Best chain tip (highest height with VALID_CHAIN status).
+   * Best chain tip: block with the highest accumulated work marked VALID_CHAIN.
    *
-   * Note: We use ORDER BY height DESC rather than chainwork DESC because
-   * chainwork is stored in little-endian format which doesn't sort correctly
-   * in SQLite's byte-by-byte blob comparison. For headers-first sync where
-   * all headers are on the main chain, height ordering is equivalent.
-   *
-   * TODO: For proper fork handling, store chainwork in big-endian format.
+   * chainwork is stored big-endian (work256_to_be_blob at insert), so SQLite's
+   * bytewise blob comparison produces the correct numeric ordering. The block
+   * with the largest chainwork value sorts first under ORDER BY chainwork DESC,
+   * which is exactly Nakamoto consensus: the chain with the most accumulated
+   * proof-of-work wins, regardless of height.
    */
   result =
       db_prepare(&bdb->db,
                  "SELECT hash, height, header, chainwork, status, data_file, "
                  "data_pos FROM blocks "
-                 "WHERE (status & ?) != 0 ORDER BY height DESC LIMIT 1",
+                 "WHERE (status & ?) != 0 ORDER BY chainwork DESC LIMIT 1",
                  &bdb->best_chain_stmt);
   if (result != ECHO_OK)
     return result;
@@ -272,9 +309,9 @@ static void populate_entry_from_row(db_stmt_t *stmt,
   header_blob = db_column_blob(stmt, 2);
   deserialize_header((const uint8_t *)header_blob, &entry->header);
 
-  /* chainwork (column 3) */
+  /* chainwork (column 3) — stored big-endian in DB, reverse to little-endian */
   chainwork_blob = db_column_blob(stmt, 3);
-  memcpy(entry->chainwork.bytes, chainwork_blob, 32);
+  be_blob_to_work256((const uint8_t *)chainwork_blob, &entry->chainwork);
 
   /* status (column 4) */
   entry->status = (uint32_t)db_column_int(stmt, 4);
@@ -558,6 +595,7 @@ echo_result_t block_index_db_insert(block_index_db_t *bdb,
                                     const block_index_entry_t *entry) {
   echo_result_t result;
   uint8_t header_buf[80];
+  uint8_t chainwork_be[32]; /* big-endian for SQLite bytewise sorting */
 
   pthread_mutex_lock(&bdb->mutex);
 
@@ -590,8 +628,11 @@ echo_result_t block_index_db_insert(block_index_db_t *bdb,
     return result;
   }
 
-  /* Bind chainwork (parameter 4) */
-  result = db_bind_blob(&bdb->insert_stmt, 4, entry->chainwork.bytes, 32);
+  /* Bind chainwork (parameter 4) — store big-endian so SQLite bytewise
+   * comparison correctly orders by accumulated work (ORDER BY chainwork DESC).
+   * In-memory work256_t remains little-endian; reversal is at DB boundary only. */
+  work256_to_be_blob(&entry->chainwork, chainwork_be);
+  result = db_bind_blob(&bdb->insert_stmt, 4, chainwork_be, 32);
   if (result != ECHO_OK) {
     pthread_mutex_unlock(&bdb->mutex);
     return result;
