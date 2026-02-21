@@ -245,22 +245,42 @@ echo_result_t block_storage_write(block_file_manager_t *mgr,
     return ECHO_ERR_PLATFORM_IO;
   }
 
-  /* Return position */
+  /*
+   * Flush write buffer to OS before recording position in block index.
+   *
+   * Without this flush, chaser_confirm can read a file position from the
+   * block index that points to data still sitting in the C stdio buffer
+   * (not yet visible to any other FILE* opened on the same path). This
+   * causes GAP errors: block_storage_read() seeks to the correct offset
+   * but finds stale or zero bytes because the write hasn't reached the
+   * OS page cache yet.
+   *
+   * fflush() pushes data from the C library buffer into the OS page cache.
+   * This is NOT fsync() — the OS can still lose data on power failure, but
+   * any subsequent fopen()+fread() on the same file will see the data.
+   * That's the guarantee we need: the block index position we return below
+   * must always point to data readable via block_storage_read().
+   *
+   * Performance: fflush() is a userspace operation (typically a write(2)
+   * syscall). Cost is one syscall per block write, which is acceptable.
+   * We explicitly do NOT use fsync() here — fsync flushes to physical media
+   * and at ~2ms per call would reduce IBD throughput to < 500 blocks/sec.
+   */
+  if (fflush(f) != 0) {
+    pthread_mutex_unlock(&mgr->mutex);
+    return ECHO_ERR_PLATFORM_IO;
+  }
+
+  /* Return position — data is now in OS page cache at this offset */
   pos_out->file_index = mgr->current_file_index;
   pos_out->file_offset = mgr->current_file_offset;
 
   /* Update current position */
   mgr->current_file_offset += record_size;
-  mgr->blocks_since_flush++;
+  mgr->blocks_since_flush = 0; /* Reset: we flush every write now */
 
   /* Update cached disk usage */
   mgr->cached_total_size += record_size;
-
-  /* Periodic flush for durability (every 100 blocks) */
-  if (mgr->blocks_since_flush >= BLOCK_STORAGE_FLUSH_INTERVAL) {
-    fflush(f);
-    mgr->blocks_since_flush = 0;
-  }
 
   pthread_mutex_unlock(&mgr->mutex);
   return ECHO_OK;
@@ -326,12 +346,12 @@ static FILE *get_cached_read_handle(block_file_manager_t *mgr,
 /*
  * Read a block from disk.
  *
- * NOTE: If reading from the current write file, we must flush first
- * to ensure buffered writes are visible to the separate read handle.
- *
  * IBD optimization: uses cached file handles to avoid fopen/fclose overhead.
  * During IBD, blocks arrive out of order so confirmation jumps between files.
  * Caching multiple read handles avoids syscall overhead.
+ *
+ * Includes a defensive flush when reading from the current write file to
+ * ensure any in-flight write data is visible via the separate read handle.
  */
 echo_result_t block_storage_read(block_file_manager_t *mgr,
                                  block_file_pos_t pos, uint8_t **block_out,
@@ -346,8 +366,15 @@ echo_result_t block_storage_read(block_file_manager_t *mgr,
 
   pthread_mutex_lock(&mgr->mutex);
 
-  /* CRITICAL: If reading from the current write file, flush buffered writes.
-   * Without this, the read handle won't see data still in stdio's buffer. */
+  /*
+   * Defense-in-depth: flush write buffer before reading from same file.
+   *
+   * block_storage_write() now calls fflush() before returning, so any caller
+   * that records the returned position and then reads it back will already
+   * see the data in the OS page cache. This flush here is a belt-and-suspenders
+   * guard for any future code path that bypasses the write → flush → index
+   * ordering guarantee.
+   */
   if (pos.file_index == mgr->current_file_index && mgr->current_file != NULL) {
     fflush((FILE *)mgr->current_file);
   }

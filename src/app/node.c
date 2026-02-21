@@ -1549,7 +1549,16 @@ echo_result_t node_store_block(node_t *node, const block_t *block) {
     return ECHO_OK;
   }
 
-  /* Fallback: synchronous write if storage thread not running */
+  /*
+   * Write block to storage and record position in block index.
+   *
+   * Ordering guarantee: block_storage_write() calls fflush() before returning
+   * the file position. The index is updated only after write + flush succeed.
+   * This ensures chaser_confirm never reads a position pointing to unflushed
+   * data (which caused GAP errors when the index was ahead of durable data).
+   *
+   * Ordering: write → fflush → index_db_update → in_memory_index_update
+   */
   block_file_pos_t pos;
   result =
       block_storage_write(&node->block_storage, block_data, (uint32_t)written, &pos);

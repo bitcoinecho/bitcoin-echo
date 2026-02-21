@@ -68,10 +68,18 @@ typedef struct {
 } block_file_manager_t;
 
 /*
- * Number of blocks between flushes.
- * Balances durability vs. performance during IBD.
+ * Flush interval constant (retained for reference; no longer used).
+ *
+ * block_storage_write() now calls fflush() on every write to guarantee that
+ * the position returned is always backed by data in the OS page cache. This
+ * prevents GAP errors where chaser_confirm reads a block index position that
+ * points to data still in the C stdio buffer.
+ *
+ * Previously this constant controlled a periodic flush every N blocks.
+ * That approach was racy: the block index could be updated with a position
+ * before the corresponding data was visible to other FILE* handles.
  */
-#define BLOCK_STORAGE_FLUSH_INTERVAL 100
+#define BLOCK_STORAGE_FLUSH_INTERVAL 1
 
 /*
  * Maximum size of a single block file (128 MB).
@@ -267,7 +275,8 @@ echo_result_t block_storage_get_lowest_file(const block_file_manager_t *mgr,
  *   ECHO_OK on success, error code on failure
  *
  * Notes:
- *   - Called automatically every BLOCK_STORAGE_FLUSH_INTERVAL blocks
+ *   - block_storage_write() now flushes after every write; this function
+ *     is retained for explicit flush at shutdown or other checkpoints
  *   - Can be called manually for durability at checkpoints
  */
 echo_result_t block_storage_flush(block_file_manager_t *mgr);
