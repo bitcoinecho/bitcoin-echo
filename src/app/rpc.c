@@ -2523,6 +2523,13 @@ echo_result_t rpc_submitblock(node_t *node, const json_value_t *params,
     return ECHO_ERR_NULL_PARAM;
   }
 
+  /* Reject block submission during IBD — miners must not build on incomplete
+   * chain. Returns RPC error -28 via the ECHO_ERR_INVALID_STATE convention
+   * (see rpc_execute_single). */
+  if (node_is_ibd_mode(node)) {
+    return ECHO_ERR_INVALID_STATE;
+  }
+
   /* Get hex parameter */
   json_value_t *hex_val = json_array_get(params, 0);
   if (hex_val == NULL || hex_val->type != JSON_STRING) {
@@ -2572,6 +2579,16 @@ echo_result_t rpc_submitblock(node_t *node, const json_value_t *params,
    * This updates consensus engine, block files, and databases atomically.
    */
   res = node_apply_block(node, &block);
+
+  if (res == ECHO_OK) {
+    /* Announce accepted block to peers so it propagates to the network.
+     * node_announce_block_to_peers skips announcement during IBD internally,
+     * but we've already guarded against IBD above, so this always announces. */
+    hash256_t block_hash;
+    block_header_hash(&block.header, &block_hash);
+    node_announce_block_to_peers(node, &block_hash);
+  }
+
   block_free(&block);
 
   if (res != ECHO_OK) {
