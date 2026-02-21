@@ -5,23 +5,23 @@
 See: .planning/PROJECT.md (updated 2026-02-21)
 
 **Core value:** Echo must correctly validate and serve the Bitcoin blockchain on mainnet — a node that peers trust and rely on.
-**Current focus:** Phase 4 — BIP-125 Full-RBF Mempool
+**Current focus:** Phase 5 — getblock RPC (or next phase per ROADMAP)
 
 ## Current Position
 
-Phase: 4 of 6 for v1.1 (BIP-125 Full-RBF Mempool)
-Plan: 1 of 2 in current phase (plan 04-01 complete)
-Status: Phase 4 in progress
-Last activity: 2026-02-21 — Plan 04-01 complete (BIP-125 RBF validation: all 5 rules, atomic eviction, inherited signaling)
+Phase: 4 of 6 for v1.1 (BIP-125 Full-RBF Mempool) — COMPLETE
+Plan: 2 of 2 in phase 04 (plan 04-02 complete)
+Status: Phase 4 complete, ready for Phase 5
+Last activity: 2026-02-21 — Plan 04-02 complete (BIP-125 RBF test coverage: all 5 rules, 33/33 tests pass)
 
-Progress: [█████░░░░░] 43% (v1.0: phases 1-2 complete; v1.1: phases 3-4 in progress, phases 5-6 remaining)
+Progress: [██████░░░░] 50% (v1.0: phases 1-2 complete; v1.1: phases 3-4 complete, phases 5-6 remaining)
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 13
+- Total plans completed: 14
 - Average duration: ~7 min
-- Total execution time: ~89 min
+- Total execution time: ~96 min
 
 **By Phase:**
 
@@ -30,7 +30,7 @@ Progress: [█████░░░░░] 43% (v1.0: phases 1-2 complete; v1.1:
 | 01-foundation-fixes | 7 | ~41 min | ~6 min |
 | 02-consensus-completeness | 3 | ~41 min | ~14 min |
 | 03-p2p-block-serving | 2 | ~4 min | ~2 min |
-| 04-bip125-full-rbf-mempool | 1 | ~3 min | ~3 min |
+| 04-bip125-full-rbf-mempool | 2 | ~10 min | ~5 min |
 
 *Updated after each plan completion*
 
@@ -54,6 +54,10 @@ v1.1 roadmap decision: Follow research-recommended 4-phase structure (phases 3-6
 04-01 decision: Rule 1 signaling check moved from conflict loop into rbf_validate_replacement via entry_signals_rbf_inherited — ensures inherited signaling from unconfirmed ancestors is correctly propagated.
 04-01 decision: first_conflict removed from mempool_add — rbf_validate_replacement populates result->first_conflict from eviction_set[0] giving correct multi-conflict semantics.
 
+04-02 decision: create_test_tx() uses sequence 0xFFFFFFFE which is NOT below TX_SEQUENCE_DISABLE_RBF (0xFFFFFFFE) — does not signal RBF; new create_test_tx_rbf() uses 0xFFFFFFFD to truly signal.
+04-02 decision: Inherited signaling test uses 2-input child (parent output + confirmed UTXO) so replacement conflicts on the confirmed input — avoids Rule 2 rejection that would fire if replacement spent parent's unconfirmed output.
+04-02 decision: Rule 5 test uses wide tree (root with 101 outputs, 101 children) because MEMPOOL_MAX_ANCESTORS (25) caps deep chain before reaching 101 entries.
+
 ### Pending Todos
 
 None.
@@ -69,6 +73,6 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-21
-Stopped at: Plan 04-01 complete — BIP-125 RBF validation (rbf_validate_replacement, all 5 rules, atomic eviction)
+Stopped at: Plan 04-02 complete — BIP-125 RBF test coverage (8 test functions, all 5 rules, 33/33 tests pass)
 Resume file: None
-Next action: /gsd:execute-phase 04 02
+Next action: /gsd:execute-phase 05 01

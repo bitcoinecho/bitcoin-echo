@@ -25,7 +25,7 @@ Requirements for the Network Participant milestone. Each maps to roadmap phases.
 
 ### Testing
 
-- [ ] **TEST-01**: BIP-125 RBF test suite validates all 5 replacement rules including edge cases
+- [x] **TEST-01**: BIP-125 RBF test suite validates all 5 replacement rules including edge cases
 
 ## Future Requirements
 
@@ -73,7 +73,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | P2P-02 | Phase 3 | Complete |
 | P2P-04 | Phase 3 | Complete |
 | P2P-03 | Phase 4 | Complete |
-| TEST-01 | Phase 4 | Pending |
+| TEST-01 | Phase 4 | Complete |
 | RPC-01 | Phase 5 | Pending |
 | RPC-02 | Phase 5 | Pending |
 | RPC-03 | Phase 5 | Pending |

@@ -27,7 +27,7 @@ See: `.planning/milestones/v1.0-ROADMAP.md` for full details
 
 #### Phase 4: BIP-125 Full-RBF Mempool
 
-- [ ] **Phase 4: BIP-125 Full-RBF Mempool** — Mempool enforces all 5 BIP-125 replacement rules with full test coverage
+- [x] **Phase 4: BIP-125 Full-RBF Mempool** — Mempool enforces all 5 BIP-125 replacement rules with full test coverage (completed 2026-02-21)
 
 #### Phase 5: Storage Layer and Core RPC
 
@@ -111,6 +111,6 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 | 1. Foundation Fixes | v1.0 | 7/7 | Complete | 2026-02-20 |
 | 2. Consensus Completeness | v1.0 | 3/3 | Complete | 2026-02-21 |
 | 3. P2P Block Serving | v1.1 | 2/2 | Complete | 2026-02-21 |
-| 4. BIP-125 Full-RBF Mempool | v1.1 | 1/2 | In progress | - |
+| 4. BIP-125 Full-RBF Mempool | 2/2 | Complete   | 2026-02-21 | - |
 | 5. Storage Layer and Core RPC | v1.1 | 0/4 | Not started | - |
 | 6. getblocktemplate and submitblock | v1.1 | 0/2 | Not started | - |
