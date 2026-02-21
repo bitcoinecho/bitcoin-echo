@@ -49,14 +49,12 @@ Plans:
   2. Node passes all BIP-342 Tapscript reference test vectors without failures, including the unknown-key-type vectors
   3. After a synthetic 6-block chain reorganization, the node's UTXO set matches the expected state for the new chain — no outputs from the orphaned chain remain, all outputs from the winning chain are present
   4. After a reorg, the tip's chainwork value in the block index reflects the winning chain's accumulated work, not the orphaned chain's stale value
-**Plans**: TBD
+**Plans:** 3 plans
 
 Plans:
-- [ ] 02-01: Implement OP_CHECKSIGADD in script.c with BIP-342 key-type branching (CONS-01)
-- [ ] 02-02: Implement full UTXO rollback via delta undo in chaser_confirm (CONS-02)
-- [ ] 02-03: Add prev_chainwork to block_delta_t and revert on reorg (CONS-04)
-- [ ] 02-04: Test Taproot script validation with BIP-342 reference vectors (CONS-05, TEST-04)
-- [ ] 02-05: Test reorg scenarios: simple fork, deep reorg (6+ blocks), same-work chains (TEST-01)
+- [ ] 02-01-PLAN.md — Fix OP_CHECKSIGADD BIP-342 unknown key type handling + Tapscript test suite (CONS-01, CONS-05, TEST-04)
+- [ ] 02-02-PLAN.md — Add prev_chainwork to block_delta_t and wire full UTXO rollback in chaser_confirm (CONS-02, CONS-04)
+- [ ] 02-03-PLAN.md — Reorg test suite: simple fork, deep reorg, same-work chains (TEST-01)
 
 ### Phase 3: Peer Network Compatibility
 **Goal**: The node is a genuine Bitcoin network participant: it advertises witness capability, serves blocks to requesting peers, and maintains a mempool consistent with full-RBF nodes
