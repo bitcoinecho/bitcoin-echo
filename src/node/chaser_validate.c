@@ -176,7 +176,7 @@ chaser_validate_t *chaser_validate_create(node_t *node,
     chaser->maximum_backlog =
         max_backlog > 0 ? max_backlog : DEFAULT_MAX_BACKLOG;
     atomic_init(&chaser->backlog, 0);
-    chaser->top_checkpoint = 0; /* TODO: Get from config */
+    chaser->top_checkpoint = 0; /* Wired post-creation via chaser_validate_set_checkpoint() in node.c */
     chaser->defer_validation = false;
 
     log_info(LOG_COMP_SYNC, "chaser_validate: worker_count=%zu, max_backlog=%zu",

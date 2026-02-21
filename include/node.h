@@ -63,6 +63,7 @@ typedef struct {
   uint64_t prune_target_mb; /* Pruning target in MB (0 = archival/no pruning) */
   log_level_t log_level;    /* Log verbosity (default: LOG_LEVEL_INFO) */
   bool assume_valid;        /* Skip script verification for old blocks (default: true) */
+  uint32_t checkpoint_height; /* Height up to which validation is bypassed (0 = use PLATFORM_ASSUMEVALID_HEIGHT) */
 } node_config_t;
 
 /**

@@ -319,6 +319,9 @@ void node_config_init(node_config_t *config, const char *data_dir) {
 
   /* Default to AssumeValid enabled (skip scripts for historical blocks) */
   config->assume_valid = true;
+
+  /* Default checkpoint height (0 = use PLATFORM_ASSUMEVALID_HEIGHT) */
+  config->checkpoint_height = 0;
 }
 
 /*
@@ -1000,8 +1003,13 @@ static echo_result_t node_init_chase(node_t *node) {
   uint32_t validated_height = consensus_get_height(node->consensus);
   uint32_t checkpoint_height = validated_height;
 
-  /* During fresh IBD (validated_height < assumevalid), use assumevalid */
-  if (validated_height < PLATFORM_ASSUMEVALID_HEIGHT) {
+  /* If config specifies an explicit checkpoint, use it */
+  if (node->config.checkpoint_height > 0) {
+    checkpoint_height = node->config.checkpoint_height;
+    log_info(LOG_COMP_MAIN, "Using configured checkpoint at %u",
+             checkpoint_height);
+  } else if (validated_height < PLATFORM_ASSUMEVALID_HEIGHT) {
+    /* During fresh IBD (validated_height < assumevalid), use assumevalid */
     checkpoint_height = PLATFORM_ASSUMEVALID_HEIGHT;
     log_info(LOG_COMP_MAIN, "Fresh IBD: using AssumeValid checkpoint at %u",
              checkpoint_height);
