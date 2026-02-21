@@ -69,23 +69,23 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| P2P-01 | — | Pending |
-| P2P-02 | — | Pending |
-| P2P-03 | — | Pending |
-| P2P-04 | — | Pending |
-| RPC-01 | — | Pending |
-| RPC-02 | — | Pending |
-| RPC-03 | — | Pending |
-| RPC-04 | — | Pending |
-| RPC-05 | — | Pending |
-| RPC-06 | — | Pending |
-| TEST-01 | — | Pending |
+| P2P-01 | Phase 3 | Pending |
+| P2P-02 | Phase 3 | Pending |
+| P2P-04 | Phase 3 | Pending |
+| P2P-03 | Phase 4 | Pending |
+| TEST-01 | Phase 4 | Pending |
+| RPC-01 | Phase 5 | Pending |
+| RPC-02 | Phase 5 | Pending |
+| RPC-03 | Phase 5 | Pending |
+| RPC-04 | Phase 5 | Pending |
+| RPC-05 | Phase 6 | Pending |
+| RPC-06 | Phase 6 | Pending |
 
 **Coverage:**
 - v1.1 requirements: 11 total
-- Mapped to phases: 0
-- Unmapped: 11
+- Mapped to phases: 11
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-02-21*
-*Last updated: 2026-02-21 after initial definition*
+*Last updated: 2026-02-21 — traceability filled after roadmap creation (phases 3-6)*
