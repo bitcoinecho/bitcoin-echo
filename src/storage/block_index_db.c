@@ -14,6 +14,7 @@
 #include "serialize.h"
 #include "db.h"
 #include "echo_types.h"
+#include "tx.h"
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -134,6 +135,32 @@ static echo_result_t create_schema(db_t *db) {
   db_exec(db, "UPDATE blocks SET status = status | 16 "
               "WHERE data_file >= 0 AND (status & 16) = 0");
 
+  /*
+   * Transaction index table.
+   *
+   * Maps txid -> (block_hash, file_index, file_pos) for getrawtransaction.
+   * txid is the primary key (non-witness txid, internal byte order).
+   * The block_hash index enables O(tx_count) deletes during reorg instead
+   * of a full table scan.
+   */
+  result = db_exec(db,
+                   "CREATE TABLE IF NOT EXISTS tx_index ("
+                   "    txid       BLOB PRIMARY KEY,"
+                   "    block_hash BLOB NOT NULL,"
+                   "    file_index INTEGER NOT NULL,"
+                   "    file_pos   INTEGER NOT NULL"
+                   ");");
+  if (result != ECHO_OK) {
+    return result;
+  }
+
+  result = db_exec(
+      db,
+      "CREATE INDEX IF NOT EXISTS idx_txindex_block ON tx_index(block_hash);");
+  if (result != ECHO_OK) {
+    return result;
+  }
+
   return ECHO_OK;
 }
 
@@ -200,6 +227,30 @@ static echo_result_t prepare_statements(block_index_db_t *bdb) {
   if (result != ECHO_OK)
     return result;
 
+  /* tx_index: insert or replace one row */
+  result = db_prepare(
+      &bdb->db,
+      "INSERT OR REPLACE INTO tx_index (txid, block_hash, file_index, "
+      "file_pos) VALUES (?, ?, ?, ?)",
+      &bdb->txindex_insert_stmt);
+  if (result != ECHO_OK)
+    return result;
+
+  /* tx_index: look up block location by txid */
+  result = db_prepare(
+      &bdb->db,
+      "SELECT block_hash, file_index, file_pos FROM tx_index WHERE txid = ?",
+      &bdb->txindex_lookup_stmt);
+  if (result != ECHO_OK)
+    return result;
+
+  /* tx_index: delete all rows for a disconnected block */
+  result = db_prepare(&bdb->db,
+                      "DELETE FROM tx_index WHERE block_hash = ?",
+                      &bdb->txindex_delete_block_stmt);
+  if (result != ECHO_OK)
+    return result;
+
   bdb->stmts_prepared = true;
   return ECHO_OK;
 }
@@ -215,6 +266,9 @@ static void finalize_statements(block_index_db_t *bdb) {
     db_stmt_finalize(&bdb->update_status_stmt);
     db_stmt_finalize(&bdb->update_data_pos_stmt);
     db_stmt_finalize(&bdb->best_chain_stmt);
+    db_stmt_finalize(&bdb->txindex_insert_stmt);
+    db_stmt_finalize(&bdb->txindex_lookup_stmt);
+    db_stmt_finalize(&bdb->txindex_delete_block_stmt);
     bdb->stmts_prepared = false;
   }
 }
@@ -1532,6 +1586,166 @@ echo_result_t block_index_db_get_referenced_files(block_index_db_t *bdb,
 
 
 /* ========================================================================
+ * Transaction Index
+ * ======================================================================== */
+
+echo_result_t txindex_insert(block_index_db_t *bdb, const hash256_t *txid,
+                             const hash256_t *block_hash, uint32_t file_index,
+                             uint32_t file_pos) {
+  echo_result_t result;
+
+  pthread_mutex_lock(&bdb->mutex);
+
+  result = db_stmt_reset(&bdb->txindex_insert_stmt);
+  if (result != ECHO_OK) {
+    pthread_mutex_unlock(&bdb->mutex);
+    return result;
+  }
+
+  /* Bind txid (parameter 1, 32-byte blob) */
+  result = db_bind_blob(&bdb->txindex_insert_stmt, 1, txid->bytes, 32);
+  if (result != ECHO_OK) {
+    pthread_mutex_unlock(&bdb->mutex);
+    return result;
+  }
+
+  /* Bind block_hash (parameter 2, 32-byte blob) */
+  result = db_bind_blob(&bdb->txindex_insert_stmt, 2, block_hash->bytes, 32);
+  if (result != ECHO_OK) {
+    pthread_mutex_unlock(&bdb->mutex);
+    return result;
+  }
+
+  /* Bind file_index (parameter 3) */
+  result = db_bind_int(&bdb->txindex_insert_stmt, 3, (int)file_index);
+  if (result != ECHO_OK) {
+    pthread_mutex_unlock(&bdb->mutex);
+    return result;
+  }
+
+  /* Bind file_pos (parameter 4) */
+  result = db_bind_int(&bdb->txindex_insert_stmt, 4, (int)file_pos);
+  if (result != ECHO_OK) {
+    pthread_mutex_unlock(&bdb->mutex);
+    return result;
+  }
+
+  result = db_step(&bdb->txindex_insert_stmt);
+
+  pthread_mutex_unlock(&bdb->mutex);
+
+  if (result == ECHO_DONE) {
+    return ECHO_OK;
+  }
+  return result;
+}
+
+echo_result_t txindex_lookup(block_index_db_t *bdb, const hash256_t *txid,
+                             hash256_t *block_hash_out,
+                             uint32_t *file_index_out,
+                             uint32_t *file_pos_out) {
+  echo_result_t result;
+
+  pthread_mutex_lock(&bdb->mutex);
+
+  result = db_stmt_reset(&bdb->txindex_lookup_stmt);
+  if (result != ECHO_OK) {
+    pthread_mutex_unlock(&bdb->mutex);
+    return result;
+  }
+
+  /* Bind txid (parameter 1) */
+  result = db_bind_blob(&bdb->txindex_lookup_stmt, 1, txid->bytes, 32);
+  if (result != ECHO_OK) {
+    pthread_mutex_unlock(&bdb->mutex);
+    return result;
+  }
+
+  result = db_step(&bdb->txindex_lookup_stmt);
+  if (result == ECHO_DONE) {
+    /* No row found */
+    pthread_mutex_unlock(&bdb->mutex);
+    return ECHO_ERR_NOT_FOUND;
+  }
+  if (result != ECHO_OK) {
+    pthread_mutex_unlock(&bdb->mutex);
+    return result;
+  }
+
+  /* Row found: read column 0 = block_hash, 1 = file_index, 2 = file_pos */
+  const void *hash_blob = db_column_blob(&bdb->txindex_lookup_stmt, 0);
+  if (hash_blob != NULL) {
+    memcpy(block_hash_out->bytes, hash_blob, 32);
+  }
+  *file_index_out = (uint32_t)db_column_int(&bdb->txindex_lookup_stmt, 1);
+  *file_pos_out = (uint32_t)db_column_int(&bdb->txindex_lookup_stmt, 2);
+
+  pthread_mutex_unlock(&bdb->mutex);
+  return ECHO_OK;
+}
+
+echo_result_t txindex_delete_by_block(block_index_db_t *bdb,
+                                      const hash256_t *block_hash) {
+  echo_result_t result;
+
+  pthread_mutex_lock(&bdb->mutex);
+
+  result = db_stmt_reset(&bdb->txindex_delete_block_stmt);
+  if (result != ECHO_OK) {
+    pthread_mutex_unlock(&bdb->mutex);
+    return result;
+  }
+
+  /* Bind block_hash (parameter 1) */
+  result =
+      db_bind_blob(&bdb->txindex_delete_block_stmt, 1, block_hash->bytes, 32);
+  if (result != ECHO_OK) {
+    pthread_mutex_unlock(&bdb->mutex);
+    return result;
+  }
+
+  result = db_step(&bdb->txindex_delete_block_stmt);
+
+  pthread_mutex_unlock(&bdb->mutex);
+
+  /* ECHO_DONE means the DELETE executed successfully (zero or more rows
+   * deleted). Return ECHO_OK regardless of deleted row count — the caller
+   * only cares that no error occurred. */
+  if (result == ECHO_DONE) {
+    return ECHO_OK;
+  }
+  return result;
+}
+
+echo_result_t txindex_insert_block(block_index_db_t *bdb,
+                                   const hash256_t *block_hash,
+                                   const block_t *block, uint32_t file_index,
+                                   uint32_t file_pos) {
+  if (bdb == NULL || block_hash == NULL || block == NULL) {
+    return ECHO_ERR_NULL_PARAM;
+  }
+
+  echo_result_t last_err = ECHO_OK;
+
+  for (size_t i = 0; i < block->tx_count; i++) {
+    hash256_t txid;
+    echo_result_t res = tx_compute_txid(&block->txs[i], &txid);
+    if (res != ECHO_OK) {
+      last_err = res;
+      continue; /* best-effort: skip this tx and continue */
+    }
+
+    res = txindex_insert(bdb, &txid, block_hash, file_index, file_pos);
+    if (res != ECHO_OK) {
+      last_err = res;
+      /* best-effort: log warning but do not abort the entire block */
+    }
+  }
+
+  return last_err;
+}
+
+/* ========================================================================
  * WAL Checkpoint
  * ======================================================================== */
 
@@ -1564,6 +1778,15 @@ echo_result_t block_index_db_checkpoint(block_index_db_t *bdb) {
   }
   if (bdb->best_chain_stmt.stmt) {
     sqlite3_reset(bdb->best_chain_stmt.stmt);
+  }
+  if (bdb->txindex_insert_stmt.stmt) {
+    sqlite3_reset(bdb->txindex_insert_stmt.stmt);
+  }
+  if (bdb->txindex_lookup_stmt.stmt) {
+    sqlite3_reset(bdb->txindex_lookup_stmt.stmt);
+  }
+  if (bdb->txindex_delete_block_stmt.stmt) {
+    sqlite3_reset(bdb->txindex_delete_block_stmt.stmt);
   }
 
   /*

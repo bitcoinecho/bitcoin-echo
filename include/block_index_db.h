@@ -78,15 +78,19 @@ typedef struct {
  *   call block_index_db functions concurrently.
  */
 typedef struct {
-  db_t db;                        /* Underlying database handle */
-  db_stmt_t lookup_hash_stmt;     /* Prepared statement for lookup by hash */
-  db_stmt_t lookup_height_stmt;   /* Prepared statement for lookup by height */
-  db_stmt_t insert_stmt;          /* Prepared statement for inserts */
-  db_stmt_t update_status_stmt;   /* Prepared statement for status updates */
-  db_stmt_t update_data_pos_stmt; /* Prepared statement for data position */
-  db_stmt_t best_chain_stmt;      /* Prepared statement for best chain query */
-  bool stmts_prepared;            /* Whether statements are prepared */
-  pthread_mutex_t mutex;          /* Protects all prepared statement access */
+  db_t db;                           /* Underlying database handle */
+  db_stmt_t lookup_hash_stmt;        /* Prepared statement for lookup by hash */
+  db_stmt_t lookup_height_stmt;      /* Prepared statement for lookup by height */
+  db_stmt_t insert_stmt;             /* Prepared statement for inserts */
+  db_stmt_t update_status_stmt;      /* Prepared statement for status updates */
+  db_stmt_t update_data_pos_stmt;    /* Prepared statement for data position */
+  db_stmt_t best_chain_stmt;         /* Prepared statement for best chain query */
+  /* tx_index prepared statements */
+  db_stmt_t txindex_insert_stmt;     /* INSERT OR REPLACE INTO tx_index */
+  db_stmt_t txindex_lookup_stmt;     /* SELECT ... FROM tx_index WHERE txid = ? */
+  db_stmt_t txindex_delete_block_stmt; /* DELETE FROM tx_index WHERE block_hash = ? */
+  bool stmts_prepared;               /* Whether statements are prepared */
+  pthread_mutex_t mutex;             /* Protects all prepared statement access */
 } block_index_db_t;
 
 /* ========================================================================
@@ -619,5 +623,99 @@ echo_result_t block_index_db_get_validated_tip(block_index_db_t *bdb,
 echo_result_t block_index_db_get_referenced_files(block_index_db_t *bdb,
                                                    uint32_t **files_out,
                                                    size_t *count_out);
+
+/* ========================================================================
+ * Transaction Index (tx_index)
+ *
+ * Maps txid -> (block_hash, file_index, file_pos) for getrawtransaction.
+ * Stored in the tx_index table within block_index.db.
+ *
+ * Byte order: txid stored in internal byte order (as returned by
+ * tx_compute_txid). The RPC layer converts display-order hex to internal
+ * order before calling txindex_lookup, so ordering is consistent.
+ * ======================================================================== */
+
+/**
+ * Insert one transaction into the tx_index.
+ *
+ * Parameters:
+ *   bdb        - Block index database handle
+ *   txid       - Transaction ID (32 bytes, internal byte order)
+ *   block_hash - Hash of the block containing this transaction
+ *   file_index - Block data file index (blk*.dat number)
+ *   file_pos   - Byte offset of the block within the file
+ *
+ * Returns:
+ *   ECHO_OK on success, error code on failure
+ *
+ * Notes:
+ *   - Uses INSERT OR REPLACE to handle rapid reorg sequences gracefully
+ *   - Thread-safe; protected by bdb->mutex
+ */
+echo_result_t txindex_insert(block_index_db_t *bdb, const hash256_t *txid,
+                             const hash256_t *block_hash, uint32_t file_index,
+                             uint32_t file_pos);
+
+/**
+ * Look up a transaction by txid.
+ *
+ * Parameters:
+ *   bdb             - Block index database handle
+ *   txid            - Transaction ID to look up (internal byte order)
+ *   block_hash_out  - Output: hash of the block containing this tx
+ *   file_index_out  - Output: block data file index
+ *   file_pos_out    - Output: byte offset within the file
+ *
+ * Returns:
+ *   ECHO_OK if found, ECHO_ERR_NOT_FOUND if txid not indexed,
+ *   error code on database failure
+ */
+echo_result_t txindex_lookup(block_index_db_t *bdb, const hash256_t *txid,
+                             hash256_t *block_hash_out,
+                             uint32_t *file_index_out,
+                             uint32_t *file_pos_out);
+
+/**
+ * Delete all tx_index entries for a disconnected block.
+ *
+ * Called during chain reorganization when a block is disconnected.
+ * Deletes all rows whose block_hash matches the given hash.
+ *
+ * Parameters:
+ *   bdb        - Block index database handle
+ *   block_hash - Hash of the disconnected block
+ *
+ * Returns:
+ *   ECHO_OK on success (including when zero rows were deleted)
+ *   error code on database failure
+ *
+ * Notes:
+ *   - Deleting zero rows is not an error (idempotent)
+ *   - The block_hash index makes this O(tx_count) not O(table_size)
+ */
+echo_result_t txindex_delete_by_block(block_index_db_t *bdb,
+                                      const hash256_t *block_hash);
+
+/**
+ * Index all transactions in a block.
+ *
+ * Convenience function: iterates block->txs, computes txid for each via
+ * tx_compute_txid, and calls txindex_insert for each transaction.
+ *
+ * Parameters:
+ *   bdb        - Block index database handle
+ *   block_hash - Hash of the block (used as block_hash in each row)
+ *   block      - Block whose transactions to index
+ *   file_index - Block data file index
+ *   file_pos   - Byte offset of the block within the file
+ *
+ * Returns:
+ *   ECHO_OK if all inserts succeeded
+ *   Last error code if any insert failed (best-effort; does not abort)
+ */
+echo_result_t txindex_insert_block(block_index_db_t *bdb,
+                                   const hash256_t *block_hash,
+                                   const block_t *block, uint32_t file_index,
+                                   uint32_t file_pos);
 
 #endif /* ECHO_BLOCK_INDEX_DB_H */
