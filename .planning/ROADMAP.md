@@ -96,7 +96,7 @@ Plans:
 **Plans**: 2 plans
 
 Plans:
-- [ ] 06-01-PLAN.md — IBD guard mechanism + getblocktemplate with real MTP, correct bits, BIP-145 fields, witness commitment (RPC-05)
+- [x] 06-01-PLAN.md — IBD guard mechanism + getblocktemplate with real MTP, correct bits, BIP-145 fields, witness commitment (RPC-05)
 - [ ] 06-02-PLAN.md — submitblock IBD guard and peer announcement after acceptance (RPC-06)
 
 ## Progress
@@ -111,4 +111,4 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 | 3. P2P Block Serving | v1.1 | 2/2 | Complete | 2026-02-21 |
 | 4. BIP-125 Full-RBF Mempool | 2/2 | Complete   | 2026-02-21 | - |
 | 5. Storage Layer and Core RPC | 2/2 | Complete   | 2026-02-21 | - |
-| 6. getblocktemplate and submitblock | v1.1 | 0/2 | Not started | - |
+| 6. getblocktemplate and submitblock | v1.1 | 1/2 | In progress | - |

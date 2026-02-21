@@ -20,7 +20,7 @@ Requirements for the Network Participant milestone. Each maps to roadmap phases.
 - [x] **RPC-02**: User can query confirmed transactions by txid via getrawtransaction RPC
 - [x] **RPC-03**: User can retrieve raw block hex via getblock RPC at verbosity=0
 - [x] **RPC-04**: getblockchaininfo returns correct mediantime (median of previous 11 block timestamps)
-- [ ] **RPC-05**: User can request block template for mining via getblocktemplate RPC (BIP-22/BIP-145 compliant with witness commitment)
+- [x] **RPC-05**: User can request block template for mining via getblocktemplate RPC (BIP-22/BIP-145 compliant with witness commitment)
 - [ ] **RPC-06**: User can submit mined block via submitblock RPC
 
 ### Testing
@@ -78,7 +78,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | RPC-02 | Phase 5 | Complete |
 | RPC-03 | Phase 5 | Complete |
 | RPC-04 | Phase 5 | Complete |
-| RPC-05 | Phase 6 | Pending |
+| RPC-05 | Phase 6 | Complete |
 | RPC-06 | Phase 6 | Pending |
 
 **Coverage:**

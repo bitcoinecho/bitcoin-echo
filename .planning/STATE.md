@@ -5,23 +5,23 @@
 See: .planning/PROJECT.md (updated 2026-02-21)
 
 **Core value:** Echo must correctly validate and serve the Bitcoin blockchain on mainnet — a node that peers trust and rely on.
-**Current focus:** Phase 5 — getblock RPC (or next phase per ROADMAP)
+**Current focus:** Phase 6 — getblocktemplate and submitblock
 
 ## Current Position
 
-Phase: 5 of 6 for v1.1 (Storage Layer and Core RPC) — COMPLETE
-Plan: 2 of 2 in phase 05 (all plans complete)
-Status: Phase 05 complete — all RPC stubs wired; ready for Phase 06
-Last activity: 2026-02-21 — Plan 05-02 complete (getrawtransaction, getblock v=0, mediantime MTP)
+Phase: 6 of 6 for v1.1 (getblocktemplate and submitblock) — IN PROGRESS
+Plan: 1 of 2 in phase 06 — Plan 06-01 complete
+Status: Plan 06-01 complete — production getblocktemplate with IBD guard, MTP, witness commitment
+Last activity: 2026-02-21 — Plan 06-01 complete (getblocktemplate BIP-22/BIP-145 production implementation)
 
-Progress: [████████░░] 75% (v1.0: phases 1-2 complete; v1.1: phases 3-5 complete, phase 6 remaining)
+Progress: [████████░░] 83% (v1.0: phases 1-2 complete; v1.1: phases 3-6 in progress, phase 6 plan 1/2 complete)
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 15
+- Total plans completed: 16
 - Average duration: ~7 min
-- Total execution time: ~105 min
+- Total execution time: ~108 min
 
 **By Phase:**
 
@@ -32,6 +32,7 @@ Progress: [████████░░] 75% (v1.0: phases 1-2 complete; v1.1:
 | 03-p2p-block-serving | 2 | ~4 min | ~2 min |
 | 04-bip125-full-rbf-mempool | 2 | ~10 min | ~5 min |
 | 05-storage-layer-and-core-rpc | 2 | ~16 min | ~8 min |
+| 06-getblocktemplate-submitblock | 1 of 2 | ~3 min | ~3 min |
 
 *Updated after each plan completion*
 
@@ -63,6 +64,10 @@ v1.1 roadmap decision: Follow research-recommended 4-phase structure (phases 3-6
 05-02 decision: No re-serialization needed for getblock v=0 — node_store_block always calls block_serialize with ECHO_TRUE so stored bytes are already witness-serialized.
 05-02 decision: consensus_get_chainstate requires non-const engine — use node_get_consensus(node) not the const consensus already in function scope for MTP walk.
 
+06-01 decision: ECHO_ERR_INVALID_STATE convention for IBD — handlers return this code for not-ready state; rpc_execute_single maps to -28. Cleaner than writing error JSON into builder from handler.
+06-01 decision: merkle_root() direct call (not merkle_root_wtxids()) — no coinbase tx_t exists at template generation time; calloc ensures coinbase wtxid slot is zero-initialized per BIP-141.
+06-01 decision: consensus_build_validation_ctx + difficulty_compute_next for correct bits at retarget boundaries; falls back to tip_index->bits on failure.
+
 ### Pending Todos
 
 None.
@@ -71,13 +76,13 @@ None.
 
 - hash_scriptpubkeys/hash_amounts placeholders in script.c block real multi-input Taproot validation (pre-existing tech debt, not a v1.1 blocker)
 - test_chase Makefile link defect (pre-existing, stubs work around it)
-- [Phase 6 pre-check]: Verify witness commitment field format in getblocktemplate against live Bitcoin Core node before coding — default_witness_commitment is a hex output script, NOT a pre-built coinbase output
+- [Phase 6 pre-check — RESOLVED]: default_witness_commitment confirmed as 38-byte scriptPubKey (6a24aa21a9ed + 32-byte hash), not raw hash
 - [Phase 5 pre-check — RESOLVED]: Stored blocks confirmed witness-serialized; no re-serialization needed in getblock v=0
 - [Phase 5 pre-check — RESOLVED]: txindex DELETE hook confirmed wired in chaser_confirm.c in Phase 05-01
 
 ## Session Continuity
 
 Last session: 2026-02-21
-Stopped at: Plan 05-02 complete — Phase 5 fully complete
+Stopped at: Plan 06-01 complete — production getblocktemplate (IBD guard, MTP, witness commitment, correct bits)
 Resume file: None
-Next action: Begin Phase 06 (getblocktemplate)
+Next action: Execute Plan 06-02 (submitblock production implementation)
