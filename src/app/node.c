@@ -1775,10 +1775,11 @@ static void sync_cb_send_getdata_blocks(peer_t *peer, const hash256_t *hashes,
     return;
   }
 
-  /* Build inventory - request regular blocks
-   * TODO: Add NODE_WITNESS to services and use INV_WITNESS_BLOCK for SegWit */
+  /* Build inventory — use witness inventory type if peer supports SegWit */
+  bool peer_has_witness = (peer->services & SERVICE_NODE_WITNESS) != 0;
+  uint32_t block_inv_type = peer_has_witness ? INV_WITNESS_BLOCK : INV_BLOCK;
   for (size_t i = 0; i < count; i++) {
-    inventory[i].type = INV_BLOCK;
+    inventory[i].type = block_inv_type;
     inventory[i].hash = hashes[i];
   }
 
@@ -3965,7 +3966,8 @@ void node_announce_block_to_peers(node_t *node, const hash256_t *block_hash) {
     if (peer_is_ready(peer)) {
       /* Build and send INV message */
       inv_vector_t inv_vec;
-      inv_vec.type = INV_BLOCK;
+      bool peer_has_witness = (peer->services & SERVICE_NODE_WITNESS) != 0;
+      inv_vec.type = peer_has_witness ? INV_WITNESS_BLOCK : INV_BLOCK;
       inv_vec.hash = *block_hash;
 
       msg_t inv_msg;
