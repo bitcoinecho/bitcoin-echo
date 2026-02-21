@@ -246,13 +246,61 @@ bool chaser_confirm_reorganize(chaser_confirm_t *chaser, uint32_t fork_point) {
         return false;
     }
 
-    /* Roll back to fork point */
-    /* TODO: Actually undo chainstate changes */
     uint32_t old_height = chaser->confirmed_height;
 
-    /* Notify reorganization for each block rolled back */
-    for (uint32_t h = old_height; h > fork_point; h--) {
-        chaser_notify_height(&chaser->base, CHASE_REORGANIZED, h);
+    if (chaser->chainstate != NULL) {
+        /*
+         * Roll back UTXO changes from tip down to fork_point.
+         *
+         * Each block must be reverted in reverse order (tip first) because
+         * chainstate_revert_block verifies that the delta matches the current
+         * chain tip. Skipping a height or reverting out of order will fail.
+         *
+         * Deltas must have been stored when blocks were applied (requires
+         * delta_out non-NULL in the apply path). If a delta is missing the
+         * block was applied without undo tracking — this is a fatal reorg
+         * error.
+         */
+        for (uint32_t h = old_height; h > fork_point; h--) {
+            const block_delta_t *delta =
+                chainstate_get_delta(chaser->chainstate, h);
+            if (delta == NULL) {
+                log_error(LOG_COMP_CONS,
+                          "chaser_confirm: missing delta at height %u during "
+                          "reorg (delta pruned or block applied without undo "
+                          "tracking)",
+                          h);
+                chaser_unlock(&chaser->base);
+                return false;
+            }
+
+            echo_result_t result =
+                chainstate_revert_block(chaser->chainstate, delta);
+            if (result != ECHO_OK) {
+                log_error(LOG_COMP_CONS,
+                          "chaser_confirm: failed to revert block at height "
+                          "%u during reorg: %d",
+                          h, result);
+                chaser_unlock(&chaser->base);
+                return false;
+            }
+
+            /* Prune the delta now that it has been applied in reverse.
+             * The reverted block's undo data is no longer needed.
+             */
+            chainstate_prune_delta_at(chaser->chainstate, h);
+
+            /* Notify listeners that this height was reorganized away */
+            chaser_notify_height(&chaser->base, CHASE_REORGANIZED, h);
+        }
+    } else {
+        /* No chainstate attached — only update height tracking.
+         * This path is used in tests and early initialization where chainstate
+         * is not yet wired.
+         */
+        for (uint32_t h = old_height; h > fork_point; h--) {
+            chaser_notify_height(&chaser->base, CHASE_REORGANIZED, h);
+        }
     }
 
     chaser->confirmed_height = fork_point;

@@ -52,6 +52,18 @@ static bool test_storage_has_block(uint32_t height) {
 
 void block_free(void *block) { (void)block; }
 uint32_t chainstate_get_height(void *cs) { (void)cs; return 0; }
+/* Stub: return NULL so chaser_confirm_reorganize treats all deltas as missing.
+ * Tests that exercise reorg will need a fake chainstate if they want to verify
+ * rollback behaviour; the existing tests only check height bookkeeping. */
+const void *chainstate_get_delta(const void *cs, uint32_t height) {
+    (void)cs; (void)height; return NULL;
+}
+echo_result_t chainstate_revert_block(void *cs, const void *delta) {
+    (void)cs; (void)delta; return ECHO_OK;
+}
+bool chainstate_prune_delta_at(void *cs, uint32_t height) {
+    (void)cs; (void)height; return false;
+}
 void log_error(int comp, const char *fmt, ...) { (void)comp; (void)fmt; }
 void log_warn(int comp, const char *fmt, ...) { (void)comp; (void)fmt; }
 void log_info(int comp, const char *fmt, ...) { (void)comp; (void)fmt; }
