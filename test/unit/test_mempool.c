@@ -237,6 +237,369 @@ static hash256_t make_txid(uint32_t idx) {
   return txid;
 }
 
+/**
+ * Create a test transaction that SIGNALS RBF.
+ *
+ * Uses sequence = 0xFFFFFFFD which is less than TX_SEQUENCE_DISABLE_RBF
+ * (0xFFFFFFFE), so entry_signals_rbf_inherited() will return true.
+ */
+static void create_test_tx_rbf(tx_t *tx, const hash256_t *input_txid,
+                                uint32_t input_vout, int64_t output_value) {
+  create_test_tx(tx, input_txid, input_vout, output_value);
+  if (tx->inputs != NULL) {
+    tx->inputs[0].sequence = 0xFFFFFFFD; /* Explicitly below disable threshold */
+  }
+}
+
+/**
+ * Create a test transaction that does NOT signal RBF.
+ *
+ * Uses sequence = 0xFFFFFFFF (final, no RBF, no locktime).
+ */
+static void create_test_tx_no_rbf(tx_t *tx, const hash256_t *input_txid,
+                                   uint32_t input_vout, int64_t output_value) {
+  create_test_tx(tx, input_txid, input_vout, output_value);
+  if (tx->inputs != NULL) {
+    tx->inputs[0].sequence = 0xFFFFFFFF; /* Final: RBF disabled */
+  }
+}
+
+/**
+ * Create a 2-input test transaction, both inputs signaling RBF.
+ *
+ * Spends input1 (txid1:vout1) and input2 (txid2:vout2), producing one output.
+ * Both inputs use sequence = 0xFFFFFFFD to signal RBF.
+ */
+static void create_test_tx_2in(tx_t *tx, const hash256_t *txid1,
+                                uint32_t vout1, const hash256_t *txid2,
+                                uint32_t vout2, int64_t output_value) {
+  tx_init(tx);
+
+  tx->version = 2;
+  tx->locktime = 0;
+
+  tx->input_count = 2;
+  tx->inputs = calloc(2, sizeof(tx_input_t));
+  if (tx->inputs == NULL) {
+    return;
+  }
+
+  /* Input 0 */
+  tx->inputs[0].prevout.txid = *txid1;
+  tx->inputs[0].prevout.vout = vout1;
+  tx->inputs[0].sequence = 0xFFFFFFFD; /* RBF signaling */
+  tx->inputs[0].script_sig_len = 4;
+  tx->inputs[0].script_sig = calloc(4, 1);
+
+  /* Input 1 */
+  tx->inputs[1].prevout.txid = *txid2;
+  tx->inputs[1].prevout.vout = vout2;
+  tx->inputs[1].sequence = 0xFFFFFFFD; /* RBF signaling */
+  tx->inputs[1].script_sig_len = 4;
+  tx->inputs[1].script_sig = calloc(4, 1);
+
+  /* One output */
+  tx->output_count = 1;
+  tx->outputs = calloc(1, sizeof(tx_output_t));
+  if (tx->outputs == NULL) {
+    return;
+  }
+
+  tx->outputs[0].value = output_value;
+  tx->outputs[0].script_pubkey_len = 25;
+  tx->outputs[0].script_pubkey = calloc(25, 1);
+  if (tx->outputs[0].script_pubkey != NULL) {
+    tx->outputs[0].script_pubkey[0] = 0x76;
+    tx->outputs[0].script_pubkey[1] = 0xa9;
+    tx->outputs[0].script_pubkey[2] = 0x14;
+    tx->outputs[0].script_pubkey[23] = 0x88;
+    tx->outputs[0].script_pubkey[24] = 0xac;
+  }
+
+  tx->has_witness = ECHO_FALSE;
+}
+
+/**
+ * Create a test transaction with many outputs (for Rule 5 eviction count test).
+ *
+ * Produces output_count outputs of equal value (each = output_each_value),
+ * spending a single confirmed UTXO.  The input signals RBF (sequence
+ * 0xFFFFFFFD) so descendants inherit signaling.
+ */
+static void create_test_tx_multi_output(tx_t *tx,
+                                        const hash256_t *input_txid,
+                                        uint32_t input_vout,
+                                        size_t output_count,
+                                        int64_t output_each_value) {
+  tx_init(tx);
+
+  tx->version = 2;
+  tx->locktime = 0;
+
+  tx->input_count = 1;
+  tx->inputs = calloc(1, sizeof(tx_input_t));
+  if (tx->inputs == NULL) {
+    return;
+  }
+
+  tx->inputs[0].prevout.txid = *input_txid;
+  tx->inputs[0].prevout.vout = input_vout;
+  tx->inputs[0].sequence = 0xFFFFFFFD; /* RBF signaling — descendants inherit */
+  tx->inputs[0].script_sig_len = 4;
+  tx->inputs[0].script_sig = calloc(4, 1);
+
+  tx->output_count = output_count;
+  tx->outputs = calloc(output_count, sizeof(tx_output_t));
+  if (tx->outputs == NULL) {
+    return;
+  }
+
+  for (size_t i = 0; i < output_count; i++) {
+    tx->outputs[i].value = output_each_value;
+    tx->outputs[i].script_pubkey_len = 25;
+    tx->outputs[i].script_pubkey = calloc(25, 1);
+    if (tx->outputs[i].script_pubkey != NULL) {
+      tx->outputs[i].script_pubkey[0] = 0x76;
+      tx->outputs[i].script_pubkey[1] = 0xa9;
+      tx->outputs[i].script_pubkey[2] = 0x14;
+      tx->outputs[i].script_pubkey[23] = 0x88;
+      tx->outputs[i].script_pubkey[24] = 0xac;
+    }
+  }
+
+  tx->has_witness = ECHO_FALSE;
+}
+
+/*
+ * ============================================================================
+ * TEST CASES: BIP-125 RBF REPLACEMENT RULES
+ * ============================================================================
+ *
+ * Each test exercises one BIP-125 rule boundary.  Helpers:
+ *   create_test_tx_rbf()          — sequence 0xFFFFFFFD  (signals RBF)
+ *   create_test_tx_no_rbf()       — sequence 0xFFFFFFFF  (does not signal)
+ *   create_test_tx_2in()          — 2 RBF-signaling inputs, 1 output
+ *   create_test_tx_multi_output() — 1 RBF-signaling input, N outputs
+ *
+ * Mock UTXO indices used: 300-309 (reserved, never overlap with other tests).
+ */
+
+/**
+ * Rule 1 (signaling required): replacement of a non-signaling original
+ * must be rejected with MEMPOOL_REJECT_CONFLICT.
+ */
+static void test_rbf_rule1_signaling(void) {
+  mempool_t *mp = mempool_create();
+  ASSERT_NOT_NULL(mp, "mempool_create should succeed");
+
+  mempool_callbacks_t cb = create_test_callbacks();
+  mempool_set_callbacks(mp, &cb);
+
+  /* Confirmed UTXO that the original will spend. */
+  hash256_t utxo_txid = make_txid(300);
+  add_mock_utxo(&utxo_txid, 0, 100000, false);
+
+  /* Original: does NOT signal RBF (sequence = 0xFFFFFFFF). */
+  tx_t original;
+  create_test_tx_no_rbf(&original, &utxo_txid, 0, 90000); /* 10000 sat fee */
+
+  mempool_accept_result_t result;
+  echo_result_t err = mempool_add(mp, &original, &result);
+  ASSERT_EQ(err, ECHO_OK, "non-signaling original should be accepted");
+
+  /* Replacement signals RBF and pays a higher fee — but Rule 1 fires because
+   * the ORIGINAL does not signal, so replacement is forbidden. */
+  tx_t replacement;
+  create_test_tx_rbf(&replacement, &utxo_txid, 0, 80000); /* 20000 sat fee */
+
+  err = mempool_add(mp, &replacement, &result);
+  ASSERT_EQ(err, ECHO_ERR_INVALID,
+            "replacement of non-signaling original must be rejected");
+  ASSERT_EQ(result.reason, MEMPOOL_REJECT_CONFLICT,
+            "reject reason must be CONFLICT (Rule 1)");
+
+  /* Mempool still contains only the original. */
+  ASSERT_EQ(mempool_size(mp), 1, "original must remain in mempool");
+
+  tx_free(&original);
+  tx_free(&replacement);
+  clear_mock_utxos();
+  mempool_destroy(mp);
+}
+
+/**
+ * Rule 1 (inherited signaling): a child that does not directly signal RBF
+ * inherits the signal from its unconfirmed parent.  A replacement of that
+ * child must be accepted (Rule 1 passes via inherited signal).
+ */
+static void test_rbf_rule1_inherited(void) {
+  mempool_t *mp = mempool_create();
+  ASSERT_NOT_NULL(mp, "mempool_create should succeed");
+
+  mempool_callbacks_t cb = create_test_callbacks();
+  mempool_set_callbacks(mp, &cb);
+
+  /* Confirmed UTXO for the parent. */
+  hash256_t utxo_txid = make_txid(301);
+  add_mock_utxo(&utxo_txid, 0, 100000, false);
+
+  /* Parent: signals RBF explicitly. */
+  tx_t parent;
+  create_test_tx_rbf(&parent, &utxo_txid, 0, 90000); /* 10000 sat fee */
+
+  mempool_accept_result_t result;
+  echo_result_t err = mempool_add(mp, &parent, &result);
+  ASSERT_EQ(err, ECHO_OK, "parent should be accepted");
+
+  /* Get the parent's txid (its output becomes the child's input). */
+  hash256_t parent_txid;
+  tx_compute_txid(&parent, &parent_txid);
+
+  /* Child: does NOT directly signal RBF (sequence = 0xFFFFFFFF), but inherits
+   * from the parent which is unconfirmed and signals. */
+  tx_t child;
+  create_test_tx_no_rbf(&child, &parent_txid, 0, 80000); /* 10000 sat fee */
+
+  err = mempool_add(mp, &child, &result);
+  ASSERT_EQ(err, ECHO_OK, "child spending parent output should be accepted");
+  ASSERT_EQ(mempool_size(mp), 2, "parent and child should both be in mempool");
+
+  /* Compute child txid for post-replacement lookup. */
+  hash256_t child_txid;
+  tx_compute_txid(&child, &child_txid);
+
+  /* Replacement for the child: spends parent's output with higher fee.
+   * Rule 1 must pass because the child inherits RBF signaling from parent.
+   * Use a different output value so the replacement has a different txid. */
+  tx_t replacement;
+  create_test_tx_rbf(&replacement, &parent_txid, 0, 60000); /* 30000 sat fee */
+
+  err = mempool_add(mp, &replacement, &result);
+  ASSERT_EQ(err, ECHO_OK,
+            "replacement of inherited-signaling child must succeed");
+
+  /* Child must be evicted; replacement must be present. */
+  ASSERT_TRUE(!mempool_exists(mp, &child_txid),
+              "child must be evicted after replacement");
+  hash256_t replacement_txid;
+  tx_compute_txid(&replacement, &replacement_txid);
+  ASSERT_TRUE(mempool_exists(mp, &replacement_txid),
+              "replacement must be in mempool");
+
+  /* Parent + replacement = 2 entries. */
+  ASSERT_EQ(mempool_size(mp), 2, "parent + replacement = 2 entries");
+
+  tx_free(&parent);
+  tx_free(&child);
+  tx_free(&replacement);
+  clear_mock_utxos();
+  mempool_destroy(mp);
+}
+
+/**
+ * Rule 2 (no new unconfirmed inputs): replacement that introduces an
+ * unconfirmed input not in the eviction set must be rejected.
+ */
+static void test_rbf_rule2_no_new_unconfirmed(void) {
+  mempool_t *mp = mempool_create();
+  ASSERT_NOT_NULL(mp, "mempool_create should succeed");
+
+  mempool_callbacks_t cb = create_test_callbacks();
+  mempool_set_callbacks(mp, &cb);
+
+  /* Two confirmed UTXOs. */
+  hash256_t utxo1 = make_txid(302);
+  hash256_t utxo2 = make_txid(303);
+  add_mock_utxo(&utxo1, 0, 100000, false);
+  add_mock_utxo(&utxo2, 0, 100000, false);
+
+  /* Original: spends utxo1, signals RBF. */
+  tx_t original;
+  create_test_tx_rbf(&original, &utxo1, 0, 90000); /* 10000 sat fee */
+
+  mempool_accept_result_t result;
+  echo_result_t err = mempool_add(mp, &original, &result);
+  ASSERT_EQ(err, ECHO_OK, "original should be accepted");
+
+  /* Unrelated parent: spends utxo2.  Its output is unconfirmed. */
+  tx_t unrelated_parent;
+  create_test_tx_rbf(&unrelated_parent, &utxo2, 0, 90000);
+
+  err = mempool_add(mp, &unrelated_parent, &result);
+  ASSERT_EQ(err, ECHO_OK, "unrelated parent should be accepted");
+
+  hash256_t unrelated_txid;
+  tx_compute_txid(&unrelated_parent, &unrelated_txid);
+
+  /* Replacement: spends utxo1 (conflicts with original) AND the unrelated
+   * parent's output (unconfirmed, NOT in the eviction set).  Rule 2 fires. */
+  tx_t replacement;
+  create_test_tx_2in(&replacement,
+                     &utxo1, 0,               /* conflicts with original */
+                     &unrelated_txid, 0,       /* new unconfirmed input   */
+                     150000);                  /* 40000 sat fee over 2 inputs */
+
+  err = mempool_add(mp, &replacement, &result);
+  ASSERT_EQ(err, ECHO_ERR_INVALID,
+            "replacement introducing new unconfirmed input must be rejected");
+  ASSERT_EQ(result.reason, MEMPOOL_REJECT_CONFLICT,
+            "reject reason must be CONFLICT (Rule 2)");
+
+  tx_free(&original);
+  tx_free(&unrelated_parent);
+  tx_free(&replacement);
+  clear_mock_utxos();
+  mempool_destroy(mp);
+}
+
+/**
+ * Rule 3 (absolute fee trap): replacement with higher fee RATE but lower
+ * absolute fee must be rejected.
+ *
+ * This is the critical edge case — naive implementations check fee rate and
+ * miss the absolute satoshi requirement.
+ */
+static void test_rbf_rule3_absolute_fee_trap(void) {
+  mempool_t *mp = mempool_create();
+  ASSERT_NOT_NULL(mp, "mempool_create should succeed");
+
+  mempool_callbacks_t cb = create_test_callbacks();
+  mempool_set_callbacks(mp, &cb);
+
+  hash256_t utxo_txid = make_txid(304);
+  add_mock_utxo(&utxo_txid, 0, 100000, false);
+
+  /* Original: 5000 sat absolute fee.  Signals RBF. */
+  tx_t original;
+  create_test_tx_rbf(&original, &utxo_txid, 0, 95000); /* 5000 sat fee */
+
+  mempool_accept_result_t result;
+  echo_result_t err = mempool_add(mp, &original, &result);
+  ASSERT_EQ(err, ECHO_OK, "original should be accepted");
+
+  /* Replacement: 4999 sat absolute fee — lower than original's 5000 sat.
+   * This must be rejected by Rule 3 even if the replacement is smaller and
+   * has a higher fee RATE. */
+  tx_t replacement;
+  create_test_tx_rbf(&replacement, &utxo_txid, 0, 95001); /* 4999 sat fee */
+
+  err = mempool_add(mp, &replacement, &result);
+  ASSERT_EQ(err, ECHO_ERR_INVALID,
+            "replacement with lower absolute fee must be rejected (Rule 3)");
+  ASSERT_EQ(result.reason, MEMPOOL_REJECT_RBF_INSUFFICIENT_FEE,
+            "reject reason must be RBF_INSUFFICIENT_FEE");
+  ASSERT_TRUE(result.required_fee > 0,
+              "result must indicate minimum required fee");
+
+  /* Mempool still contains the original. */
+  ASSERT_EQ(mempool_size(mp), 1, "original must remain after Rule 3 rejection");
+
+  tx_free(&original);
+  tx_free(&replacement);
+  clear_mock_utxos();
+  mempool_destroy(mp);
+}
+
 /*
  * ============================================================================
  * TEST CASES: LIFECYCLE
