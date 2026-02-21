@@ -5,37 +5,39 @@
 See: .planning/PROJECT.md (updated 2026-02-20)
 
 **Core value:** Echo must correctly validate and serve the Bitcoin blockchain on mainnet — a node that peers trust and rely on.
-**Current focus:** Phase 1 — Foundation Fixes
+**Current focus:** Phase 2 — Consensus Completeness
 
 ## Current Position
 
-Phase: 1 of 4 (Foundation Fixes)
-Plan: 7 of 7 in current phase (COMPLETE)
-Status: Phase 1 complete — ready for Phase 2
-Last activity: 2026-02-20 — Plan 01-07 complete: peer eviction test suite
+Phase: 2 of 4 (Consensus Completeness)
+Plan: 2 of 3 in current phase
+Status: Phase 2 in progress — Plan 02-02 complete
+Last activity: 2026-02-21 — Plan 02-02 complete: prev_chainwork and UTXO rollback wiring
 
-Progress: [██░░░░░░░░] 25%
+Progress: [███░░░░░░░] 37%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 7
-- Average duration: ~9 min
-- Total execution time: ~41 min
+- Total plans completed: 9
+- Average duration: ~10 min
+- Total execution time: ~66 min
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
 | 01-foundation-fixes | 7 | ~41 min | ~6 min |
+| 02-consensus-completeness | 2 | ~25 min | ~12 min |
 
 **Recent Trend:**
-- Last 5 plans: 01-03 (~9 min), 01-04 (4 min), 01-05 (8 min), 01-06 (6 min), 01-07 (15 min)
-- Trend: Stable ~5-15 min/plan
+- Last 5 plans: 01-05 (8 min), 01-06 (6 min), 01-07 (15 min), 02-01 (~0 min research), 02-02 (25 min)
+- Trend: Stable ~5-25 min/plan
 
 *Updated after each plan completion*
 | Phase 01 P05 | 8 | 1 tasks | 2 files |
 | Phase 01 P07 | 15 | 1 tasks | 3 files |
+| Phase 02 P02 | 25 | 2 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -55,6 +57,9 @@ Recent decisions affecting current work:
 - [01-07]: Test injection API is a proper public function (not #ifdef-guarded) with "FOR UNIT TESTS ONLY" doc comment — simpler and more honest than preprocessor-conditional builds
 - [Phase 01]: Corrupted size field test uses 0xFFFFFFFF — validation already present in blocks.c (ECHO_MAX_BLOCK_SIZE*4 check), no fix needed
 - [Phase 01]: Near-4x witness limit test uses ECHO_MAX_BLOCK_SIZE*4-1 (3,999,999 bytes) — highest valid storage size per current blocks.c bounds
+- [Phase 02]: Chainstate owns deltas in state->deltas[]; delta_out parameter is a borrowed (non-owning) reference — callers must not free it
+- [Phase 02]: [02-02]: consensus.c apply path now requests deltas (changed NULL to &delta_borrow) enabling reorg rollback for blocks confirmed via normal path
+- [Phase 02]: [02-02]: chaser_confirm_reorganize gracefully skips UTXO rollback when chainstate is NULL (test/early-init paths)
 
 ### Pending Todos
 
@@ -68,6 +73,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-02-20
-Stopped at: Completed 01-07-PLAN.md (peer eviction test suite — Phase 1 complete)
+Last session: 2026-02-21
+Stopped at: Completed 02-02-PLAN.md (prev_chainwork field + UTXO rollback in chaser_confirm_reorganize)
 Resume file: None

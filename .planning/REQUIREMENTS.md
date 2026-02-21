@@ -10,9 +10,9 @@ Requirements for peer-compatible mainnet node. Each maps to roadmap phases.
 ### Consensus
 
 - [ ] **CONS-01**: Node validates OP_CHECKSIGADD (BIP-342 Tapscript) correctly for all key types including unknown-key-type upgrade rule
-- [ ] **CONS-02**: Node performs full UTXO rollback on chain reorganization using delta undo system
+- [x] **CONS-02**: Node performs full UTXO rollback on chain reorganization using delta undo system
 - [x] **CONS-03**: Node stores chainwork in big-endian format for correct SQLite bytewise fork selection
-- [ ] **CONS-04**: Node recomputes chainwork correctly during reorg (stores prev_chainwork in block_delta_t)
+- [x] **CONS-04**: Node recomputes chainwork correctly during reorg (stores prev_chainwork in block_delta_t)
 - [ ] **CONS-05**: Node passes all BIP-342 reference test vectors for Tapscript validation
 
 ### P2P Network
@@ -97,9 +97,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 | Requirement | Phase | Status |
 |-------------|-------|--------|
 | CONS-01 | Phase 2 | Pending |
-| CONS-02 | Phase 2 | Pending |
+| CONS-02 | Phase 2 | Complete |
 | CONS-03 | Phase 1 | Complete |
-| CONS-04 | Phase 2 | Pending |
+| CONS-04 | Phase 2 | Complete |
 | CONS-05 | Phase 2 | Pending |
 | P2P-01 | Phase 3 | Pending |
 | P2P-02 | Phase 3 | Pending |
