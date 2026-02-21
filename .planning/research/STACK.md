@@ -1,18 +1,16 @@
 # Stack Research
 
-**Domain:** Bitcoin full node peer compatibility (pure C11)
-**Researched:** 2026-02-20
-**Confidence:** HIGH (all claims verified against BIPs, Bitcoin Core source, or official protocol docs)
+**Domain:** Bitcoin full node — P2P block serving, BIP-125 full-RBF mempool, transaction index, RPC expansion
+**Researched:** 2026-02-21
+**Confidence:** HIGH (all claims verified against BIPs, Bitcoin Core source, or codebase audit)
 
 ---
 
-## Context
+## Context: No New Libraries
 
-This is not a greenfield stack decision. Bitcoin Echo already has a defined, frozen stack:
-pure C11 + vendored libsecp256k1 + vendored SQLite. No new external libraries are
-permitted per the project manifesto. This document is therefore a **protocol specification
-reference** — which BIPs govern each feature, what the correct approach is, and what must
-NOT be done. Every "technology" choice here is "how to implement X correctly in pure C11."
+Bitcoin Echo's stack is frozen: pure C11 + vendored SQLite + vendored libsecp256k1. The project manifesto explicitly prohibits external dependencies. Every "technology" in this document is "which BIP governs this feature, how the existing modules connect, and what must NOT be done wrong." There are no `npm install` commands here.
+
+This document supersedes the v1.0 STACK.md. It focuses exclusively on what v1.1 adds: P2P block serving, BIP-125 full-RBF mempool policy, transaction index, and RPC expansion.
 
 ---
 
@@ -22,169 +20,218 @@ NOT be done. Every "technology" choice here is "how to implement X correctly in 
 
 | Technology | Version | Purpose | Why Recommended |
 |------------|---------|---------|-----------------|
-| Pure C11 | ISO/IEC 9899:2011 | All implementation | Frozen requirement. No debate. |
-| libsecp256k1 | Vendored (bitcoin-core/secp256k1) | ECDSA + Schnorr verification | `secp256k1_schnorrsig_verify()` is the correct entry point for BIP-340. Already vendored with `ENABLE_MODULE_SCHNORRSIG`. No batch verify API exists in the public header — individual calls per sig is the only option. |
-| SQLite 3.x | Vendored amalgamation | Block index, UTXO set, tx index | Already used for chainstate/block index. Adding txindex here is a natural extension. WAL mode already configured for concurrency. |
-| POSIX sockets/pthreads | System | TCP networking, threading | Already in use. No change needed. |
+| Pure C11 | ISO/IEC 9899:2011 | All implementation | Frozen project requirement. No change. |
+| SQLite (vendored) | Amalgamation in-tree | Block index, UTXO, new tx_index table | Add `tx_index` table to existing block_index_db. Zero new dependencies — the storage engine is already there, already WAL-mode, already mutex-protected. |
+| libsecp256k1 (vendored) | bitcoin-core/secp256k1 | ECDSA + Schnorr | No new use in v1.1. Already complete for all signature verification paths. |
+| POSIX sockets/pthreads | System | TCP networking, threading | Already in use. The `relay.c` getdata handler already has rate limiting; just needs block-serving wired in. |
 
-### Protocol Specifications (What to Implement)
+### Protocol Specifications — What v1.1 Implements
 
-| BIP | Feature | Status in Codebase | Implementation Approach |
-|-----|---------|-------------------|------------------------|
-| BIP-340 | Schnorr signatures (64-byte, x-only pubkey) | DONE — `sig_verify(SIG_SCHNORR, ...)` routes through libsecp256k1 | No change needed |
-| BIP-341 | Taproot keypath + scriptpath spend | DONE — keypath Schnorr verify works | No change needed |
-| BIP-342 | Tapscript + OP_CHECKSIGADD | PARTIAL — OP_CHECKSIGADD skeleton exists at `script.c:4842`, sighash and sig verify wired, but lives at `script.c:3330` returning `SCRIPT_ERR_BAD_OPCODE` in non-tapscript path. Need to confirm the tapscript path (line 4842) is actually reached. | Wire tapscript execution path correctly; verify `script_execute_tapscript()` is called for witness v1 scriptpath spends |
-| BIP-144 | SegWit P2P messages + `NODE_WITNESS` service flag | MISSING — `node.c:1762` has TODO | Set `NODE_WITNESS = (1 << 3)` in version message services; use `MSG_WITNESS_BLOCK (0x40000002)` in `getdata` to peers that advertise `NODE_WITNESS` |
-| BIP-125 | Replace-By-Fee (5 rules) | STUB — detects RBF signal, `mempool.c:799` has TODO | Implement all 5 rules: (1) RBF signal check (nSequence < 0xFFFFFFFE), (2) no new unconfirmed inputs, (3) absolute fee >= sum of replaced, (4) fee covers relay bandwidth at min relay rate, (5) replaced + descendants <= 100 |
-| BIP-22 / BIP-145 | `getblocktemplate` | PARTIAL — `rpc.c:2111` has partial impl, selects mempool txs, but MTP/mintime not wired, witness commitment not constructed | Complete: MTP calculation, witness commitment hash in coinbase (OP_RETURN output), correct `default_witness_commitment` field in response |
-| BIP-34 | Block height in coinbase | DONE — `coinbase_encode_height()` exists in `mining.h` | No change needed |
-
-### Supporting Approach by Feature Area
-
-#### Block Serving (`getdata` → `MSG_BLOCK`)
-
-**Approach:** When a peer sends `getdata` with `INV_BLOCK` or `INV_WITNESS_BLOCK`, look up the block's position via the block index (`block_index_t.data_file` + `block_index_t.data_pos`), read it from disk via `block_storage_read()`, and send it as a `MSG_BLOCK` message.
-
-**What NOT to do:** Do not serve blocks that are pruned. Check `data_file == BLOCK_DATA_NOT_STORED` before attempting to read. Send `notfound` if unavailable — the skeleton for this already exists at `node.c:2762`.
-
-**Protocol detail:** For peers that advertised `NODE_WITNESS`, respond to `INV_WITNESS_BLOCK` with witness-serialized block data. The serialization difference: witness transactions include witness stack data after inputs/outputs. Echo already serializes witness data (`tx.has_witness` path in `tx_serialize()`).
-
-**Rate limiting:** Bitcoin Core enforces `MAX_BLOCKS_IN_TRANSIT_PER_PEER = 16` concurrent block requests per peer. Echo does not need to replicate this exactly, but should not serve unlimited concurrent requests to avoid DoS.
-
-**Source:** [developer.bitcoin.org P2P reference](https://developer.bitcoin.org/reference/p2p_networking.html) — HIGH confidence
+| BIP | Feature | Current State in Codebase | What v1.1 Must Do |
+|-----|---------|--------------------------|-------------------|
+| BIP-144 | NODE_WITNESS service flag, INV_WITNESS_BLOCK | `node.c:1779` has TODO: "Add NODE_WITNESS to services and use INV_WITNESS_BLOCK for SegWit". `node.c:2937-2962` sends `services=1` (NODE_NETWORK only) unconditionally. | Change `services` in `peer_send_version()` calls to include `SERVICE_NODE_WITNESS (1 << 3)`. Gate on whether node can actually serve witness blocks (IBD complete). |
+| BIP-144 | Block serving via getdata handler | `node.c:2786` has `/* TODO: Full block serving */`. Prune-check and notfound path already written. | Read block via `block_storage_read()` using `data_file`/`data_pos` from `block_index_db`. Serialize to wire via `protocol_serialize.h`. Send as `MSG_BLOCK` or `MSG_WITNESS_BLOCK`. |
+| BIP-125 | Opt-in RBF replacement (all 5 rules) | `mempool.c:797-807` has `/* TODO: Implement full RBF replacement logic */` and immediately rejects conflicts. RBF signaling detection (`signals_rbf`) already works. | Implement all 5 rules in `mempool_add()` when `has_conflict == true` and conflicting entry `signals_rbf`. See implementation approach below. |
+| BIP-22 / BIP-145 | `getblocktemplate` completion | `rpc.c:2111-2421` has partial implementation. Transaction selection works. MTP returns 0 (`TODO`). Witness commitment not constructed. `getblockchaininfo` mediantime also returns 0. | Implement MTP query (11-block median). Compute witness merkle root (wtxids). Construct `default_witness_commitment`. Return `"rules": ["segwit"]`. |
+| None (node capability) | Transaction index | `rpc.c:1897` has `/* TODO: Implement transaction index for confirmed txs */`. No `tx_index` table exists yet. | Add `tx_index` SQLite table. Populate on block confirmation. Wire into `rpc_getrawtransaction()` and `rpc_getblock()` verbosity=0. |
+| BIP-144 | `getblock` verbosity=0 raw hex | `rpc.c:1783` has `/* TODO: Read block from storage and return hex */` | Read block from blk*.dat, serialize to hex string in JSON response. |
 
 ---
 
-#### NODE_WITNESS Service Flag (BIP-144)
+## Supporting Approach by Feature
 
-**Approach:** Add `NODE_WITNESS (1 << 3) = 8` to the service flags bitmask in the `version` message. This advertises that the node can provide witness-serialized blocks and transactions.
+### Feature 1: NODE_WITNESS + INV_WITNESS_BLOCK (P2P-01, P2P-04)
 
-**Consequence:** After advertising `NODE_WITNESS`, peers will send `INV_WITNESS_BLOCK` instead of `INV_BLOCK` for new blocks. The node must be prepared to handle and serve witness data in both directions.
+**Integration point:** `src/app/node.c` — three call sites at lines 2937, 2961, 3329-3330 all pass `services=1`.
 
-**Inventory types defined by BIP-144:**
-- `MSG_WITNESS_TX = 0x40000001` — already referenced in `node.c:1194`
-- `MSG_WITNESS_BLOCK = 0x40000002` — referenced in `node.c:2695`
+**Correct value:**
+```c
+#define SERVICE_NODE_WITNESS (1 << 3)  /* Already defined in protocol.h */
 
-**What NOT to do:** Do not advertise `NODE_WITNESS` until the node can actually serve witness blocks. Advertising prematurely causes peers to send witness-formatted `getdata` requests that the node cannot fulfill.
+/* When node can serve full blocks (IBD complete, not pruned): */
+uint64_t services = SERVICE_NODE_NETWORK | SERVICE_NODE_WITNESS;
+
+/* When pruning enabled (can only serve recent blocks): */
+uint64_t services = SERVICE_NODE_NETWORK_LIMITED | SERVICE_NODE_WITNESS;
+```
+
+**Gate condition:** Only advertise `NODE_WITNESS` after IBD is complete and the node can actually respond to `INV_WITNESS_BLOCK` getdata with a real block. Advertising during IBD is a protocol violation — peers will immediately send getdata requests the node cannot fulfill.
+
+**Consequence of enabling:** Modern peers (protocol version >= 70013) will send `INV_WITNESS_BLOCK (0x40000002)` instead of `INV_BLOCK (0x2)` in getdata. The `node.c:2763` handler already handles both types with `if (inv->type == INV_BLOCK || inv->type == INV_WITNESS_BLOCK)` — but the block serving body is a TODO.
+
+**What NOT to do:** Do not send `INV_WITNESS_BLOCK` in the download manager's own getdata calls (`node.c:1779`) until block serving is complete. The two directions are independent: serving blocks to peers requires `NODE_WITNESS` in our version; requesting witness blocks from peers requires checking `peer->services & SERVICE_NODE_WITNESS`.
 
 **Source:** [BIP-144](https://github.com/bitcoin/bips/blob/master/bip-0144.mediawiki) — HIGH confidence
 
 ---
 
-#### Tapscript / OP_CHECKSIGADD (BIP-342)
+### Feature 2: Full Block Serving via getdata (P2P-02)
 
-**Approach:** The implementation at `src/consensus/script.c:4842` has the correct skeleton — it pops `(sig, n, pubkey)`, handles empty sig (push n unchanged), validates 64/65-byte sig length and 32-byte pubkey length, computes `sighash_taproot()` with `ext_flag=1` for script path, and calls `sig_verify(SIG_SCHNORR, ...)`. The logic appears complete in `script_execute_tapscript()`.
+**Integration point:** `src/app/node.c:2763-2786` — the `MSG_GETDATA` handler. Structure already exists, block fetch and send is the `/* TODO */`.
 
-**The critical gap:** The stub at line 3330 returns `SCRIPT_ERR_BAD_OPCODE` — this is in the non-tapscript execution path. The question is whether `script_execute_tapscript()` is correctly invoked for witness v1 scriptpath spends. Verify that `script_execute()` routes witness v1 scriptpath spends to `script_execute_tapscript()` rather than the generic opcode dispatcher.
+**Required path:**
+1. Look up `block_index_entry_t` by hash via `block_index_db_lookup_by_hash()`.
+2. Check `entry.status & BLOCK_STATUS_HAVE_DATA`. If not set, send `notfound`.
+3. Check `entry.status & BLOCK_STATUS_PRUNED`. If pruned, send `notfound` (already implemented for this case).
+4. Read block from disk: `block_storage_read(entry.data_file, entry.data_pos, &block)`.
+5. Serialize block to wire format via `protocol_serialize.h` → `msg_serialize_block()`.
+6. Send as `MSG_BLOCK` message.
 
-**OP_SUCCESS opcodes (BIP-342):** Opcodes 80, 98, 126-129, 131-134, 137-138, 141-142, 149-153, 187-254 cause immediate script success. These must be checked at parse time, before any execution — if any OP_SUCCESSx appears anywhere in the script, validation passes immediately. The existing `script_execute_tapscript()` has this check at line 4822.
+**Witness serialization:** The `block` struct from `block_storage_read()` already contains witness data if the block was stored post-SegWit activation. When peer requested `INV_WITNESS_BLOCK`, include witness in serialization (which is already the default in `tx_serialize()` when `tx->has_witness`).
 
-**CHECKMULTISIG disabled:** `OP_CHECKMULTISIG` and `OP_CHECKMULTISIGVERIFY` must fail immediately in Tapscript context (not succeed silently). Line 4837 handles this.
+**Memory:** A SegWit block can be up to 4MB (weight units). Do not allocate block data on the stack. Use heap allocation, serialize directly to a send buffer, then free.
 
-**Annex handling (BIP-341/342):** If the last witness stack element starts with `0x50`, it is the annex and must be stripped before script execution. Must not fail validation because of the annex's presence, but its contents are currently undefined.
+**Rate limiting:** `relay.c` already enforces `MAX_GETDATA_PER_SECOND = 1000` per peer. Do not replicate this in node.c — trust the relay layer.
 
-**Source:** [BIP-342](https://github.com/bitcoin/bips/blob/master/bip-0342.mediawiki), [Bitcoin Core interpreter.cpp](https://github.com/bitcoin/bitcoin/blob/master/src/script/interpreter.cpp) — HIGH confidence
+**Send queue concern:** `peer.h` defines `PEER_SEND_QUEUE_SIZE = 128` messages. Serving large blocks to many peers simultaneously can exhaust the send queue. Limit concurrent block serves per peer. If send queue is full, return `ECHO_ERR_FULL` and send `notfound` — do not block.
+
+**Source:** [developer.bitcoin.org P2P reference](https://developer.bitcoin.org/reference/p2p_networking.html), codebase audit — HIGH confidence
 
 ---
 
-#### BIP-125 RBF (Replace-By-Fee)
+### Feature 3: BIP-125 Full-RBF Mempool Policy (P2P-03)
 
-**Approach:** Implement all 5 rules inside `mempool_accept()` when `has_conflict == true` and the conflicting transaction signals RBF (`signals_rbf == true`).
+**Clarification on "full-RBF" in milestone context:** The milestone says "BIP-125 full-RBF" — this means implementing all 5 replacement rules from BIP-125, not Bitcoin Core's `-mempoolfullrbf` flag (which allows replacing non-signaling transactions). Echo implements BIP-125 opt-in RBF only: replacement requires the conflicting transaction to signal via `nSequence < 0xFFFFFFFE`.
 
-The 5 rules (from BIP-125):
-1. **Signaling:** All transactions being replaced must signal RBF via `nSequence < 0xFFFFFFFE`. Already detected as `entry->signals_rbf`.
-2. **No new unconfirmed inputs:** The replacement transaction must not introduce unconfirmed inputs that were not in the original transaction(s). Check that all inputs either come from confirmed UTXOs or from the inputs of transactions being replaced.
-3. **Absolute fee:** Replacement total fee >= sum of fees of all transactions being evicted (including descendants).
-4. **Bandwidth fee:** Replacement fee >= (its own vsize) × min_relay_fee_rate. Must pay for the relay bandwidth consumed.
-5. **Descendant limit:** Total number of transactions to be evicted (the conflicting tx and all its descendants) must be <= 100.
+**Integration point:** `src/protocol/mempool.c:797-807` — the `/* TODO: Implement full RBF replacement logic */` block inside `mempool_add()`.
 
-**Implementation order:** Rules 1 and 5 are cheapest. Check rule 1 first (already done). Check rule 5 by counting descendants of the conflicting transaction. Then check rules 3 and 4 (requires knowing the total fee of evicted transactions). Finally remove the evicted transactions atomically before accepting the replacement.
+**The 5 rules (BIP-125):**
 
-**Data structures:** The mempool already has `ancestor_fee` tracking. Need to add descendant tracking (or walk the mempool graph on demand). For a mempool under 5000 entries, walking on demand is fine.
+**Rule 1 — Signaling:** Conflicting transaction must have `signals_rbf == true`. Already checked at `mempool.c:699`. No additional work.
 
-**What NOT to do:** Do not implement full-RBF (replacing without the `nSequence` signal) — Bitcoin Core has debated this at length and it is not required for BIP-125 compatibility. Stick to BIP-125 signaled RBF only.
+**Rule 2 — No new unconfirmed inputs:** The replacement transaction's inputs must not reference any unconfirmed transaction outputs that are not already inputs of the transaction(s) being replaced. Implementation: for each input of the new transaction, check if it comes from a mempool entry. If yes, verify that mempool entry is also one of the conflicting transactions. If it introduces a new mempool dependency not present in the conflicting set, reject.
+
+**Rule 3 — Absolute fee:** Sum of replacement fees >= sum of all evicted transaction fees (conflicting tx + all its descendants). Implementation: walk the conflict set using the existing descendant tracking. For each conflicting tx, call `mempool_remove_entry()` would handle descendants — but first collect their total fees before removal.
+
+**Rule 4 — Bandwidth fee:** Replacement fee >= (replacement vsize × min_relay_fee_rate). The `vsize` is already computed as `tx_vsize(tx)`. `min_relay_fee_rate` is available as `MEMPOOL_DEFAULT_MIN_FEE_RATE` or `mp->config.min_fee_rate`.
+
+**Rule 5 — Descendant limit:** Total transactions to evict (conflicting + all their descendants) must not exceed `MEMPOOL_MAX_REPLACEMENT_COUNT = 100`. Already defined in `mempool.h`. Implementation: walk the `next` pointers in the `spent_lookup` table to collect all descendants.
+
+**Implementation order:** 1 (free, already done) → 5 (count descendants: cheap walk) → 4 (arithmetic: cheapest validation) → 2 (unconfirmed input check: lookup per input) → 3 (fee sum: requires knowing all evicted entries) → atomic evict-and-insert.
+
+**Atomicity:** Collect all entries to evict first, verify all rules pass, then call `mempool_remove_entry()` for each, then insert the replacement. Never partially apply.
+
+**What NOT to do:** Do not implement `-mempoolfullrbf` (replacing non-signaling transactions). That is a separate Bitcoin Core configuration flag added in v24.0 with ongoing controversy. BIP-125 requires the signal. Implementing full-RBF would break compatibility with wallets relying on first-seen guarantees.
 
 **Source:** [BIP-125](https://github.com/bitcoin/bips/blob/master/bip-0125.mediawiki) — HIGH confidence
 
 ---
 
-#### Chainstate Rollback / Reorg Handling
+### Feature 4: Transaction Index (RPC-01)
 
-**Approach:** The delta system is designed but incomplete. `block_delta_t` records both created UTXOs (to delete) and spent UTXOs (to restore). The `chainstate_apply_delta_reverse()` function exists at `chainstate.c:718` and has the reversal logic, but the chainwork recalculation is stubbed.
+**Integration point:** New SQLite table in `src/storage/block_index_db.c`. Populated from the block confirmation path in `src/node/chaser_confirm.c`.
 
-**What must be implemented:**
-1. **UTXO undo:** When rolling back, for each entry in `delta->created`, remove the UTXO from the UTXO set. For each entry in `delta->spent`, restore the UTXO. This is the "undo" of `utxo_apply_block()`.
-2. **Chainwork on rollback:** Store the previous chainwork in the delta at apply time. On rollback, restore it from the delta. This is simpler than recomputation and avoids requiring a full chain walk.
-3. **Height index rollback:** Update `state->height_index` to remove the rolled-back block hash.
-4. **Chaser integration:** `chaser_confirm.c:250` has the TODO — it calls the rollback notification but doesn't invoke `chainstate_apply_delta_reverse()`. Wire this.
-
-**Storage format — chainwork endianness:** The `work256_t` struct stores chainwork little-endian (`uint8_t bytes[32]`). For SQLite comparison using `ORDER BY chainwork DESC`, this requires big-endian storage so that SQLite's bytewise comparison produces the correct ordering. Fix: store chainwork bytes reversed (big-endian) in SQLite, convert on read.
-
-**Bitcoin Core's approach (reference):** Bitcoin Core stores undo data in `rev*.dat` files alongside block files. Each block's undo data contains the spent outputs (CTxOut = amount + scriptPubKey) needed to reconstruct the UTXO set state before that block. Echo's delta system achieves the same goal in-memory/SQLite.
-
-**Source:** [Bitcoin Wiki Data Storage](https://en.bitcoin.it/wiki/Bitcoin_Core_0.11_(ch_2):_Data_Storage), codebase audit — HIGH confidence
-
----
-
-#### Transaction Index (for `getrawtransaction`)
-
-**Approach:** Store a mapping from txid → `(file_index, file_offset, tx_offset_within_block)` in SQLite. Add a new table `tx_index` to the existing block index database. Populate it during block confirmation (when blocks are written to disk). The `block_file_pos_t` struct already provides `file_index` and `file_offset` for the block; add a per-transaction byte offset within the block.
-
-**Schema:**
+**Schema — add to existing block_index_db:**
 ```sql
-CREATE TABLE tx_index (
-  txid BLOB NOT NULL PRIMARY KEY,  -- 32 bytes, big-endian txid
-  file_index INTEGER NOT NULL,     -- blk*.dat file number
-  file_offset INTEGER NOT NULL,    -- byte offset of block start in file
-  tx_offset INTEGER NOT NULL       -- byte offset of tx within block data
+CREATE TABLE IF NOT EXISTS tx_index (
+    txid        BLOB NOT NULL PRIMARY KEY,  -- 32 bytes, txid (internal byte order)
+    file_index  INTEGER NOT NULL,           -- blk*.dat file number
+    file_offset INTEGER NOT NULL,           -- byte offset of block in file
+    tx_offset   INTEGER NOT NULL            -- byte offset of tx within block data
 );
 ```
 
-**Lookup:** `getrawtransaction` → query `tx_index` → read block from `block_storage_read()` → deserialize block → extract transaction at `tx_offset`.
+**Why tx_offset:** A block can contain thousands of transactions. Rather than deserializing the whole block and scanning by txid, store the byte offset of the transaction within the block's serialized form. `getrawtransaction` can then: read the block header + seek to `tx_offset` and deserialize just that transaction's bytes. This matches Bitcoin Core's `CDiskTxPos` approach (file_index + file_offset + tx_pos_in_block).
 
-**What NOT to do:** Do not use a separate flat-file index like Bitcoin Core's LevelDB approach — SQLite is already the persistence layer and adding a new table is simpler than introducing a second storage engine.
+**Population timing:** Write tx_index entries inside the block confirmation path, after `utxo_db_apply_block()` succeeds but before the SQLite transaction commits. This ensures atomicity: if the transaction commits, both UTXO state and txindex are updated together; if it rolls back, neither is updated.
 
-**Pruning interaction:** If the block containing the transaction has been pruned, the txindex entry will point to a deleted file. Either tombstone these on prune or accept that `getrawtransaction` returns not-found for pruned blocks (Bitcoin Core behavior with pruning enabled).
+**Lookup in getrawtransaction:** Query `tx_index` by txid → get `(file_index, file_offset, tx_offset)` → call `block_storage_read_tx(file_index, file_offset, tx_offset, &tx)` → serialize to hex for RPC response.
 
-**Source:** [Bitcoin Core txindex.cpp](https://github.com/bitcoin/bitcoin/blob/master/src/index/txindex.cpp), [Bitcoin Core PR Review Club](https://bitcoincore.reviews/22383) — HIGH confidence
+**Pruning interaction:** If a block is pruned (`BLOCK_STATUS_PRUNED` set), the tx_index entry for its transactions points to a deleted blk*.dat file. Bitcoin Core behavior: `getrawtransaction` returns "No such mempool or blockchain transaction" for pruned transactions even if the txindex entry exists. Echo should do the same: check `BLOCK_STATUS_PRUNED` before serving.
 
----
+**What NOT to do:** Do not create a separate SQLite database file for the tx_index. Adding a table to the existing `block_index.db` is simpler and keeps the transaction scope the same for the confirmation path. Do not use a flat-file hash map — SQLite with a `PRIMARY KEY` index is fast enough and already present.
 
-#### `getblocktemplate` Completion (BIP-22 + BIP-145)
-
-**What's already done:** Transaction selection from mempool (`mempool_select_for_block()`), basic block header fields, version bits.
-
-**What's missing:**
-1. **MTP (Median Time Past):** `mintime` field must be `MTP + 1`. Query the last 11 blocks' timestamps from the block index, sort them, return the median. Already identified as a bug in `getblockchaininfo` — fix both together.
-2. **Witness commitment:** For SegWit blocks (height >= 481824 on mainnet), the coinbase must include an `OP_RETURN` output with the witness commitment: `SHA256d(witness_merkle_root || coinbase_witness_nonce)`. BIP-145 requires `getblocktemplate` to return a `default_witness_commitment` field. The `coinbase_params_t` struct already has `include_witness_commitment` and `witness_commitment` fields.
-3. **Witness merkle root:** Compute the witness merkle tree (using wtxids instead of txids, with the coinbase wtxid = all zeros). This is required to populate the witness commitment.
-4. **`sigoplimit` and `sizelimit`:** Return the maximum signature operations and block weight limits so miners know the constraints.
-
-**BIP-145 requirement:** Return `"rules": ["segwit"]` in the template to indicate SegWit support. Miners that don't support SegWit will ignore this field; miners that do will use the witness commitment.
-
-**Source:** [BIP-22](https://github.com/bitcoin/bips/blob/master/bip-0022.mediawiki), [BIP-145](https://bips.dev/145/) — HIGH confidence
+**Source:** [Bitcoin Core txindex.cpp (CDiskTxPos)](https://github.com/bitcoin/bitcoin/blob/master/src/index/txindex.cpp) — HIGH confidence
 
 ---
 
-### Development Tools
+### Feature 5: RPC getblock verbosity=0 (RPC-03)
 
-| Tool | Purpose | Notes |
-|------|---------|-------|
-| clang-tidy (cert-*, bugprone-*, misc-*, portability-*, readability-*) | Static analysis | Already configured. Must pass zero warnings. |
-| AddressSanitizer + LeakSanitizer | Memory safety | Already in CI. Run on all new code. |
-| Custom test runner (`test/run_all_tests.sh`) | Unit test execution | Already 40+ test executables. Add Taproot vectors. |
-| BIP-342 test vectors | Tapscript validation correctness | Available in the BIP repository and in Bitcoin Core's test suite (`src/test/data/script_tests.json`). Must pass all. |
+**Integration point:** `src/app/rpc.c:1781-1785` — the `if (verbosity == 0)` branch has a TODO.
+
+**What to do:**
+1. Look up `block_index_entry_t` as already done above the branch.
+2. Call `block_storage_read()` with `entry.data_file`, `entry.data_pos`.
+3. Serialize block to bytes via the protocol serialization path.
+4. Hex-encode bytes into the JSON builder with `json_builder_hex()`.
+
+**Buffer size:** Max block size is 4MB (1MB base + witness scaling). Allocate on heap, not stack. Use `RPC_MAX_RESPONSE_SIZE = 16MB` as the ceiling — a hex-encoded 4MB block is 8MB, well within limit.
+
+**mediantime field:** Also in `getblock` verbosity=1 response at `rpc.c:1814` — currently returns `index->timestamp` (incorrect, just the block time). Must be replaced with MTP calculation (see Feature 6 below).
+
+---
+
+### Feature 6: Median Time Past (MTP) for mediantime and getblocktemplate (RPC-04)
+
+**What MTP is:** The median of the last 11 block timestamps on the best chain (not the 11 most recent block times — the 11 blocks preceding the current block). Used as `mintime` in `getblocktemplate` (miners cannot produce a block with `nTime <= MTP`) and returned as `mediantime` in `getblockchaininfo` and `getblock`.
+
+**Integration point:** `src/app/rpc.c:1661-1662` (`getblockchaininfo`) and `rpc.c:1814-1815` (`getblock`) both have `/* TODO: implement MTP query */`.
+
+**Implementation:**
+```c
+/* Collect timestamps of last min(11, height+1) blocks */
+uint32_t timestamps[11];
+size_t count = 0;
+for (uint32_t h = height; h > 0 && count < 11; h--, count++) {
+    block_index_entry_t entry;
+    block_index_db_get_chain_block(bdb, h, &entry);
+    timestamps[count] = entry.header.timestamp;
+}
+/* Sort and return median */
+qsort(timestamps, count, sizeof(uint32_t), cmp_uint32);
+uint32_t mtp = timestamps[count / 2];
+```
+
+**Where to put it:** Add `block_index_db_get_mtp(block_index_db_t *bdb, uint32_t height, uint32_t *mtp_out)` to `block_index_db.h`/`.c`. Call from both RPC handlers and from `getblocktemplate`. The query is 11 SQLite lookups — cheap.
+
+**getblocktemplate `mintime`:** Must be `MTP + 1`. This is a consensus rule enforced by Bitcoin Core — a block with `nTime <= MTP` is invalid. The `block_template_t` struct in `mining.h` already has a `mintime` field.
+
+**Source:** [BIP-22 getblocktemplate](https://github.com/bitcoin/bips/blob/master/bip-0022.mediawiki), [BIP-145](https://bips.dev/145/), Bitcoin Core `GetMedianTimePast()` — HIGH confidence
+
+---
+
+### Feature 7: getblocktemplate Witness Commitment (RPC-05)
+
+**What's missing:** `getblocktemplate` currently selects transactions from the mempool (working) but does not compute the witness commitment (required for the coinbase OP_RETURN output) or return `"default_witness_commitment"` in the JSON.
+
+**Witness merkle root computation:**
+1. Assign coinbase a wtxid of `0x00...00` (32 zero bytes) — defined by BIP-141.
+2. For each non-coinbase transaction, use its wtxid (`mempool_entry_t.wtxid`).
+3. Build a merkle tree over these wtxids using the same double-SHA256 algorithm as `merkle_compute_root()`.
+4. The result is the witness merkle root.
+
+**Witness commitment:**
+```c
+/* coinbase_witness_nonce is 32 zero bytes (default) */
+uint8_t nonce[32] = {0};
+/* witness_commitment = SHA256d(witness_merkle_root || nonce) */
+uint8_t commitment_preimage[64];
+memcpy(commitment_preimage, witness_merkle_root.bytes, 32);
+memcpy(commitment_preimage + 32, nonce, 32);
+sha256d(commitment_preimage, 64, commitment.bytes);
+```
+
+**Coinbase OP_RETURN output:** The coinbase transaction (constructed by the miner) must include:
+```
+OP_RETURN OP_PUSH36 0xaa21a9ed <32-byte commitment>
+```
+The header `0xaa21a9ed` is the witness commitment magic (BIP-141). `coinbase_params_t` already has `include_witness_commitment` and `witness_commitment` fields — wire them.
+
+**JSON response field:** Return as `"default_witness_commitment": "<hex>"` in the getblocktemplate JSON. Also return `"rules": ["segwit"]` to declare SegWit capability.
+
+**Source:** [BIP-141](https://github.com/bitcoin/bips/blob/master/bip-0141.mediawiki#commitment-structure), [BIP-145](https://bips.dev/145/) — HIGH confidence
 
 ---
 
 ## Alternatives Considered
 
-| Recommended | Alternative | When to Use Alternative |
-|-------------|-------------|-------------------------|
-| SQLite for txindex | Separate flat-file hash → offset map | If SQLite proves too slow for txindex lookups (unlikely with indexed column). Benchmark first. |
-| Individual Schnorr verify per OP_CHECKSIGADD call | Batch verify all sigs in one call | Batch verify does NOT exist in the vendored libsecp256k1 public API (`secp256k1_schnorrsig.h`). Would require using internal APIs or vendoring a different library. Not permitted. Individual verify is correct per BIP-342. |
-| In-memory delta for reorg undo | rev*.dat files like Bitcoin Core | Echo's delta system is already designed and partially implemented. Completing it is less work than implementing a separate undo file format. Rev*.dat is only needed if reorg depth exceeds `DELTA_REORG_DEPTH = 550`, which is not a realistic concern. |
-| RBF-only replacement (BIP-125) | Full-RBF (replace any transaction regardless of signal) | Full-RBF is controversial and not required for P2P compatibility. Stick to BIP-125 signaled RBF. |
+| Recommended | Alternative | Why Not |
+|-------------|-------------|---------|
+| SQLite `tx_index` table in existing block_index.db | Separate `txindex.db` file | Two databases require coordinated transactions across files. SQLite cannot atomically commit across separate database files without WAL tricks. Single database keeps confirmation atomicity clean. |
+| tx_offset within block for tx lookup | Re-scan block by txid on every getrawtransaction | Scanning a 1MB+ block for one transaction is wasteful, especially post-SegWit where blocks can be 4MB. Offset lookup is O(1) disk seek. |
+| Opt-in RBF only (BIP-125 signal required) | Full-RBF (allow replacing non-signaling txs) | Full-RBF (`-mempoolfullrbf`) is a Bitcoin Core v24.0+ option with ongoing ecosystem debate. BIP-125 opt-in is the safe, compatible baseline. The milestone says "BIP-125 full-RBF" meaning all 5 rules, not unrestricted replacement. |
+| MTP via 11-block SQLite lookups | Caching MTP in node state | Cache adds complexity and invalidation risk. 11 lookups is negligible overhead. Add cache later if profiling shows it matters. |
+| Read block from blk*.dat for getblock verbosity=0 | Re-serialize block from memory | Echo's in-memory chainstate does not keep full block data; it only keeps the index. The blk*.dat files are the source of truth. |
 
 ---
 
@@ -192,71 +239,71 @@ CREATE TABLE tx_index (
 
 | Avoid | Why | Use Instead |
 |-------|-----|-------------|
-| Any new external library | Violates project manifesto; breaks pure C11 + stdlib constraint | Implement in pure C11 or use existing vendored libs |
-| `secp256k1_schnorrsig_verify` batch variant | Does not exist in the public libsecp256k1 API as of 2026 | `secp256k1_schnorrsig_verify()` called once per signature in OP_CHECKSIGADD loop |
-| LevelDB for txindex | Would be a new external dependency | SQLite `tx_index` table in existing database |
-| BIP-152 compact blocks | Optional protocol feature; adds significant complexity for block relay; not required for peer compatibility | Standard `getdata` → `block` message flow is sufficient |
-| Bloom filters (BIP-37) | Deprecated privacy-leak vector; modern nodes disable by default | Not needed for peer compatibility; can return "not supported" |
-| `getaddr` spam | Some implementations flood peers with addr messages | Send `addr` only with own address, rate-limit peer addr relay |
+| Any new external library | Violates project manifesto | Pure C11 + existing vendored libs |
+| BIP-152 compact blocks | Optional protocol feature requiring significant extra state (mempool coordination, short ID mapping). Not required for peer compatibility. Out of scope per PROJECT.md. | Standard `getdata` → `block` message flow |
+| `secp256k1_schnorrsig_verify` batch API | Does not exist in the vendored libsecp256k1 public headers. v1.1 does not add new script validation anyway. | N/A for v1.1 |
+| `-mempoolfullrbf` semantics | Not what BIP-125 requires; breaks first-seen guarantees for wallets not opting in | BIP-125 signal-required replacement |
+| Bloom filter (BIP-37) `filterload`/`filteradd` | Privacy-leaking, deprecated, no modern nodes use it | Not needed for peer compatibility |
+| Separate block serialization buffer on stack | SegWit blocks up to 4MB; stack overflow risk | Heap allocation, explicit free |
+| LevelDB | Would be a new external dependency | SQLite already present |
 
 ---
 
 ## Stack Patterns by Feature
 
-**When implementing block serving:**
-- Use `block_index_t.data_file` and `block_index_t.data_pos` to locate the block
-- Read via `block_storage_read()` (already has mutex protection)
-- Check `BLOCK_DATA_NOT_STORED` before attempting read
-- For `INV_WITNESS_BLOCK` requests, the raw block data already contains witness transactions if it was stored with witness data
+**When advertising NODE_WITNESS:**
+- Gate on `!node->ibd_mode` — do not advertise during IBD.
+- Use `SERVICE_NODE_NETWORK | SERVICE_NODE_WITNESS` for non-pruned nodes.
+- Use `SERVICE_NODE_NETWORK_LIMITED | SERVICE_NODE_WITNESS` for pruned nodes that keep recent blocks.
+
+**When serving blocks (getdata handler):**
+- Always check `BLOCK_STATUS_HAVE_DATA` and `BLOCK_STATUS_PRUNED` before reading disk.
+- Allocate receive buffer on heap, not stack (`uint8_t *buf = malloc(MAX_BLOCK_SIZE)`).
+- If `peer_queue_message()` returns `ECHO_ERR_FULL`, send `notfound` instead of blocking.
 
 **When implementing RBF:**
-- Walk the mempool conflict graph only once per accept attempt
-- Keep a running total of evicted fees during the conflict walk (needed for rule 3)
-- Atomic: either accept the replacement and evict all conflicting descendants, or reject. No partial state.
+- Collect the full eviction set (conflict + all descendants) before checking any fee rules.
+- Apply rules in cheapest-first order: signal check → descendant count → bandwidth fee → absolute fee → new unconfirmed inputs.
+- Never mutate mempool state until all checks pass.
 
-**When implementing reorg:**
-- Delta apply and reverse must be transactional with respect to the UTXO SQLite database
-- Use SQLite `BEGIN TRANSACTION` / `COMMIT` / `ROLLBACK` to ensure UTXO changes are atomic
-- Test with a 6-block reorg scenario on regtest before marking complete
+**When computing witness commitment:**
+- Coinbase wtxid is always 32 zero bytes — do NOT hash the coinbase transaction itself.
+- The witness nonce in the coinbase witness stack is also 32 zero bytes for simple implementations.
+- `SHA256d(witness_merkle_root || witness_nonce)` = the commitment. The coinbase OP_RETURN embeds this with the `0xaa21a9ed` prefix.
 
-**When implementing chainwork storage:**
-- Store as big-endian in SQLite for correct bytewise sort ordering
-- Convert to little-endian `work256_t` when loading into memory (reverse the 32 bytes)
-- All in-memory arithmetic uses little-endian; only the SQLite stored value is big-endian
+**When writing tx_index entries:**
+- Write inside the same SQLite transaction as UTXO updates for the block.
+- Record the tx's byte offset from the start of the block's transaction data (after the 80-byte header and tx count varint).
+- On reorg (block disconnect), delete tx_index entries for disconnected block's transactions within the rollback transaction.
 
 ---
 
 ## Version Compatibility
 
-| Protocol Feature | Required Protocol Version | Notes |
-|------------------|--------------------------|-------|
-| NODE_WITNESS service flag | 70013+ | Introduced with BIP-144 / SegWit activation (2016) |
-| INV_WITNESS_BLOCK inventory type | 70013+ | Same |
-| Compact blocks (BIP-152) | 70014+ | NOT implementing; listed for awareness |
-| `sendcmpct` message | 70014+ | NOT implementing |
-| Taproot consensus rules | Any (soft fork at height 709632) | No protocol version change; validated by all nodes |
-| BIP-125 RBF | Policy only — not a protocol version | No version message signaling required |
+| Protocol Feature | Required Peer Version | Notes |
+|-----------------|----------------------|-------|
+| NODE_WITNESS | >= 70013 | Introduced with BIP-144 / SegWit (2016). All active mainnet peers are >= 70013. |
+| INV_WITNESS_BLOCK (0x40000002) | >= 70013 | Same. |
+| Compact blocks (BIP-152) | >= 70014 | NOT implementing in v1.1. |
+| getblocktemplate segwit rules | >= 70013 | "rules": ["segwit"] field per BIP-145. |
+| BIP-125 RBF | Policy only | No protocol version signaling. Any peer can send replacement transactions; mempool policy decides acceptance. |
+| tx_index | Internal only | No P2P protocol version dependency. |
 
 ---
 
 ## Sources
 
-- [BIP-340: Schnorr Signatures](https://github.com/bitcoin/bips/blob/master/bip-0340.mediawiki) — Tagged hash construction, 64-byte sig format — HIGH confidence
-- [BIP-341: Taproot](https://github.com/bitcoin/bips/blob/master/bip-0341.mediawiki) — TapTweak formula, keypath vs scriptpath — HIGH confidence
-- [BIP-342: Tapscript](https://github.com/bitcoin/bips/blob/master/bip-0342.mediawiki) — OP_CHECKSIGADD semantics, OP_SUCCESS opcodes, annex — HIGH confidence
-- [BIP-144: SegWit P2P](https://github.com/bitcoin/bips/blob/master/bip-0144.mediawiki) — NODE_WITNESS = (1<<3), MSG_WITNESS_BLOCK = 0x40000002 — HIGH confidence
-- [BIP-125: RBF](https://github.com/bitcoin/bips/blob/master/bip-0125.mediawiki) — All 5 replacement rules — HIGH confidence
-- [BIP-22: getblocktemplate](https://github.com/bitcoin/bips/blob/master/bip-0022.mediawiki) — Template fields, coinbase structure — HIGH confidence
-- [BIP-145: getblocktemplate SegWit](https://bips.dev/145/) — Witness commitment requirement — HIGH confidence
-- [developer.bitcoin.org P2P reference](https://developer.bitcoin.org/reference/p2p_networking.html) — Service flags, message types — HIGH confidence
-- [Bitcoin Core net_processing.cpp](https://github.com/bitcoin/bitcoin/blob/master/src/net_processing.cpp) — Block serving flow (ProcessGetBlockData) — HIGH confidence
-- [Bitcoin Core interpreter.cpp](https://github.com/bitcoin/bitcoin/blob/master/src/script/interpreter.cpp) — OP_CHECKSIGADD implementation — HIGH confidence
-- [Bitcoin Core txindex.cpp](https://github.com/bitcoin/bitcoin/blob/master/src/index/txindex.cpp) — CDiskTxPos structure, index write pattern — HIGH confidence
-- [Bitcoin Core miner.cpp](https://github.com/bitcoin/bitcoin/blob/master/src/node/miner.cpp) — Block template construction algorithm — HIGH confidence
-- [secp256k1_schnorrsig.h](https://github.com/bitcoin-core/secp256k1/blob/master/include/secp256k1_schnorrsig.h) — No batch verify in public API confirmed — HIGH confidence
-- [Bitcoin Wiki Data Storage](https://en.bitcoin.it/wiki/Bitcoin_Core_0.11_(ch_2):_Data_Storage) — Undo data format (rev*.dat) — MEDIUM confidence (older doc, structure unchanged)
-- [Bitcoin Optech: Compact Blocks](https://bitcoinops.org/en/topics/compact-block-relay/) — Protocol version requirements for BIP-152 — MEDIUM confidence
+- [BIP-144: SegWit P2P](https://github.com/bitcoin/bips/blob/master/bip-0144.mediawiki) — NODE_WITNESS=(1<<3), MSG_WITNESS_BLOCK=0x40000002, wire serialization with witness — HIGH confidence
+- [BIP-125: Opt-in RBF](https://github.com/bitcoin/bips/blob/master/bip-0125.mediawiki) — All 5 replacement rules, nSequence < 0xFFFFFFFE for signaling — HIGH confidence
+- [BIP-22: getblocktemplate](https://github.com/bitcoin/bips/blob/master/bip-0022.mediawiki) — Template fields, mintime = MTP+1, sigoplimit, sizelimit — HIGH confidence
+- [BIP-145: getblocktemplate SegWit update](https://bips.dev/145/) — default_witness_commitment, rules:["segwit"] — HIGH confidence
+- [BIP-141: Witness commitment structure](https://github.com/bitcoin/bips/blob/master/bip-0141.mediawiki#commitment-structure) — 0xaa21a9ed prefix, SHA256d(witness_merkle_root||nonce) — HIGH confidence
+- [developer.bitcoin.org P2P reference](https://developer.bitcoin.org/reference/p2p_networking.html) — getdata/block message flow, notfound — HIGH confidence
+- [Bitcoin Core net_processing.cpp ProcessGetBlockData()](https://github.com/bitcoin/bitcoin/blob/master/src/net_processing.cpp) — CanServeBlocks(), CanServeWitnesses(), block-serving rate limits — HIGH confidence
+- [Bitcoin Core txindex.cpp (CDiskTxPos)](https://github.com/bitcoin/bitcoin/blob/master/src/index/txindex.cpp) — file_index + file_offset + tx_pos pattern — HIGH confidence
+- Codebase audit (2026-02-21) — node.c:2786 TODO, mempool.c:799 TODO, rpc.c:1783/1662/1814/1897 TODOs, node.c:2937-2962 services=1 — HIGH confidence
 
 ---
-*Stack research for: Bitcoin full node peer compatibility*
-*Researched: 2026-02-20*
+
+*Stack research for: Bitcoin Echo v1.1 — P2P block serving, BIP-125 RBF, tx index, RPC expansion*
+*Researched: 2026-02-21*

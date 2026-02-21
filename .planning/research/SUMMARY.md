@@ -1,17 +1,17 @@
 # Project Research Summary
 
-**Project:** Bitcoin Echo — Peer Compatibility Milestone
-**Domain:** Bitcoin full node (pure C11, frozen consensus layer)
-**Researched:** 2026-02-20
+**Project:** Bitcoin Echo v1.1 — Network Participant Milestone
+**Domain:** Bitcoin full node (P2P block serving, BIP-125 RBF mempool, transaction index, RPC expansion)
+**Researched:** 2026-02-21
 **Confidence:** HIGH
 
 ## Executive Summary
 
-Bitcoin Echo is a pure C11 Bitcoin full node with a frozen consensus layer and a rigid no-external-libraries constraint. This milestone is not a greenfield build — it is completing a partially implemented node to reach genuine peer network participation. All technology choices are already fixed (C11 + vendored libsecp256k1 + vendored SQLite); the research is a protocol specification reference, not a stack selection exercise. The node currently syncs headers and downloads blocks but cannot serve blocks to peers, cannot handle chain reorganizations, and rejects valid Taproot multisig transactions. These are not minor gaps: without them the node is a network parasite that downloads but never contributes, diverges from consensus on roughly 15-20% of modern transactions, and corrupts its own UTXO set on any reorg.
+Bitcoin Echo v1.1 transforms an IBD-complete full node into a genuine network participant. v1.0 delivered all consensus, UTXO management, chain reorg, and IBD infrastructure — 1098/1098 tests passing. What remains is three categories of work: (1) P2P block serving — the node must respond to `getdata` requests from peers or be evicted from the network; (2) mempool policy — BIP-125 full-RBF rules must be implemented or Echo's mempool diverges from the rest of the network and miners lose fee revenue; (3) RPC completeness — `getrawtransaction`, `getblock`, `getblocktemplate`, and `getblockchaininfo` all have critical stubs returning zero or empty responses, breaking all standard tooling.
 
-The recommended approach proceeds in four strict phases driven by dependency order. Phase 1 fixes foundational bugs that block all subsequent work: async storage races, correct block hashes in validation, chainwork endianness, and fault logging infrastructure. Phase 2 completes consensus correctness in isolation: Tapscript OP_CHECKSIGADD and full chainstate reorg with UTXO undo. Phase 3 activates network participation: NODE_WITNESS service flag, block serving, and BIP-125 RBF. Phase 4 adds operator-facing RPC capabilities: transaction index, getrawtransaction, getblock hex, mediantime, and getblocktemplate. This ordering is non-negotiable — later phases depend on Phase 1 infrastructure, and incorrect chainwork storage (a Phase 1 item) silently breaks reorg logic in Phase 2.
+The recommended approach is a strict dependency-ordered build sequence with P2P block serving first, followed by parallel-safe storage and mempool work, then the RPC layer on top. All implementation is in pure C11 against existing vendored dependencies — no new libraries, no new database files (the tx index goes in the existing `block_index.db`). The codebase already has the data structures, constants, and stub hooks; every feature is a matter of filling in documented TODOs with precise, protocol-correct implementations at known file and line references.
 
-The primary risks are three silent correctness bugs that have no obvious failure signal during IBD on the main chain: (1) chainwork stored little-endian sorts forks incorrectly but only manifests during actual reorgs, (2) the reorg path emits events without invoking UTXO undo, leaving chainstate corrupted after any fork, and (3) OP_CHECKSIGADD currently returns SCRIPT_ERR_BAD_OPCODE, causing the node to reject every Taproot multisig transaction silently during validation. All three must be fixed before mainnet steady-state operation. The mitigation is the phase order itself — Phase 1 and 2 are pure correctness work with no user-visible features, removing the temptation to skip them.
+The dominant risk is correctness, not complexity. Each feature has a known "looks done but isn't" failure mode: wrong serialization format for block serving, absolute-fee confusion for BIP-125 Rule 3, txindex stale entries after chain reorg, and wtxid-vs-txid confusion in the witness commitment computation. These mistakes are non-obvious, silently pass basic tests, and produce hard-to-debug peer disconnections or invalid blocks in production. The mitigation is targeted test vectors for each edge case before marking any feature complete.
 
 ---
 
@@ -19,154 +19,119 @@ The primary risks are three silent correctness bugs that have no obvious failure
 
 ### Recommended Stack
 
-The stack is frozen and non-negotiable per project manifesto: pure C11, vendored libsecp256k1, vendored SQLite, POSIX sockets and pthreads. No new external libraries are permitted under any circumstances. Every "stack decision" in this milestone is a protocol implementation decision: which BIP governs which feature, what the correct C11 approach is, and what must not be done.
+The stack is frozen at pure C11 + vendored SQLite + vendored libsecp256k1 + POSIX sockets/pthreads. No new dependencies are introduced in v1.1. Every "technology decision" in this milestone is which BIP governs the feature, how existing module boundaries connect, and what must not be done wrong.
 
 **Core technologies:**
-- Pure C11: All implementation — frozen, no debate, no exceptions
-- libsecp256k1 (vendored): Schnorr signature verification via `secp256k1_schnorrsig_verify()` — individual calls per signature; no batch verify API exists in the public header
-- SQLite 3.x (vendored): Block index, UTXO set, transaction index — WAL mode already configured; new `tx_index` table extends existing schema without introducing a second storage engine
-- POSIX sockets/pthreads: TCP networking and threading — already in use, no changes needed
+- **Pure C11** — frozen project requirement; all implementation language; no exceptions
+- **SQLite (vendored, in-tree amalgamation)** — extended with a `tx_index` table in the existing `block_index.db`; WAL mode and mutex already in place; no second database file needed or acceptable
+- **POSIX sockets / pthreads** — already used for P2P; `relay.c` rate limiting applies to block serving without replication in `node.c`
+- **libsecp256k1 (vendored)** — no new use in v1.1; all signature verification paths complete from v1.0
 
-**Critical version requirements:**
-- libsecp256k1 must expose `ENABLE_MODULE_SCHNORRSIG` (already vendored with this flag)
-- Protocol version 70013+ required for NODE_WITNESS / BIP-144 compatibility — Echo already negotiates at this version
+**Protocol specifications governing new work:**
+- BIP-144: NODE_WITNESS service flag (bit 3), INV_WITNESS_BLOCK inventory type (0x40000002)
+- BIP-125: All 5 opt-in RBF replacement rules (signaling, no new unconfirmed inputs, absolute fee, bandwidth fee, eviction count)
+- BIP-22 / BIP-145: `getblocktemplate` base and SegWit extension (witness commitment, `"rules": ["segwit"]`)
+- BIP-141: Witness commitment structure (SHA256d of witness merkle root + nonce, 0xaa21a9ed prefix)
+- BIP-113: Median Time Past definition (median of previous 11 block timestamps)
 
 ### Expected Features
 
-The feature set divides cleanly into what the P2P network enforces (peers disconnect or ignore non-compliant nodes), what makes the node useful to operators and miners, and what belongs in later milestones.
+**Must have — table stakes (P2P citizen — node is broken without these):**
+- **Full block serving via getdata** — peers that cannot get blocks from Echo deprioritize and eventually drop it; `relay_handle_getdata()` stub exists, body is a TODO at `node.c:2786`
+- **INV_WITNESS_BLOCK announcements** — using the correct inventory type for witness-capable peers; announcing before block serving is complete is a protocol violation causing immediate peer disconnection
+- **BIP-125 full-RBF with all 5 rules** — Bitcoin Core made full-RBF the default in v28.0; nodes without it reject transactions the entire network accepts; `mempool.c` detects conflicts but rejects all of them via a TODO stub at line 797
 
-**Must have — table stakes (node is broken without these):**
-- NODE_WITNESS service flag (BIP-144) — without this, peers do not send witness data; SegWit and Taproot validation becomes impossible
-- OP_CHECKSIGADD / Tapscript (BIP-342) — 15-20% of mainnet transactions use Taproot; current behavior rejects all Taproot multisig as BAD_OPCODE
-- Chainstate UTXO rollback for reorgs — any reorg corrupts the UTXO set permanently without this; this is a consensus correctness requirement
-- Chainwork big-endian storage — SQLite bytewise comparison of little-endian blobs produces wrong fork selection; silently follows the wrong chain
-- Chainwork revert on reorg — after reorg, tip chainwork is stale, causing incorrect chain comparison
-- Block serving via getdata — a node that only downloads is a leech; required for real network participation
-- Download manager batch count bug fix — active production bug causing LOG_ERROR during IBD
-- Duplicate peer address detection fix — active race condition in connection setup
-- Real block hash in chaser_validate — submitting all-zeros hash breaks validation tracking integrity
+**Should have — operator useful (this milestone):**
+- **Transaction index (txindex)** — `getrawtransaction` for confirmed transactions returns NOT_FOUND without it; also blocks `getblocktemplate` from knowing the confirmed tx set
+- **RPC getblock verbosity=0** — most common `getblock` call; currently returns empty string; breaks all standard tooling and block explorers
+- **RPC getblockchaininfo mediantime** — consensus-critical field currently returns hardcoded 0; incorrect data for any application checking time-locked transactions
+- **RPC getrawtransaction (confirmed)** — directly depends on txindex; mempool lookup path already works
 
-**Should have — operator utility (degraded without these):**
-- BIP-125 RBF — full-RBF is the 2024 Bitcoin Core default; mempool diverges from network without it
-- Transaction index (txindex) + getrawtransaction — without txindex, the RPC is nearly useless for confirmed transactions
-- getblock verbosity=0 (raw hex) — standard tooling expects this
-- getblockchaininfo mediantime — always returns 0 currently; correctness bug for time-locked transactions
-- Async storage callbacks — eliminates GAP errors and decouples validation from disk I/O latency
-- Checkpoint configuration — wire `top_checkpoint` from config instead of hardcoded 0
+**Mining integration (end of milestone — blocked on all the above):**
+- **RPC getblocktemplate (BIP-22/BIP-145)** — highest complexity; requires stable mempool, txindex, and block serving; witness commitment computation (wtxid merkle root) is the hardest subproblem
+- **RPC submitblock** — ships alongside getblocktemplate; forms the complete mining workflow
 
-**Defer to next milestone:**
-- getblocktemplate (BIP-22/23) — highest complexity, depends on stable mempool, block serving, txindex, and RBF all being complete first; mining integration milestone
-- BIP-324 v2 encrypted transport — v1 fallback is guaranteed; no peer disconnects for lacking v2; separate cryptography milestone
-- BIP-152 compact block relay — optimization, not correctness; depends on block serving being stable first
-- BIP-157/158 compact block filters — completely orthogonal to peer compatibility; light client milestone
-- Wallet / key management — explicitly out of scope per project manifesto, permanently
+**Deferred — explicitly out of scope for v1.1:**
+- BIP-324 v2 encrypted transport — v1 fallback is graceful; no peer disconnects for lacking v2; significant standalone crypto project
+- BIP-152 compact block relay — optimization over full block relay; must not be built before the full block path is stable
+- getblock verbosity=1/2 (decoded JSON) — verbosity=0 hex is the table-stakes form; verbose decode deferred to GUI integration milestone
+- Mempool persistence across restarts — restart workflow is `rm -rf ~/.bitcoin-echo`; no persistence infrastructure exists
+- BIP-157/158 compact block filters — light client feature, not peer compatibility requirement
 
 ### Architecture Approach
 
-The existing four-layer architecture (App > Protocol > Consensus > Platform) is maintained unchanged. This milestone adds work within existing layers without restructuring. Three inviolable isolation rules govern all new code: (1) consensus never calls storage — OP_CHECKSIGADD is pure computation with no I/O, (2) reorg coordination lives in `chaser_confirm.c` not `chainstate.c` — the existing `chain_reorganize()` callback API enforces this boundary, and (3) block serving is an application layer concern — `node.c` reads from `blocks.c` and sends via peer infrastructure, touching no consensus code. All cross-layer communication uses the existing callback pattern (`get_block_txs_fn`, `sync_callbacks_t`, `mempool_callbacks_t`).
+The four-layer architecture (App → Protocol → Consensus → Platform, with Storage cross-cutting) is unchanged. v1.1 adds no new layers and violates no existing boundaries. New features slot into specific layers without restructuring: block serving and RPC changes are App layer (`node.c`, `rpc.c`); RBF is Protocol layer (`mempool.c`); txindex and MTP query are Storage layer (`block_index_db.c`). The Consensus layer remains frozen. Every new cross-layer call is App → Storage — no new callbacks, no new intra-layer dependencies.
 
-**Major components and their milestone responsibilities:**
-1. `src/consensus/script.c` — OP_CHECKSIGADD implementation; routes to `script_execute_tapscript()` for witness v1 scriptpath spends
-2. `src/consensus/chainstate.c` — Chainwork big-endian format fix; `block_delta_t` gets `prev_chainwork` field for revert
-3. `src/node/chaser_confirm.c` — Full reorg orchestration: `chain_reorg_create()` → `chain_reorganize()` with `node_load_block` callback; UTXO undo per reverted block
-4. `src/node/chaser_validate.c` — Real block hash retrieval from block index; checkpoint config wired from `node_config_t`
-5. `src/app/node.c` — Block serving (getdata handler); NODE_WITNESS in version message; async storage callback; duplicate address check
-6. `src/storage/block_index_db.c` — Big-endian chainwork storage; `tx_index` SQLite table for transaction lookup
-7. `src/storage/blocks.c` — Async write completion callback; block serving read path
-8. `src/protocol/mempool.c` — BIP-125 RBF: all 5 rules implemented in `mempool_accept()` when conflict detected
-9. `src/app/rpc.c` — getblock hex, getrawtransaction (confirmed), mediantime, getblocktemplate
+**Major components modified in v1.1:**
+1. **`src/app/node.c`** — Add NODE_WITNESS to services flags (lines 2937, 2961, 3329-3330); implement getdata block serving body (TODO at line 2786); use INV_WITNESS_BLOCK when requesting from witness peers (TODO at line 1779)
+2. **`src/app/rpc.c`** — Wire getblock verbosity=0 (line 1783 TODO), mediantime (line 1662 TODO), getrawtransaction confirmed (line 1897 TODO), getblocktemplate witness commitment and real MTP (partial implementation at lines 2111-2421)
+3. **`src/protocol/mempool.c`** — Implement BIP-125 replacement logic replacing TODO stub at line 797
+4. **`src/storage/block_index_db.c`** — Add `tx_index` table, `txindex_insert()`, `txindex_lookup()`, `get_median_time()` functions
+
+**Unchanged (all of):** consensus/, crypto/, platform/, chaser layers, blocks.c, utxo_db.c, peer.c, sync.c, download_mgr.c, relay.c, discovery.c, protocol_serialize.c.
 
 ### Critical Pitfalls
 
-1. **Reorg emits events without undoing UTXO state** — `chaser_confirm.c:250` calls `CHASE_REORGANIZED` but never invokes `chainstate_revert_block()`. UTXO set corrupts silently after any fork. Fix: wire `chainstate_revert_block(state, delta)` for each height from old tip down to fork point, in reverse order, inside the reorg loop. Wrap all reversals in a single SQLite transaction.
+1. **Wrong serialization for MSG_BLOCK vs MSG_WITNESS_BLOCK** — The bit-30 distinction in `inv->type` (0x40000002 vs 0x00000002) must be checked with `inv->type & 0x40000000`, not equality. Sending witness-serialized blocks to legacy peers (or vice versa) causes immediate disconnection. Prevention: branch on the bit in the getdata dispatch; test that witness fields are present in served SegWit blocks.
 
-2. **Chainwork stored little-endian breaks fork selection** — `block_index_db.c` currently uses `ORDER BY height DESC` as a workaround that only holds during linear IBD. Under a real fork, the node follows the wrong chain. Fix: store chainwork as 32-byte big-endian blob; switch the best-chain query to `ORDER BY chainwork DESC LIMIT 1`. Must be fixed before any reorg testing or the test vectors will mask the ordering bug.
+2. **BIP-125 Rule 3: absolute fee, not feerate** — The replacement's total fee must exceed the sum of all evicted transactions' absolute fees (not fee rates). Implementing this as a feerate comparison creates a free relay attack. Prevention: collect the full descendant eviction set first, sum all absolute fees, then compare totals. Test vector: original 1 tx paying 5000 sats; replacement paying 4999 sats at 10x feerate — must be rejected.
 
-3. **OP_CHECKSIGADD rejects unknown key types** — BIP-342 requires that non-32-byte, non-empty public keys are treated as unknown key types and push `n+1` (success) rather than failing. Implementing "validate if 32-byte key, fail otherwise" causes the node to reject transactions that Bitcoin Core accepts, creating a consensus split. Fix: implement the exact BIP-342 key-size branching table; test against all BIP-342 reference vectors including unknown-key-type vectors.
+3. **txindex not invalidated on chain reorg** — The tx index is an append-on-confirm structure; without an explicit DELETE-on-disconnect pass during reorg, stale entries persist pointing to non-canonical-chain transactions. Recovery requires a full index rebuild. Prevention: DELETE tx_index rows for disconnected blocks in the same SQLite transaction as the UTXO delta rollback.
 
-4. **RBF Rule 3 requires absolute fee, not just feerate** — A higher feerate with lower absolute fee is a valid RBF pinning attack. Must compute aggregate absolute fee across all replaced transactions including their descendants. Rule 5 (eviction count <= 100) requires walking the descendant graph before accepting any replacement.
+4. **Witness commitment uses txids instead of wtxids** — The witness merkle root for `getblocktemplate` must use wtxids for all non-coinbase transactions (coinbase wtxid = 32 zero bytes). Using txids produces a different hash that fails `submitblock` validation with "bad-witness-merkle-match". Prevention: confirm wtxid source from `mempool_entry_t`; acceptance test must mine a block from the template and submit it.
 
-5. **Async storage marks blocks received before disk write completes** — The async path is currently disabled (`if (false && ...)`) because the download manager marks blocks as "received" on enqueue, not on disk confirmation. This causes GAP errors and IBD stalls. Fix: implement a storage completion callback; download manager consults "durably written" flag, not "enqueued" flag. Never re-enable the async path without this callback in place.
+5. **Send queue OOM from full block copies** — `PEER_SEND_QUEUE_SIZE = 128` slots. A SegWit block can be 4 MB. Copying full block payloads into queue slots yields up to 512 MB per peer connection. Prevention: queue block handles or pointers and serialize at send time; never copy full block payloads into the message queue.
 
 ---
 
 ## Implications for Roadmap
 
-Based on combined research, the phase structure is clearly determined by hard dependencies. The ordering is not a preference — it reflects what must be true before each subsequent phase can be correctly implemented and tested.
+Based on the dependency graph in FEATURES.md and the build order in ARCHITECTURE.md, 4 phases are recommended. The ordering is non-negotiable: it reflects hard implementation dependencies, not preferences.
 
-### Phase 1: Foundation Fixes
+### Phase 1: P2P Block Serving
+**Rationale:** Block serving is the gating item for the entire milestone. Without it, Echo is a network leech — it cannot be a genuine participant and will be deprioritized by peers. INV_WITNESS_BLOCK and block serving must ship together; advertising NODE_WITNESS before the getdata handler is complete is a protocol violation (peers send `getdata MSG_WITNESS_BLOCK` and receive nothing, then penalize the node). No later phase depends on this being done first, but `getblocktemplate` explicitly requires block serving to be stable before mining integration begins.
+**Delivers:** A node that peers want to stay connected to; complete INV → GETDATA → BLOCK round trip; NODE_WITNESS correctly advertised; INV_WITNESS_BLOCK used when announcing to capable peers
+**Addresses features:** Full block serving (P2P-02), INV_WITNESS_BLOCK announcements (P2P-04), NODE_WITNESS service flag (P2P-01)
+**Avoids pitfalls:** Wrong MSG_BLOCK vs MSG_WITNESS_BLOCK serialization; NODE_WITNESS advertised before serving is ready; serving pruned blocks without notfound; send queue OOM from full block copies
+**Files touched:** `src/app/node.c` only
 
-**Rationale:** These are prerequisite blocking bugs. No later phase can be correctly implemented or meaningfully tested without them. The chainwork endianness bug silently corrupts reorg tests. Missing block hashes in chaser_validate prevent block identity tracking. The fault logging gap means Phase 2 errors are invisible. Async storage must be fixed before block serving because both use `block_file_manager_t`.
+### Phase 2: BIP-125 Full-RBF Mempool
+**Rationale:** The RBF implementation in `mempool.c` is completely isolated from P2P and storage concerns — it touches only `mempool_add()`. It can be developed in parallel with Phase 1 but is sequenced as Phase 2 because its unit tests are entirely offline and fast (no network infrastructure required), and a stable, correct mempool is prerequisite for `getblocktemplate` in Phase 4. Full-RBF is also required before `getblocktemplate` can produce accurate fee-market transaction selections.
+**Delivers:** BIP-125-compliant mempool replacement; accurate fee market for mining integration; no mempool divergence from Bitcoin Core v28+ default policy
+**Addresses features:** BIP-125 full-RBF with all 5 rules (P2P-03)
+**Avoids pitfalls:** Rule 3 absolute-fee confusion; Rule 2 new unconfirmed inputs; inherited signaling not propagated to descendants; Rule 5 descendant count exceeding 100
+**Files touched:** `src/protocol/mempool.c` only
 
-**Delivers:** A node that correctly tracks block hashes, has working fault diagnostics, has correct fork selection infrastructure, has no active production LOG_ERRORs, and has decoupled I/O from validation latency.
+### Phase 3: Storage Layer and Core RPC
+**Rationale:** The txindex and MTP query function are prerequisite for all RPC completeness work. Building storage infrastructure first lets RPC handlers be wired cleanly in a single pass without stubs. `getblock` verbosity=0 reuses the block read path established in Phase 1. `getrawtransaction` for confirmed transactions directly depends on txindex being populated. This phase can begin as soon as Phase 1 has established the block storage read path.
+**Delivers:** Transaction index (confirmed tx lookup); MTP query function reused by multiple RPC handlers; `getblock` returning real witness-serialized hex; `getblockchaininfo` returning real mediantime; `getrawtransaction` for confirmed transactions
+**Addresses features:** txindex (RPC-01), getrawtransaction confirmed (RPC-02), getblock verbosity=0 (RPC-03), getblockchaininfo mediantime (RPC-04)
+**Avoids pitfalls:** txindex not invalidated on reorg (DELETE on disconnect in same SQLite tx as UTXO rollback); txindex in a separate database file (keep in existing block_index.db for atomicity); mediantime off-by-one (median of previous 11 blocks, not including the current block, using sorted index 5 not 0 or 10)
+**Files touched:** `src/storage/block_index_db.c`, `include/block_index_db.h`, `src/app/node.c` (txindex population in `node_apply_block`), `src/app/rpc.c`
 
-**Addresses:** Download manager batch count bug, duplicate peer address race, all-zeros block hash in chaser_validate, chainwork big-endian storage fix, async storage callback (eliminating GAP errors), checkpoint config wired from `node_config_t`, chaser fault handler logging.
-
-**Avoids:** Pitfalls 2 (chainwork endianness), 6 (async storage race), 8 (batch remaining count), 9 (duplicate address race), 11 (all-zeros block hash). These are "never acceptable on mainnet" items — the technical debt table is explicit.
-
-**Research flag:** Standard patterns — no per-phase research needed. All root causes are known from codebase audit with file and line references.
-
----
-
-### Phase 2: Consensus Completeness
-
-**Rationale:** Consensus work is independent of networking and can be developed and tested in isolation using known test vectors. OP_CHECKSIGADD is contained entirely within `script.c` and `secp256k1.c` with no networking dependency. Reorg handling is the most complex single item and must be stable before block serving is activated — serving a block on a fork that later gets reorged with broken UTXO undo produces permanent chainstate corruption.
-
-**Delivers:** A node that correctly validates all Taproot multisig transactions (BIP-342 compliant) and correctly follows the longest chain through reorganizations with UTXO state consistency guaranteed.
-
-**Addresses:** OP_CHECKSIGADD / Tapscript (BIP-342), full chainstate reorg with UTXO undo, chainwork revert via `prev_chainwork` in `block_delta_t`.
-
-**Avoids:** Pitfalls 1 (reorg without UTXO undo), 3 (OP_CHECKSIGADD unknown key type handling), 7 (chainwork revert leaves stale accumulated work). Run all BIP-342 reference vectors before marking complete. Test with a synthetic 6-block reorg before marking reorg complete.
-
-**Research flag:** Standard patterns — BIP-342 and BIP-341 are fully specified. The `chain_reorganize()` API in `chainstate.c` is already designed and partially implemented; the callback pattern is established. No additional research needed.
-
----
-
-### Phase 3: Peer Network Compatibility
-
-**Rationale:** Network participation depends on Phase 1 (async storage correct, block hashes valid) and Phase 2 (reorg correct, consensus complete) being stable. NODE_WITNESS must precede block serving because advertising witness support causes peers to send `INV_WITNESS_BLOCK` instead of `INV_BLOCK`; the node must be able to serve witness-serialized blocks before advertising the capability. BIP-125 RBF is independent of block serving but belongs here because it aligns with the "becoming a real peer" theme.
-
-**Delivers:** A node that is a genuine Bitcoin network participant: advertises witness support, serves blocks to requesting peers, handles BIP-125 RBF replacements, and maintains a mempool consistent with the modern network.
-
-**Addresses:** NODE_WITNESS service flag (BIP-144), block serving via getdata handler (`INV_BLOCK` and `INV_WITNESS_BLOCK`), BIP-125 RBF with all 5 rules implemented.
-
-**Avoids:** Pitfall 5 (block serving without NODE_WITNESS drops witness data), Pitfall 4 (RBF Rule 3 absolute fee check, Rule 5 descendant limit). The mutated block state isolation pitfall (CVE-2024-52921 pattern) must also be addressed: index block download state by `(peer_id, block_hash)`, not `block_hash` alone.
-
-**Research flag:** Standard patterns — BIP-144 service flags are fully specified and already partially implemented. Block serving flow is documented in Bitcoin Core `net_processing.cpp`. RBF rules are stable and well-sourced. No additional research needed.
-
----
-
-### Phase 4: RPC and Operator Capabilities
-
-**Rationale:** RPC features depend on the storage infrastructure from Phases 1-3. Transaction index writes during block application (Phase 3 pipeline) and reads during RPC dispatch. getblock hex uses the same block read path as block serving. getblocktemplate is explicitly last — it is the most complex feature, touching mempool (Phase 3 RBF), block structure, coinbase construction, and witness commitment (BIP-141). It must be implemented only after mempool and block serving are stable.
-
-**Delivers:** A node that operators and developers can actually use: confirmed transaction lookup, raw block retrieval, correct mediantime for time-locked transaction validation, and (at the end of the phase) block template construction for mining integration.
-
-**Addresses:** Transaction index (new `tx_index` SQLite table), getrawtransaction for confirmed transactions, getblock verbosity=0 (raw hex), getblockchaininfo mediantime (query last 11 block timestamps, return median), getblocktemplate (BIP-22/23) with MTP, witness commitment, sigoplimit, and `"rules": ["segwit"]`.
-
-**Avoids:** Do not implement getblocktemplate before mempool and block serving are stable — it depends on both. Do not use a separate flat-file index for txindex — SQLite is the persistence layer; a new table is correct. The pruning interaction with txindex must be handled: return not-found for pruned blocks (Bitcoin Core behavior with pruning enabled).
-
-**Research flag:** getblocktemplate needs attention during planning — BIP-22 and BIP-145 are fully specified, but the witness commitment construction (witness merkle root with all-zero coinbase wtxid, then SHA256d with nonce) is subtle and the existing partial implementation in `rpc.c:2111` has known gaps (MTP not wired, witness commitment not constructed). Recommend treating getblocktemplate as a sub-phase within Phase 4, implemented last after all other RPC items are complete.
-
----
+### Phase 4: getblocktemplate and submitblock
+**Rationale:** The most complex feature in this milestone. Requires stable mempool (Phase 2), real MTP (Phase 3), txindex (Phase 3), and stable block serving (Phase 1) — it is genuinely last by hard dependency. The witness commitment computation (wtxid merkle root + SHA256d with the 32-byte zero nonce) is the hardest subproblem and must be tested by actually mining a block from the template and submitting it via `submitblock`. `submitblock` ships in the same phase because it is useless without the template step.
+**Delivers:** Complete mining pool integration; `getblocktemplate` fully BIP-22/BIP-145 compliant with real MTP mintime, correct witness commitment, `"rules": ["segwit"]` field; `submitblock`; Echo is usable by mining infrastructure
+**Addresses features:** getblocktemplate BIP-22/145 (RPC-05), submitblock
+**Avoids pitfalls:** Witness commitment uses txids not wtxids; commitment pre-inserted into coinbasetxn instead of returned as `default_witness_commitment` script; getblocktemplate without IBD-complete guard (must return RPC error -28 while syncing); `mintime` using wall clock approximation instead of real MTP + 1
+**Files touched:** `src/app/rpc.c`, `src/app/mining.c`
 
 ### Phase Ordering Rationale
 
-- **Foundation before consensus:** The chainwork endianness bug would cause reorg test vectors to pass with wrong behavior (correct chain selected by height, which coincidentally works on the test main chain). Async storage must be correct before block serving for correctness, not just performance.
-- **Consensus before networking:** A node that serves blocks while rejecting valid Taproot transactions is a liability on the network. Reorg correctness must precede block serving because the block serving path and reorg path share the `block_file_manager_t` — a reorg that corrupts chainstate before serving is completed produces permanently wrong state.
-- **Networking before RPC:** Transaction index is populated during block application (the networking pipeline). RPC features that depend on txindex can only be tested end-to-end after the population path is in place.
-- **Grouping rationale:** The groupings reflect natural isolation boundaries in the architecture. Phase 2 items (consensus) can be developed and unit tested without any network infrastructure. Phase 3 items (networking) require a running peer but no operator RPC tooling. This matches the existing test runner structure.
+- **Phase 1 must be first:** The node cannot test block serving, mempool, or RPC features in a realistic way while it is being deprioritized by peers. Block serving is also the only phase where the files touched (`node.c`) involve complex threading and peer state concerns.
+- **Phase 2 before Phase 4, independent of Phase 1:** RBF is isolated in `mempool.c` with no P2P or storage dependency. It is sequenced after Phase 1 to give Phase 1 time for integration testing before RBF unit tests begin in parallel. Phase 4 requires a correct mempool, so Phase 2 must complete first.
+- **Phase 3 between P2P and template:** Storage primitives (txindex, MTP) are prerequisites for every RPC handler in Phase 4. Building them before wiring the RPC handlers eliminates stubs and avoids two-pass implementation.
+- **Phase 4 is last by hard dependency:** getblocktemplate touches mempool selection (Phase 2 complete), MTP (Phase 3 complete), txindex (Phase 3 complete), and witness serialization (Phase 1 stable). There is no valid earlier position for this phase.
 
 ### Research Flags
 
-Phases likely needing deeper research during planning:
-- **Phase 4 — getblocktemplate:** The witness commitment construction requires careful sequencing (witness merkle tree with zero coinbase wtxid, then SHA256d with the nonce from the coinbase). The existing `coinbase_params_t` struct has the right fields but the population logic is unwritten. Recommend reviewing Bitcoin Core `miner.cpp` `CreateNewBlock()` and `IncrementExtraNoonce()` before implementation planning.
-- **Phase 2 — Tapscript routing verification:** The critical question is whether `script_execute_tapscript()` is correctly called for witness v1 scriptpath spends, or whether witness v1 execution falls through to the generic opcode dispatcher that returns `SCRIPT_ERR_BAD_OPCODE`. This requires reading `script_execute()` routing logic before implementation, not during.
+Phases requiring no additional research (standard patterns, well-documented, integration points identified):
+- **Phase 1 (P2P block serving):** All integration points identified in direct codebase audit. BIP-144, developer.bitcoin.org, and Bitcoin Core `net_processing.cpp` agree on the 6-step getdata handler algorithm. Both changes to `node.c` are documented TODOs with known context.
+- **Phase 2 (RBF):** BIP-125 is a final specification. All 5 rules are verbatim in the BIP. Bitcoin Core's v28+ behavior is documented. The data structures in `mempool.h` (signals_rbf, MEMPOOL_RBF_INCREMENT, MEMPOOL_MAX_REPLACEMENT_COUNT) are already correct. Implementation is algorithmic, not research-dependent.
+- **Phase 3 (Storage + Core RPC):** SQLite schema pattern matches the existing prepared-statement infrastructure in block_index_db. MTP definition is BIP-113. The block read path is the same one used by Phase 1. No ambiguity in any integration point.
 
-Phases with standard patterns (skip research-phase):
-- **Phase 1 — Foundation fixes:** All root causes are known with exact file and line numbers from the codebase audit in CONCERNS.md. Implementation is mechanical.
-- **Phase 3 — NODE_WITNESS + block serving:** Fully specified in BIP-144 and Bitcoin Core `net_processing.cpp`. The stub at `node.c:2769` already has the correct shape.
-- **Phase 3 — BIP-125 RBF:** All 5 rules are stable, well-documented, and the data structures (`mempool_entry_t.signals_rbf`, `MEMPOOL_RBF_INCREMENT`) are already in place.
+Phases needing targeted pre-implementation verification:
+- **Phase 4 (getblocktemplate):** The witness commitment field semantics (returned as a hex script in `default_witness_commitment`, NOT pre-inserted into `coinbasetxn`) and the wtxid merkle root construction (coinbase wtxid = 32 zero bytes; other txs use wtxid not txid) should be verified against BIP-145 and BIP-141 side by side before coding. The spec language is precise but easy to misread; this is the single known area where the research recommends a careful re-read before starting. Acceptance criterion: mine a real block from the template and submit it via `submitblock`.
 
 ---
 
@@ -174,48 +139,48 @@ Phases with standard patterns (skip research-phase):
 
 | Area | Confidence | Notes |
 |------|------------|-------|
-| Stack | HIGH | No decisions to make — frozen stack with explicit manifesto constraints. All protocol references (BIPs, Bitcoin Core source) are authoritative and current. |
-| Features | HIGH | Feature set derived from BIPs (HIGH confidence primary sources) and Bitcoin Core behavior (HIGH confidence source code). Taproot adoption statistics sourced from secondary/tertiary sources but the correctness requirement is BIP-derived, not statistics-dependent. |
-| Architecture | HIGH | Based on direct codebase audit — the existing layer boundaries, component responsibilities, and callback patterns are read from actual source headers. No inference required. |
-| Pitfalls | HIGH | All critical pitfalls are grounded in actual code bugs (specific file and line references), BIP specification requirements, or documented Bitcoin Core CVEs. Not speculative. |
+| Stack | HIGH | Frozen stack; all findings are "which BIP governs which feature" and "which existing module connects where". Zero ambiguity about technology choices. |
+| Features | HIGH | Grounded in final BIPs, Bitcoin Core source (merged PRs including PR #30493 for full-RBF default), and direct codebase audit with line numbers. Anti-feature list is well-reasoned with explicit deferral rationale. |
+| Architecture | HIGH | Based on direct line-level codebase audit of TODOs and stubs in node.c, mempool.c, and rpc.c. Build order derived from actual code dependency graph, not speculation. Every integration point is named. |
+| Pitfalls | HIGH | Sourced from BIP specifications, Bitcoin Core CVE disclosures (CVE-2024-52920, CVE-2021-31876), PR review discussions (PR #21946, #22698), and direct codebase audit. The "looks done but isn't" checklist has 11 specific, verifiable items. |
 
 **Overall confidence:** HIGH
 
 ### Gaps to Address
 
-- **Tapscript execution routing:** Whether `script_execute()` actually routes witness v1 scriptpath spends to `script_execute_tapscript()` vs the generic dispatcher is unconfirmed without reading `script.c` in detail. The research identifies this as "the critical gap" but cannot resolve it without a direct code read during implementation planning. Flag for Phase 2 planning.
-- **Async storage callback thread safety:** The specific callback invocation model (called from storage thread, notifying download manager) requires verifying that the download manager's block slot flags are mutex-protected or lock-free. The architecture research recommends a mutex-protected counter or per-slot lock-free flag but the correct choice depends on the download manager's existing synchronization model. Flag for Phase 1 planning.
-- **Vendored secp256k1 API surface:** The research confirms `secp256k1_schnorrsig_verify` is in the public header but the exact call signature and context initialization for the vendored version should be verified against the vendored header at `lib/secp256k1/include/secp256k1_schnorrsig.h` before Phase 2 implementation begins.
+- **Witness commitment field format in getblocktemplate:** The distinction between `default_witness_commitment` as a hex output script (correct, BIP-145) vs as a pre-built coinbase output (wrong) should be empirically verified against a live Bitcoin Core node's `getblocktemplate` response before Phase 4 begins. Known confusion point per PITFALLS.md Pitfall 9; worth 5 minutes of empirical verification before writing any code.
+
+- **Stored block serialization format on disk:** ARCHITECTURE.md states that `block_storage_read()` returns bytes already in witness format if the block was stored post-SegWit. This should be confirmed empirically by inspecting a stored block's raw bytes before Phase 3 wires `getblock` verbosity=0. If stored blocks are legacy-serialized (possible if IBD used INV_BLOCK), Phase 3 will require an explicit re-serialization step rather than pass-through.
+
+- **txindex DELETE integration point during reorg:** The correct call site for DELETE-on-disconnect is the block disconnection path in `chaser_confirm.c`. The exact function name and SQLite transaction scope must be verified in the source before implementing the reorg integration. The architecture is unambiguous; the hook needs one read of `chaser_confirm.c` before Phase 3 begins.
+
+- **Taproot hash_scriptpubkeys / hash_amounts placeholder (v1.0 tech debt):** PITFALLS.md notes this as existing tech debt that blocks full multi-input Taproot coverage on mainnet. Not a v1.1 blocker, but should be tracked and addressed in a post-v1.1 consensus audit before Echo is run against mainnet Taproot-heavy traffic.
 
 ---
 
 ## Sources
 
 ### Primary (HIGH confidence)
-- BIP-340, BIP-341, BIP-342 — Schnorr, Taproot, Tapscript specification — canonical implementation rules
-- BIP-144 — NODE_WITNESS, MSG_WITNESS_BLOCK, service flag values
-- BIP-125 — RBF signaling and all 5 replacement rules
-- BIP-22, BIP-145 — getblocktemplate core and SegWit extension
-- Bitcoin Core `net_processing.cpp` — block serving flow (`ProcessGetBlockData`)
-- Bitcoin Core `interpreter.cpp` — OP_CHECKSIGADD reference implementation
-- Bitcoin Core `txindex.cpp` — CDiskTxPos structure, index write pattern
-- Bitcoin Core `miner.cpp` — block template construction algorithm
-- Bitcoin Core `protocol.h` — ServiceFlags and InvType enum values
-- Bitcoin Core `mempool-replacements.md` — current RBF policy documentation
-- `lib/secp256k1/include/secp256k1_schnorrsig.h` (vendored) — API surface confirmed
-- `.planning/codebase/CONCERNS.md` — codebase audit with file/line references for all pitfalls
-- `.planning/codebase/ARCHITECTURE.md` — existing layer documentation
+- [BIP-144: SegWit P2P](https://github.com/bitcoin/bips/blob/master/bip-0144.mediawiki) — NODE_WITNESS flag (bit 3), INV_WITNESS_BLOCK (0x40000002), wire serialization
+- [BIP-125: Opt-in RBF](https://github.com/bitcoin/bips/blob/master/bip-0125.mediawiki) — all 5 replacement rules verbatim
+- [BIP-22: getblocktemplate](https://github.com/bitcoin/bips/blob/master/bip-0022.mediawiki) — template fields, mintime = MTP+1, sigoplimit
+- [BIP-145: getblocktemplate SegWit update](https://bips.dev/145/) — default_witness_commitment, rules:["segwit"]
+- [BIP-141: Witness commitment structure](https://github.com/bitcoin/bips/blob/master/bip-0141.mediawiki) — SHA256d(witness_merkle_root || nonce), 0xaa21a9ed prefix
+- [BIP-113: Median time-past](https://github.com/bitcoin/bips/blob/master/bip-0113.mediawiki) — MTP definition, median of previous 11 blocks
+- [Bitcoin Core txindex.cpp CDiskTxPos](https://github.com/bitcoin/bitcoin/blob/master/src/index/txindex.cpp) — file_index + file_offset + tx_pos_in_block pattern
+- [Bitcoin Core net_processing.cpp ProcessGetBlockData](https://github.com/bitcoin/bitcoin/blob/master/src/net_processing.cpp) — getdata block handler reference, CanServeBlocks(), CanServeWitnesses()
+- [Bitcoin Core CVE-2024-52920](https://bitcoincore.org/en/2024/07/03/disclose-getdata-cpu/) — getdata count validation, DoS pattern to avoid
+- [Bitcoin Core mempool-replacements.md](https://github.com/bitcoin/bitcoin/blob/master/doc/policy/mempool-replacements.md) — current policy, full-RBF default since v28
+- [Bitcoin Core PR #30493: Enable full-RBF by default](https://github.com/bitcoin/bitcoin/pull/30493) — full-RBF default confirmed for Bitcoin Core v28
+- Direct codebase audit (2026-02-21) — line-level TODOs in node.c (lines 1779, 2786, 2937), mempool.c (line 797), rpc.c (lines 1662, 1783, 1814, 1897, 2111-2421); existing constants, structs, and stubs verified in headers
 
 ### Secondary (MEDIUM confidence)
-- developer.bitcoin.org P2P reference — service flags, message types (official but not always current)
-- Bitcoin Wiki Data Storage (0.11) — undo file format for reorg (structurally accurate, older doc)
-- Bitcoin Optech RBF topic — full-RBF default in Bitcoin Core PR #30493 (2024)
-- CVE-2024-52921 disclosure — mutated block download state isolation requirement
-
-### Tertiary (LOW confidence)
-- Binance News Taproot adoption statistics (2024-2025) — 15-20% mainnet Taproot usage (secondary source; the correctness requirement is BIP-derived regardless of adoption percentage)
+- [developer.bitcoin.org P2P reference](https://developer.bitcoin.org/reference/p2p_networking.html) — getdata/block message flow, notfound behavior
+- [Bitcoin Core PR #22698: RBF inherited signaling](https://github.com/bitcoin/bitcoin/pull/22698) — correct fix for inherited signaling; confirms Core divergence from BIP-125 spec
+- [Bitcoin Core PR Review Club #22665](https://bitcoincore.reviews/22665) — BIP-125 inherited signaling implementation gap
+- [Transaction Pinning: Bitcoin Optech](https://bitcoinops.org/en/topics/transaction-pinning/) — Rule 3 and Rule 5 pinning attack vectors
+- [Bitcoin Core PR #27050: Witness blocks in prune mode](https://github.com/bitcoin/bitcoin/pull/27050) — witness serialization complexity when serving pruned-range blocks
 
 ---
-
-*Research completed: 2026-02-20*
+*Research completed: 2026-02-21*
 *Ready for roadmap: yes*
