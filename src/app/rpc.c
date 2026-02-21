@@ -1950,9 +1950,80 @@ echo_result_t rpc_getrawtransaction(node_t *node, const json_value_t *params,
     return ECHO_OK;
   }
 
-  /* Not in mempool - would need to search blocks */
-  /* TODO: Implement transaction index for confirmed txs */
-  return ECHO_ERR_NOT_FOUND;
+  /* Not in mempool — look up in transaction index (confirmed blocks) */
+  block_index_db_t *bdb = node_get_block_index_db(node);
+  hash256_t block_hash;
+  uint32_t file_index = 0;
+  uint32_t file_pos = 0;
+  echo_result_t idx_res = txindex_lookup(bdb, &txid, &block_hash, &file_index, &file_pos);
+  if (idx_res != ECHO_OK) {
+    /* txid not in index — unknown transaction */
+    return ECHO_ERR_NOT_FOUND;
+  }
+
+  /* Check if the block has been pruned before attempting disk read */
+  block_index_entry_t blk_entry;
+  idx_res = block_index_db_lookup_by_hash(bdb, &block_hash, &blk_entry);
+  if (idx_res != ECHO_OK ||
+      (blk_entry.status & BLOCK_STATUS_PRUNED) ||
+      !(blk_entry.status & BLOCK_STATUS_HAVE_DATA) ||
+      blk_entry.data_file < 0) {
+    /* Block pruned or unavailable — matches Bitcoin Core pruning behavior */
+    return ECHO_ERR_NOT_FOUND;
+  }
+
+  /* Read block from disk */
+  block_file_pos_t fpos = {
+    .file_index = file_index,
+    .file_offset = file_pos,
+  };
+  uint8_t *block_bytes = NULL;
+  uint32_t block_size = 0;
+  block_file_manager_t *mgr = node_get_block_storage(node);
+  idx_res = block_storage_read(mgr, fpos, &block_bytes, &block_size);
+  if (idx_res != ECHO_OK) {
+    return ECHO_ERR_NOT_FOUND;
+  }
+
+  /* Parse the block to find the transaction */
+  block_t parsed_block;
+  memset(&parsed_block, 0, sizeof(parsed_block));
+  idx_res = block_parse(block_bytes, block_size, &parsed_block, NULL);
+  free(block_bytes);
+  if (idx_res != ECHO_OK) {
+    block_free(&parsed_block);
+    return ECHO_ERR_NOT_FOUND;
+  }
+
+  /* Scan transactions to find matching txid */
+  bool found = false;
+  for (size_t i = 0; i < parsed_block.tx_count; i++) {
+    hash256_t computed_txid;
+    tx_compute_txid(&parsed_block.txs[i], &computed_txid);
+    if (memcmp(computed_txid.bytes, txid.bytes, 32) == 0) {
+      /* Found — serialize and return witness-inclusive bytes */
+      size_t tx_size = tx_serialize_size(&parsed_block.txs[i], ECHO_TRUE);
+      uint8_t *tx_data = malloc(tx_size);
+      if (tx_data == NULL) {
+        block_free(&parsed_block);
+        return ECHO_ERR_OUT_OF_MEMORY;
+      }
+      size_t written;
+      idx_res = tx_serialize(&parsed_block.txs[i], ECHO_TRUE, tx_data, tx_size, &written);
+      if (idx_res != ECHO_OK) {
+        free(tx_data);
+        block_free(&parsed_block);
+        return idx_res;
+      }
+      json_builder_hex(builder, tx_data, written);
+      free(tx_data);
+      found = true;
+      break;
+    }
+  }
+
+  block_free(&parsed_block);
+  return found ? ECHO_OK : ECHO_ERR_NOT_FOUND;
 }
 
 /**
