@@ -3260,7 +3260,33 @@ echo_result_t node_maintenance(node_t *node) {
       break;
     }
 
-    /* Mark in-use IMMEDIATELY to prevent selecting same address in next loop iteration */
+    /* Check for duplicate address BEFORE marking in-use. This eliminates the
+     * TOCTOU window where in_use was freed (peer disconnect) but peer state
+     * hasn't transitioned to DISCONNECTED yet. */
+    char ip_str[64];
+    snprintf(ip_str, sizeof(ip_str), "%d.%d.%d.%d", addr.ip[12],
+             addr.ip[13], addr.ip[14], addr.ip[15]);
+
+    bool duplicate_addr = false;
+    for (size_t j = 0; j < NODE_MAX_PEERS; j++) {
+      peer_t *other = &node->peers[j];
+      if (other->state != PEER_STATE_DISCONNECTED &&
+          other->port == addr.port &&
+          strcmp(other->address, ip_str) == 0) {
+        log_debug(LOG_COMP_NET,
+                  "Skipping duplicate address %s:%u (peer %zu in state %d)",
+                  ip_str, addr.port, j, other->state);
+        duplicate_addr = true;
+        break;
+      }
+    }
+
+    if (duplicate_addr) {
+      continue; /* Skip — no in_use mark was set, nothing to release */
+    }
+
+    /* Mark in-use AFTER duplicate check passes — no window between check
+     * and mark within this single-threaded event loop iteration. */
     discovery_mark_address_in_use(&node->addr_manager, &addr);
 
     /* Find empty slot (must be DISCONNECTED, not CONNECTING) */
@@ -3270,39 +3296,10 @@ echo_result_t node_maintenance(node_t *node) {
       if (peer->state == PEER_STATE_DISCONNECTED) {
         found_slot = true;
 
-        /* Convert IPv4-mapped IPv6 address to string */
-        char ip_str[64];
-        snprintf(ip_str, sizeof(ip_str), "%d.%d.%d.%d", addr.ip[12],
-                 addr.ip[13], addr.ip[14], addr.ip[15]);
-
-        /* Defensive check: ensure no other peer is already connecting/connected
-         * to this address. This should never happen if in_use marking works
-         * correctly, but helps diagnose if duplicate connections occur. */
-        bool duplicate_addr = false;
-        for (size_t j = 0; j < NODE_MAX_PEERS; j++) {
-          peer_t *other = &node->peers[j];
-          if (other->state != PEER_STATE_DISCONNECTED &&
-              other->port == addr.port &&
-              strcmp(other->address, ip_str) == 0) {
-            log_warn(LOG_COMP_NET,
-                     "BUG: Duplicate address %s:%u (peer %zu in state %d)",
-                     ip_str, addr.port, j, other->state);
-            duplicate_addr = true;
-            break;
-          }
-        }
-
-        if (duplicate_addr) {
-          /* Release address and skip - don't create duplicate connection */
-          discovery_mark_address_free(&node->addr_manager, &addr, ECHO_FALSE);
-          found_slot = false;
-          break;
-        }
-
         log_info(LOG_COMP_NET, "Attempting outbound connection to %s:%u",
                  ip_str, addr.port);
 
-        /* Record attempt (in_use already marked after select) */
+        /* Record attempt */
         discovery_mark_attempt(&node->addr_manager, &addr);
 
         uint64_t nonce = generate_nonce();
