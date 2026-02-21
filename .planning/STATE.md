@@ -10,31 +10,32 @@ See: .planning/PROJECT.md (updated 2026-02-20)
 ## Current Position
 
 Phase: 1 of 4 (Foundation Fixes)
-Plan: 4 of 7 in current phase
-Status: In progress
-Last activity: 2026-02-21 — Plan 01-04 complete: flush-before-index ordering in block storage
+Plan: 7 of 7 in current phase (COMPLETE)
+Status: Phase 1 complete — ready for Phase 2
+Last activity: 2026-02-20 — Plan 01-07 complete: peer eviction test suite
 
-Progress: [█░░░░░░░░░] 14%
+Progress: [██░░░░░░░░] 25%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 4
-- Average duration: ~7 min
-- Total execution time: ~26 min
+- Total plans completed: 7
+- Average duration: ~9 min
+- Total execution time: ~41 min
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
-| 01-foundation-fixes | 4 | ~26 min | ~6.5 min |
+| 01-foundation-fixes | 7 | ~41 min | ~6 min |
 
 **Recent Trend:**
-- Last 5 plans: 01-01 (~5 min), 01-02 (5 min), 01-03 (9 min), 01-04 (4 min)
-- Trend: Stable ~5-9 min/plan
+- Last 5 plans: 01-03 (~9 min), 01-04 (4 min), 01-05 (8 min), 01-06 (6 min), 01-07 (15 min)
+- Trend: Stable ~5-15 min/plan
 
 *Updated after each plan completion*
 | Phase 01 P05 | 8 | 1 tasks | 2 files |
+| Phase 01 P07 | 15 | 1 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -50,6 +51,8 @@ Recent decisions affecting current work:
 - [01-04]: fflush() not fsync() — fflush pushes to OS page cache (one write(2) syscall); fsync would flush to physical media and kill IBD throughput
 - [Phase 01]: DOWNLOAD_MIN_RATE_BYTES_PER_SEC set to 1024 (1 KB/s) — conservative threshold based on Bitcoin Core nMinExpectedRate behavior; 3072 was arbitrary
 - [Phase 01]: All routine eviction events use LOG_DEBUG only — invisible during normal IBD, available for diagnostics
+- [01-07]: download_mgr_inject_peer_rate() always sets has_reported=true even for zero-rate stalled peers — stalled peer IS a reporter (used to deliver, stopped), distinct from warming-up peer (never delivered)
+- [01-07]: Test injection API is a proper public function (not #ifdef-guarded) with "FOR UNIT TESTS ONLY" doc comment — simpler and more honest than preprocessor-conditional builds
 
 ### Pending Todos
 
@@ -63,6 +66,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-02-21
-Stopped at: Completed 01-04-PLAN.md (flush-before-index block storage ordering)
+Last session: 2026-02-20
+Stopped at: Completed 01-07-PLAN.md (peer eviction test suite — Phase 1 complete)
 Resume file: None
