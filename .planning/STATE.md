@@ -9,10 +9,10 @@ See: .planning/PROJECT.md (updated 2026-02-21)
 
 ## Current Position
 
-Phase: 4 of 6 for v1.1 (BIP-125 Full-RBF Mempool) — COMPLETE
-Plan: 2 of 2 in phase 04 (plan 04-02 complete)
-Status: Phase 4 complete, ready for Phase 5
-Last activity: 2026-02-21 — Plan 04-02 complete (BIP-125 RBF test coverage: all 5 rules, 33/33 tests pass)
+Phase: 5 of 6 for v1.1 (Storage Layer and Core RPC) — IN PROGRESS
+Plan: 1 of 2 in phase 05 (plan 05-01 complete)
+Status: Plan 05-01 complete, executing plan 05-02
+Last activity: 2026-02-21 — Plan 05-01 complete (tx_index table + population/deletion hooks in apply/reorg paths)
 
 Progress: [██████░░░░] 50% (v1.0: phases 1-2 complete; v1.1: phases 3-4 complete, phases 5-6 remaining)
 
@@ -73,6 +73,6 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-21
-Stopped at: Plan 04-02 complete — BIP-125 RBF test coverage (8 test functions, all 5 rules, 33/33 tests pass)
+Stopped at: Plan 05-01 complete — tx_index table with CRUD functions and apply/reorg hooks
 Resume file: None
-Next action: /gsd:execute-phase 05 01
+Next action: Continue executing plan 05-02
