@@ -77,7 +77,7 @@ Plans:
   1. getrawtransaction called with a confirmed txid returns the raw hex-encoded transaction — calls for txids in pruned blocks return not-found, matching Bitcoin Core pruning behavior
   2. getblock called with a block hash and verbosity=0 returns the raw witness-serialized hex for that block
   3. getblockchaininfo returns a mediantime that equals the median of the previous 11 block timestamps at the current chain tip — it does not return 0
-  4. After a chain reorganization, getrawtransaction for a transaction in a disconnected block returns not-found — stale txindex entries from the reorg are removed in the same SQLite transaction as the UTXO delta rollback
+  4. After a chain reorganization, getrawtransaction for a transaction in a disconnected block returns not-found — stale txindex entries are deleted from blocks.db before the in-memory UTXO revert (chainstate_revert_block operates on the in-memory UTXO set, not SQLite, so cross-database atomicity does not apply; crash recovery rebuilds from the last persisted state)
 **Plans**: 2 plans
 
 Plans:
