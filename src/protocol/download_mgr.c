@@ -103,6 +103,24 @@ static batch_node_t *batch_node_clone(const batch_node_t *src) {
    * Keep sticky_height to mark this as a sticky clone (for inflight counting). */
   node->batch.sticky = false;
   /* sticky_height preserved from source - non-zero marks this as a sticky clone */
+
+  /* Recalculate remaining to match the inherited received[] bitmap.
+   *
+   * The source batch's remaining was decremented as blocks arrived. The clone
+   * inherits the bitmap state via memcpy, so remaining must equal the number
+   * of false entries in received[] — not the original's remaining field.
+   *
+   * Without this, the safety check in peer_request_work() fires a spurious
+   * LOG_ERROR when the clone's peer finishes: remaining==0 but received[] has
+   * some entries already true (from the original peer's deliveries). */
+  size_t count = 0;
+  for (size_t i = 0; i < node->batch.count; i++) {
+    if (!node->batch.received[i]) {
+      count++;
+    }
+  }
+  node->batch.remaining = count;
+
   /* Reset link pointers */
   node->next = NULL;
   node->prev = NULL;
@@ -594,10 +612,13 @@ bool download_mgr_peer_request_work(download_mgr_t *mgr, peer_t *peer) {
       }
     }
     if (unreceived > 0 && old_node->batch.remaining == 0) {
-      /* BUG: remaining hit 0 but blocks missing! Return to queue instead */
-      LOG_ERROR("download_mgr: BUG - batch [%u-%u] has remaining=0 but %zu "
-                "blocks unreceived! Returning to queue.",
-                old_start, old_end, unreceived);
+      /* Defense-in-depth: remaining hit 0 but received[] says blocks missing.
+       * batch_node_clone() now recalculates remaining from received[] on clone,
+       * so this should never fire in normal operation. Keep as LOG_WARN so it
+       * remains visible if triggered by an unexpected code path. */
+      LOG_WARN("download_mgr: remaining=0 but %zu blocks unreceived in batch "
+               "[%u-%u] — returning to queue (should not happen after clone fix)",
+               unreceived, old_start, old_end);
       old_node->batch.remaining = unreceived; /* Fix the count */
       old_node->batch.assigned_time = 0;
       perf->batch = NULL;
