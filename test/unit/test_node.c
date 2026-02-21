@@ -681,6 +681,9 @@ static void storage_chain_restoration(void) {
   genesis_entry.header.nonce = 2083236893;
   memset(genesis_entry.hash.bytes, 0, 32);
   genesis_entry.hash.bytes[0] = 0x01;
+  /* Set high chainwork so this entry wins ORDER BY chainwork DESC over
+   * the real genesis block that node_create() inserts. */
+  genesis_entry.chainwork.bytes[31] = 0xFF;
   genesis_entry.status = BLOCK_STATUS_VALID_HEADER | BLOCK_STATUS_VALID_CHAIN;
 
   echo_result_t result = block_index_db_insert(bdb1, &genesis_entry);
