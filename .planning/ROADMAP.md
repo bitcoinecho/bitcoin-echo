@@ -13,7 +13,7 @@ Four phases ordered by hard dependency. Phase 1 eliminates active bugs and infra
 Decimal phases appear between their surrounding integers in numeric order.
 
 - [ ] **Phase 1: Foundation Fixes** - Eliminate active bugs and infrastructure gaps that block all subsequent work
-- [ ] **Phase 2: Consensus Completeness** - Implement OP_CHECKSIGADD and full UTXO rollback for correct chainstate
+- [x] **Phase 2: Consensus Completeness** - Implement OP_CHECKSIGADD and full UTXO rollback for correct chainstate (completed 2026-02-21)
 - [ ] **Phase 3: Peer Network Compatibility** - Advertise witness support, serve blocks, and enforce full-RBF
 - [ ] **Phase 4: RPC and Operator Capabilities** - Transaction index, block retrieval, mediantime, and block templates
 
@@ -49,7 +49,7 @@ Plans:
   2. Node passes all BIP-342 Tapscript reference test vectors without failures, including the unknown-key-type vectors
   3. After a synthetic 6-block chain reorganization, the node's UTXO set matches the expected state for the new chain — no outputs from the orphaned chain remain, all outputs from the winning chain are present
   4. After a reorg, the tip's chainwork value in the block index reflects the winning chain's accumulated work, not the orphaned chain's stale value
-**Plans:** 1/3 plans executed
+**Plans:** 3/3 plans complete
 
 Plans:
 - [ ] 02-01-PLAN.md — Fix OP_CHECKSIGADD BIP-342 unknown key type handling + Tapscript test suite (CONS-01, CONS-05, TEST-04)
@@ -100,6 +100,6 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Foundation Fixes | 0/7 | Not started | - |
-| 2. Consensus Completeness | 1/3 | In Progress|  |
+| 2. Consensus Completeness | 3/3 | Complete   | 2026-02-21 |
 | 3. Peer Network Compatibility | 0/5 | Not started | - |
 | 4. RPC and Operator Capabilities | 0/5 | Not started | - |

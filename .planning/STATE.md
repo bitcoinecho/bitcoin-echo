@@ -10,11 +10,11 @@ See: .planning/PROJECT.md (updated 2026-02-20)
 ## Current Position
 
 Phase: 2 of 4 (Consensus Completeness)
-Plan: 2 of 3 in current phase
-Status: Phase 2 in progress — Plan 02-02 complete
-Last activity: 2026-02-21 — Plan 02-02 complete: prev_chainwork and UTXO rollback wiring
+Plan: 3 of 3 in current phase (PHASE COMPLETE)
+Status: Phase 2 complete — all 3 plans done
+Last activity: 2026-02-21 — Plan 02-03 complete: chain reorg test suite (3 scenarios, 1098 tests pass)
 
-Progress: [███░░░░░░░] 37%
+Progress: [█████░░░░░] 50%
 
 ## Performance Metrics
 
@@ -28,16 +28,17 @@ Progress: [███░░░░░░░] 37%
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
 | 01-foundation-fixes | 7 | ~41 min | ~6 min |
-| 02-consensus-completeness | 2 | ~25 min | ~12 min |
+| 02-consensus-completeness | 3 | ~41 min | ~14 min |
 
 **Recent Trend:**
-- Last 5 plans: 01-05 (8 min), 01-06 (6 min), 01-07 (15 min), 02-01 (~0 min research), 02-02 (25 min)
+- Last 5 plans: 01-07 (15 min), 02-01 (~0 min research), 02-02 (25 min), 02-03 (16 min)
 - Trend: Stable ~5-25 min/plan
 
 *Updated after each plan completion*
 | Phase 01 P05 | 8 | 1 tasks | 2 files |
 | Phase 01 P07 | 15 | 1 tasks | 3 files |
 | Phase 02 P02 | 25 | 2 tasks | 6 files |
+| Phase 02 P03 | 16 | 1 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -60,6 +61,8 @@ Recent decisions affecting current work:
 - [Phase 02]: Chainstate owns deltas in state->deltas[]; delta_out parameter is a borrowed (non-owning) reference — callers must not free it
 - [Phase 02]: [02-02]: consensus.c apply path now requests deltas (changed NULL to &delta_borrow) enabling reorg rollback for blocks confirmed via normal path
 - [Phase 02]: [02-02]: chaser_confirm_reorganize gracefully skips UTXO rollback when chainstate is NULL (test/early-init paths)
+- [Phase 02]: [02-03]: chain_reorganize used nonce=0 in minimal connect-phase headers, causing hash mismatch for multi-block connects — fixed by patching state->tip.hash, height_index, and delta->block_hash from to_connect->hash after each apply
+- [Phase 02]: [02-03]: block_index_t does not store nonce — authoritative block hash must come from block_index_t->hash, not from re-hashing a reconstructed header
 
 ### Pending Todos
 
@@ -74,5 +77,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-02-21
-Stopped at: Completed 02-02-PLAN.md (prev_chainwork field + UTXO rollback in chaser_confirm_reorganize)
+Stopped at: Completed 02-03-PLAN.md (chain reorg test suite — 3 scenarios, chain_reorganize bug fix)
 Resume file: None

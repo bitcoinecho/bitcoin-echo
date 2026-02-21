@@ -45,7 +45,7 @@ Requirements for peer-compatible mainnet node. Each maps to roadmap phases.
 
 ### Testing
 
-- [ ] **TEST-01**: Test suite covers reorg scenarios: simple fork, deep reorg (6+ blocks), same-work competing chains
+- [x] **TEST-01**: Test suite covers reorg scenarios: simple fork, deep reorg (6+ blocks), same-work competing chains
 - [x] **TEST-02**: Test suite covers concurrent block storage reads and writes under load
 - [x] **TEST-03**: Test suite covers peer eviction with multiple slow/stalled peers
 - [ ] **TEST-04**: Test suite covers Taproot script validation using BIP-342 reference vectors
@@ -117,7 +117,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | RPC-03 | Phase 4 | Pending |
 | RPC-04 | Phase 4 | Pending |
 | RPC-05 | Phase 4 | Pending |
-| TEST-01 | Phase 2 | Pending |
+| TEST-01 | Phase 2 | Complete |
 | TEST-02 | Phase 1 | Complete |
 | TEST-03 | Phase 1 | Complete |
 | TEST-04 | Phase 2 | Pending |
