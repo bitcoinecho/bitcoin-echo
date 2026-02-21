@@ -669,6 +669,187 @@ static echo_result_t rbf_collect_eviction_set(
   return ECHO_OK;
 }
 
+/**
+ * Validate an incoming transaction as a BIP-125 RBF replacement and, if all
+ * five rules pass, atomically evict the displaced transactions.
+ *
+ * BIP-125 rules enforced (in order):
+ *
+ *   A. Build eviction set (direct conflicts + all descendants). Rule 5 is
+ *      checked here: set size must not exceed MEMPOOL_MAX_REPLACEMENT_COUNT.
+ *
+ *   B. Rule 1 — Every entry in the eviction set must signal RBF directly or
+ *      through an unconfirmed ancestor.
+ *      Reject: MEMPOOL_REJECT_CONFLICT
+ *
+ *   C. Rule 2 — The replacement must not introduce new unconfirmed inputs
+ *      (inputs whose parent is in the mempool but NOT in the eviction set).
+ *      Reject: MEMPOOL_REJECT_CONFLICT
+ *
+ *   D. Rule 3 — replacement_fee >= sum(eviction_set[i]->fee).
+ *      Absolute satoshi total — NOT fee rate.
+ *      Reject: MEMPOOL_REJECT_RBF_INSUFFICIENT_FEE
+ *
+ *   E. Rule 4 — replacement_fee >= total_evicted_fees +
+ *                 (MEMPOOL_RBF_INCREMENT * replacement_vsize / 1000).
+ *      Replacement must cover relay bandwidth at the incremental fee rate.
+ *      Reject: MEMPOOL_REJECT_RBF_INSUFFICIENT_FEE
+ *
+ *   F. Atomic eviction — collect direct conflict txids BEFORE calling
+ *      mempool_remove (which modifies the spent table), then remove each
+ *      direct conflict; mempool_remove recursively removes descendants.
+ *
+ * On ECHO_OK the replacement is NOT yet inserted — the caller (mempool_add)
+ * falls through to the normal insertion path.
+ *
+ * Parameters:
+ *   mp               - Mempool
+ *   replacement      - Incoming transaction
+ *   replacement_fee  - Fee of the replacement (pre-computed by mempool_add)
+ *   replacement_vsize - Virtual size of the replacement
+ *   result           - Output: reject reason on error; conflicts_count and
+ *                      first_conflict are set on both success and failure
+ *
+ * Returns ECHO_OK if all rules pass, ECHO_ERR_INVALID otherwise.
+ */
+static echo_result_t rbf_validate_replacement(
+    mempool_t *mp, const tx_t *replacement, satoshi_t replacement_fee,
+    size_t replacement_vsize, mempool_accept_result_t *result) {
+
+  /* --- Step A: Build eviction set (also checks Rule 5) --- */
+  mempool_entry_t *eviction_set[MAX_EVICTION_SET];
+  size_t eviction_count = 0;
+
+  echo_result_t collect_err = rbf_collect_eviction_set(
+      mp, replacement, eviction_set, &eviction_count, result);
+  if (collect_err != ECHO_OK) {
+    /* Rule 5 violated — result->reason already set by helper. */
+    return collect_err;
+  }
+
+  /* Record result metadata (available on both success and error paths). */
+  if (result != NULL) {
+    result->conflicts_count = eviction_count;
+    if (eviction_count > 0) {
+      result->first_conflict = eviction_set[0]->txid;
+    }
+  }
+
+  /* --- Step B: Rule 1 — every evicted tx must signal RBF --- */
+  for (size_t i = 0; i < eviction_count; i++) {
+    if (!entry_signals_rbf_inherited(mp, eviction_set[i])) {
+      /* A conflicting transaction does not signal RBF and has no signaling
+       * ancestor — this replacement attempt is forbidden. */
+      if (result != NULL) {
+        result->reason = MEMPOOL_REJECT_CONFLICT;
+      }
+      return ECHO_ERR_INVALID;
+    }
+  }
+
+  /* --- Step C: Rule 2 — no new unconfirmed inputs --- */
+  for (size_t i = 0; i < replacement->input_count; i++) {
+    const mempool_entry_t *parent =
+        txid_table_lookup(mp, &replacement->inputs[i].prevout.txid);
+    if (parent == NULL) {
+      /* Confirmed input — always allowed. */
+      continue;
+    }
+
+    /* Unconfirmed parent: it must be part of the eviction set. */
+    bool in_eviction_set = false;
+    for (size_t k = 0; k < eviction_count; k++) {
+      if (eviction_set[k] == parent) {
+        in_eviction_set = true;
+        break;
+      }
+    }
+
+    if (!in_eviction_set) {
+      /* Replacement introduces a new unconfirmed dependency not being
+       * evicted — forbidden by Rule 2 to prevent "laundering" chains. */
+      if (result != NULL) {
+        result->reason = MEMPOOL_REJECT_CONFLICT;
+      }
+      return ECHO_ERR_INVALID;
+    }
+  }
+
+  /* --- Step D: Rule 3 — replacement_fee >= total absolute evicted fees --- */
+  satoshi_t total_evicted_fees = 0;
+  for (size_t i = 0; i < eviction_count; i++) {
+    total_evicted_fees += eviction_set[i]->fee;
+  }
+
+  if (replacement_fee < total_evicted_fees) {
+    /* Replacement pays fewer absolute satoshis than the transactions it
+     * evicts — classic "absolute fee trap" mis-implementation.  Reject. */
+    if (result != NULL) {
+      result->reason = MEMPOOL_REJECT_RBF_INSUFFICIENT_FEE;
+      /* Required fee: the minimum that would pass both Rule 3 and Rule 4. */
+      result->required_fee = total_evicted_fees +
+          (satoshi_t)((MEMPOOL_RBF_INCREMENT * replacement_vsize + 999) / 1000);
+    }
+    return ECHO_ERR_INVALID;
+  }
+
+  /* --- Step E: Rule 4 — fee rate increment --- */
+  /* replacement_fee >= total_evicted_fees + (MEMPOOL_RBF_INCREMENT * vsize / 1000)
+   *
+   * MEMPOOL_RBF_INCREMENT is in sat/kvB; multiply by vsize then divide by 1000
+   * to get the minimum additional fee covering relay bandwidth.
+   * Integer arithmetic: use ceiling division to avoid rounding below 1 sat. */
+  satoshi_t relay_fee =
+      (satoshi_t)((MEMPOOL_RBF_INCREMENT * replacement_vsize + 999) / 1000);
+  satoshi_t required_fee = total_evicted_fees + relay_fee;
+
+  if (replacement_fee < required_fee) {
+    if (result != NULL) {
+      result->reason = MEMPOOL_REJECT_RBF_INSUFFICIENT_FEE;
+      result->required_fee = required_fee;
+    }
+    return ECHO_ERR_INVALID;
+  }
+
+  /* --- Step F: Atomic eviction --- */
+  /* All 5 rules passed.  Collect direct conflict txids FIRST because
+   * mempool_remove modifies the spent table and may invalidate pointers
+   * to later entries if two conflicts share a common ancestor. */
+  hash256_t direct_conflict_txids[MAX_EVICTION_SET];
+  size_t direct_count = 0;
+
+  for (size_t i = 0; i < eviction_count; i++) {
+    /* A direct conflict is one that spends the same outpoint as the
+     * replacement.  We identify it by checking whether the replacement
+     * actually conflicts with it via spent_lookup.  All other eviction-set
+     * members are descendants added by rbf_collect_eviction_set. */
+    bool is_direct = false;
+    for (size_t j = 0; j < replacement->input_count; j++) {
+      mempool_entry_t *spender =
+          spent_lookup(mp, &replacement->inputs[j].prevout);
+      if (spender == eviction_set[i]) {
+        is_direct = true;
+        break;
+      }
+    }
+    if (is_direct) {
+      direct_conflict_txids[direct_count++] = eviction_set[i]->txid;
+    }
+  }
+
+  /* Remove each direct conflict; mempool_remove handles recursive
+   * descendant removal so descendants are evicted automatically. */
+  for (size_t i = 0; i < direct_count; i++) {
+    mempool_remove(mp, &direct_conflict_txids[i]);
+  }
+
+  /* Replacement will be inserted by the normal mempool_add insertion path. */
+  if (result != NULL) {
+    result->reason = MEMPOOL_ACCEPT_OK;
+  }
+  return ECHO_OK;
+}
+
 /*
  * ============================================================================
  * INTERNAL REMOVAL
@@ -822,7 +1003,6 @@ echo_result_t mempool_add(mempool_t *mp, const tx_t *tx,
   size_t ancestor_size = tx_vsize(tx);
   satoshi_t ancestor_fees = 0;
   bool has_conflict = false;
-  hash256_t first_conflict = {{0}};
 
   /* Look up inputs */
   for (size_t i = 0; i < tx->input_count; i++) {
@@ -834,10 +1014,7 @@ echo_result_t mempool_add(mempool_t *mp, const tx_t *tx,
      * rbf_validate_replacement() once we know a conflict exists. */
     mempool_entry_t *spender = spent_lookup(mp, prevout);
     if (spender != NULL) {
-      if (!has_conflict) {
-        has_conflict = true;
-        first_conflict = spender->txid;
-      }
+      has_conflict = true;
     }
 
     /* Check if input is from mempool tx (unconfirmed parent) */
@@ -927,16 +1104,17 @@ echo_result_t mempool_add(mempool_t *mp, const tx_t *tx,
     return ECHO_ERR_INVALID;
   }
 
-  /* Handle RBF conflicts */
+  /* Handle RBF conflicts — validate all 5 BIP-125 rules and atomically
+   * evict the displaced transactions before falling through to normal
+   * insertion.  rbf_validate_replacement() populates result on error. */
   if (has_conflict) {
-    /* TODO: Implement full RBF replacement logic */
-    /* For now, reject conflicts even with RBF signaling */
-    if (result != NULL) {
-      result->reason = MEMPOOL_REJECT_CONFLICT;
-      result->conflicts_count = 1;
-      result->first_conflict = first_conflict;
+    echo_result_t rbf_err =
+        rbf_validate_replacement(mp, tx, fee, vsize, result);
+    if (rbf_err != ECHO_OK) {
+      return rbf_err;
     }
-    return ECHO_ERR_INVALID;
+    /* Replacement accepted — conflicts already evicted.
+     * Fall through to normal insertion path. */
   }
 
   /* Check mempool size - evict if needed */
